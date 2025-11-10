@@ -2,6 +2,11 @@ import express, { type Request, Response, NextFunction } from "express";
 import { registerRoutes } from "./routes";
 import { setupVite, serveStatic, log } from "./vite";
 
+if (!process.env.OPENAI_API_KEY) {
+  console.error("Error: OPENAI_API_KEY environment variable is required");
+  process.exit(1);
+}
+
 const app = express();
 
 declare module 'http' {
