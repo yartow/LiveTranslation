@@ -5,6 +5,10 @@ import multer from "multer";
 import { transcribeAudio, correctAndTranslateText } from "./lib/openai";
 import fs from "fs";
 import path from "path";
+import { exec } from "child_process";
+import { promisify } from "util";
+
+const execAsync = promisify(exec);
 
 const upload = multer({
   dest: "/tmp/uploads/",
@@ -15,27 +19,37 @@ const upload = multer({
 
 export async function registerRoutes(app: Express): Promise<Server> {
   app.post("/api/transcribe", upload.single("audio"), async (req, res) => {
-    let renamedFilePath: string | null = null;
+    let webmFilePath: string | null = null;
+    let wavFilePath: string | null = null;
     
     try {
       if (!req.file) {
         return res.status(400).json({ error: "No audio file provided" });
       }
 
+      const sourceLanguage = req.body.sourceLanguage || "en";
       const targetLanguage = req.body.targetLanguage || "en";
 
-      renamedFilePath = req.file.path + '.webm';
-      fs.renameSync(req.file.path, renamedFilePath);
+      webmFilePath = req.file.path + '.webm';
+      wavFilePath = req.file.path + '.wav';
+      
+      fs.renameSync(req.file.path, webmFilePath);
 
-      const rawTranscript = await transcribeAudio(renamedFilePath);
+      await execAsync(`ffmpeg -i "${webmFilePath}" -ar 16000 -ac 1 -c:a pcm_s16le "${wavFilePath}"`);
+
+      const rawTranscript = await transcribeAudio(wavFilePath, sourceLanguage);
 
       const { correctedText, translatedText } = await correctAndTranslateText(
         rawTranscript,
         targetLanguage
       );
 
-      fs.unlinkSync(renamedFilePath);
-      renamedFilePath = null;
+      if (webmFilePath && fs.existsSync(webmFilePath)) {
+        fs.unlinkSync(webmFilePath);
+      }
+      if (wavFilePath && fs.existsSync(wavFilePath)) {
+        fs.unlinkSync(wavFilePath);
+      }
 
       res.json({
         originalText: correctedText,
@@ -44,9 +58,13 @@ export async function registerRoutes(app: Express): Promise<Server> {
     } catch (error) {
       console.error("Transcription error:", error);
       
-      if (renamedFilePath && fs.existsSync(renamedFilePath)) {
-        fs.unlinkSync(renamedFilePath);
-      } else if (req.file?.path && fs.existsSync(req.file.path)) {
+      if (webmFilePath && fs.existsSync(webmFilePath)) {
+        fs.unlinkSync(webmFilePath);
+      }
+      if (wavFilePath && fs.existsSync(wavFilePath)) {
+        fs.unlinkSync(wavFilePath);
+      }
+      if (req.file?.path && fs.existsSync(req.file.path)) {
         fs.unlinkSync(req.file.path);
       }
 

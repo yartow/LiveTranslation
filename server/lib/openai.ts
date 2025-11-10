@@ -3,13 +3,13 @@ import fs from "fs";
 
 const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 
-export async function transcribeAudio(audioFilePath: string): Promise<string> {
+export async function transcribeAudio(audioFilePath: string, language: string = "en"): Promise<string> {
   const audioReadStream = fs.createReadStream(audioFilePath);
 
   const transcription = await openai.audio.transcriptions.create({
     file: audioReadStream,
     model: "whisper-1",
-    language: "en",
+    language: language,
   });
 
   return transcription.text;

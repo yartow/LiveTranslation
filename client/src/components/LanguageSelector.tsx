@@ -4,6 +4,8 @@ interface LanguageSelectorProps {
   value: string;
   onChange: (value: string) => void;
   disabled?: boolean;
+  label?: string;
+  testId?: string;
 }
 
 const LANGUAGES = [
@@ -21,17 +23,23 @@ const LANGUAGES = [
   { code: 'ko', name: 'Korean' },
 ];
 
-export default function LanguageSelector({ value, onChange, disabled }: LanguageSelectorProps) {
+export default function LanguageSelector({ 
+  value, 
+  onChange, 
+  disabled,
+  label = "Translate to",
+  testId = "select-language"
+}: LanguageSelectorProps) {
   return (
     <div className="space-y-2">
       <label htmlFor="language-select" className="text-sm font-medium text-foreground">
-        Translate to
+        {label}
       </label>
       <Select value={value} onValueChange={onChange} disabled={disabled}>
         <SelectTrigger 
           id="language-select"
           className="h-12 w-full"
-          data-testid="select-language"
+          data-testid={testId}
         >
           <div className="flex items-center gap-2">
             <svg className="w-4 h-4 text-muted-foreground" fill="none" stroke="currentColor" viewBox="0 0 24 24">
