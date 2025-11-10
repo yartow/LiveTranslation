@@ -15,6 +15,8 @@ const upload = multer({
 
 export async function registerRoutes(app: Express): Promise<Server> {
   app.post("/api/transcribe", upload.single("audio"), async (req, res) => {
+    let renamedFilePath: string | null = null;
+    
     try {
       if (!req.file) {
         return res.status(400).json({ error: "No audio file provided" });
@@ -22,14 +24,18 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
       const targetLanguage = req.body.targetLanguage || "en";
 
-      const rawTranscript = await transcribeAudio(req.file.path);
+      renamedFilePath = req.file.path + '.webm';
+      fs.renameSync(req.file.path, renamedFilePath);
+
+      const rawTranscript = await transcribeAudio(renamedFilePath);
 
       const { correctedText, translatedText } = await correctAndTranslateText(
         rawTranscript,
         targetLanguage
       );
 
-      fs.unlinkSync(req.file.path);
+      fs.unlinkSync(renamedFilePath);
+      renamedFilePath = null;
 
       res.json({
         originalText: correctedText,
@@ -38,7 +44,9 @@ export async function registerRoutes(app: Express): Promise<Server> {
     } catch (error) {
       console.error("Transcription error:", error);
       
-      if (req.file?.path && fs.existsSync(req.file.path)) {
+      if (renamedFilePath && fs.existsSync(renamedFilePath)) {
+        fs.unlinkSync(renamedFilePath);
+      } else if (req.file?.path && fs.existsSync(req.file.path)) {
         fs.unlinkSync(req.file.path);
       }
 
