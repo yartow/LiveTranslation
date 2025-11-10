@@ -15,6 +15,7 @@ export default function Home() {
   const [isDark, setIsDark] = useState(false);
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const audioChunksRef = useRef<Blob[]>([]);
+  const isProcessingChunkRef = useRef(false);
   const { toast } = useToast();
 
   useEffect(() => {
@@ -34,6 +35,46 @@ export default function Home() {
     localStorage.setItem('theme', !isDark ? 'dark' : 'light');
   };
 
+  const processAudioChunk = async (audioBlob: Blob) => {
+    if (isProcessingChunkRef.current) {
+      return;
+    }
+
+    isProcessingChunkRef.current = true;
+    setIsProcessing(true);
+    
+    try {
+      const formData = new FormData();
+      formData.append('audio', audioBlob, 'recording.webm');
+      formData.append('targetLanguage', targetLanguage);
+
+      const response = await fetch('/api/transcribe', {
+        method: 'POST',
+        body: formData,
+      });
+
+      if (!response.ok) {
+        const errorData = await response.json().catch(() => ({}));
+        throw new Error(errorData.details || 'Transcription failed');
+      }
+
+      const data = await response.json();
+      
+      setOriginalText(prev => prev + (prev ? '\n\n' : '') + data.originalText);
+      setTranslatedText(prev => prev + (prev ? '\n\n' : '') + data.translatedText);
+    } catch (error) {
+      console.error('Transcription error:', error);
+      toast({
+        title: "Transcription failed",
+        description: error instanceof Error ? error.message : "Failed to transcribe audio. Please check your OpenAI API credits.",
+        variant: "destructive",
+      });
+    } finally {
+      isProcessingChunkRef.current = false;
+      setIsProcessing(false);
+    }
+  };
+
   const startRecording = async () => {
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ 
@@ -51,59 +92,29 @@ export default function Home() {
       mediaRecorderRef.current = mediaRecorder;
       audioChunksRef.current = [];
 
-      mediaRecorder.ondataavailable = (event) => {
+      mediaRecorder.ondataavailable = async (event) => {
         if (event.data.size > 0) {
           audioChunksRef.current.push(event.data);
+          
+          const audioBlob = new Blob([event.data], { type: 'audio/webm' });
+          await processAudioChunk(audioBlob);
         }
       };
 
-      mediaRecorder.onstop = async () => {
-        const audioBlob = new Blob(audioChunksRef.current, { type: 'audio/webm' });
+      mediaRecorder.onstop = () => {
         stream.getTracks().forEach(track => track.stop());
-        
-        setIsProcessing(true);
-        
-        try {
-          const formData = new FormData();
-          formData.append('audio', audioBlob, 'recording.webm');
-          formData.append('targetLanguage', targetLanguage);
-
-          const response = await fetch('/api/transcribe', {
-            method: 'POST',
-            body: formData,
-          });
-
-          if (!response.ok) {
-            throw new Error('Transcription failed');
-          }
-
-          const data = await response.json();
-          
-          setOriginalText(prev => prev + (prev ? '\n\n' : '') + data.originalText);
-          setTranslatedText(prev => prev + (prev ? '\n\n' : '') + data.translatedText);
-          
-          toast({
-            title: "Transcription complete",
-            description: "Audio has been transcribed and translated.",
-          });
-        } catch (error) {
-          console.error('Transcription error:', error);
-          toast({
-            title: "Transcription failed",
-            description: "Failed to transcribe audio. Please try again.",
-            variant: "destructive",
-          });
-        } finally {
-          setIsProcessing(false);
-        }
+        toast({
+          title: "Recording stopped",
+          description: "All audio has been processed.",
+        });
       };
 
-      mediaRecorder.start();
+      mediaRecorder.start(10000);
       setIsRecording(true);
       
       toast({
         title: "Recording started",
-        description: "Speak clearly into your microphone.",
+        description: "Audio will be transcribed every 10 seconds while you speak.",
       });
     } catch (error) {
       console.error('Error accessing microphone:', error);
