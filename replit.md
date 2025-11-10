@@ -32,9 +32,11 @@ Preferred communication style: Simple, everyday language.
 - Mobile-first responsive design with thumb-reach accessibility
 - Dark/light theme support with system preference detection and localStorage persistence
 - Continuous audio recording using browser MediaRecorder API with:
-  - 10-second timeslice for real-time chunk processing
+  - Built-in 10-second timeslice parameter for automatic chunk generation
+  - Simple event handlers (ondataavailable, onstop) without manual stop/restart logic
   - Optimized audio settings (echo cancellation, noise suppression, 44.1kHz sample rate)
   - Queue-based sequential processing to prevent chunk loss during API calls
+  - Server-side ffmpeg conversion from WebM to WAV for Whisper API compatibility
 
 ### Backend Architecture
 
@@ -48,11 +50,18 @@ Preferred communication style: Simple, everyday language.
 - 25MB file size limit
 - Automatic cleanup after processing
 
+**Audio Processing Pipeline**:
+- Accepts WebM chunks from browser MediaRecorder
+- Uses ffmpeg to convert WebM to WAV format (16kHz mono PCM)
+- WAV files are Whisper-compatible and ensure reliable transcription
+- Temporary files (both WebM and WAV) are cleaned up immediately after processing
+
 **Key Design Decisions**:
 - Express middleware for request logging and JSON parsing with raw body capture
 - Development-only Vite integration for HMR (Hot Module Replacement)
 - Production build serves static React app from compiled output
 - In-memory user storage (MemStorage) - database schema defined but not actively used
+- Server-side audio format conversion isolates complexity from frontend
 
 ### Data Storage Solutions
 
@@ -72,37 +81,51 @@ Preferred communication style: Simple, everyday language.
 
 ### Completed Features ✓
 1. **Continuous Live Transcription**: Audio is automatically processed every 10 seconds while recording
-   - MediaRecorder captures 10-second audio chunks using timeslice
+   - MediaRecorder's built-in timeslice (10000ms) automatically generates chunks
+   - Simple event-driven architecture with ondataavailable handler
    - Queue-based chunk processing ensures sequential, in-order transcription
-   - Prevents chunk dropping during long API calls
+   - Server-side ffmpeg conversion from WebM to WAV ensures Whisper API compatibility
    - Transcriptions appear in real-time as they're processed
-2. **Speech-to-Text Transcription**: Real-time audio transcription using OpenAI Whisper
-3. **Text Correction**: Automatic removal of stutters, filler words, and verbal mistakes using GPT-4o
-4. **Multi-Language Translation**: Support for 12 languages with real-time translation
-5. **Mobile-Optimized UI**: Responsive design with thumb-reach accessibility
-6. **Dark Mode**: System preference detection with manual toggle
-7. **Error Handling**: Comprehensive error handling with user-friendly toast notifications
+2. **Source Language Selection**: Users can specify the source language for better transcription accuracy
+   - Dropdown selector with all 12 supported languages
+   - Passed to Whisper API to improve recognition and reduce processing time
+   - Side-by-side with target language selector for clear UX
+3. **Speech-to-Text Transcription**: Real-time audio transcription using OpenAI Whisper
+4. **Text Correction**: Automatic removal of stutters, filler words, and verbal mistakes using GPT-4o
+5. **Multi-Language Translation**: Support for 12 languages with real-time translation
+6. **Mobile-Optimized UI**: Responsive design with thumb-reach accessibility
+7. **Dark Mode**: System preference detection with manual toggle
+8. **Error Handling**: Comprehensive error handling with user-friendly toast notifications
    - Explicit messaging when OpenAI API credits are insufficient
-8. **File Management**: Automatic cleanup of temporary audio files after processing
-9. **Session Management**: Prevents starting new recordings while previous chunks are processing
+9. **File Management**: Automatic cleanup of temporary audio files (both WebM and WAV) after processing
+10. **Session Management**: Prevents starting new recordings while previous chunks are processing
 
 ### API Endpoints
-- **POST /api/transcribe**: Accepts multipart/form-data with audio file and target language
-  - Input: Audio blob (WebM format) + target language code (en, es, fr, de, pt, it, zh, ar, hi, ru, ja, ko)
-  - Output: JSON with correctedText and translatedText
-  - Processing: Whisper transcription → GPT-4o correction → GPT-4o translation
-  - Error handling: Returns 400 for missing files, 500 with details for processing errors
+- **POST /api/transcribe**: Accepts multipart/form-data with audio file, source language, and target language
+  - Input: Audio blob (WebM format) + sourceLanguage + targetLanguage (en, es, fr, de, pt, it, zh, ar, hi, ru, ja, ko)
+  - Processing Pipeline:
+    1. Rename uploaded file to `.webm` extension
+    2. Convert WebM to WAV using ffmpeg (16kHz mono PCM)
+    3. Send WAV to Whisper API with specified source language
+    4. Correct transcription with GPT-4o
+    5. Translate corrected text to target language with GPT-4o
+    6. Clean up temporary WebM and WAV files
+  - Output: JSON with correctedText (original) and translatedText
+  - Error handling: Returns 400 for missing files, 500 with details for processing/conversion errors
 
 ### Component Architecture
 - **Header**: App title, theme toggle, sticky positioning
-- **LanguageSelector**: Shadcn select component with 12 language options
+- **LanguageSelector**: Shadcn select component with 12 language options (used for both source and target)
 - **RecordButton**: Large circular FAB with recording/processing/idle states
 - **RecordingIndicator**: Animated badge showing active recording status
 - **TranscriptionDisplay**: Auto-scrolling text areas for original and translated content
-- **Home**: Main page orchestrating all components with continuous transcription state management
+- **Home**: Main page orchestrating all components with simplified recording state management
+  - MediaRecorder with built-in timeslice (10000ms) for automatic chunking
+  - Event handlers: `ondataavailable` for chunk capture, `onstop` for finalization
   - Queue-based chunk processing with `chunkQueueRef` and `isProcessingQueueRef`
   - Sequential API calls via `processNextChunk()` and `enqueueAudioChunk()`
   - Graceful completion waiting for queue to drain before notifying user
+  - No manual stop/restart logic - relies on MediaRecorder's automatic timeslice behavior
 
 ### Future Enhancements
 - Export transcriptions to PDF/TXT formats
@@ -122,7 +145,9 @@ Preferred communication style: Simple, everyday language.
 ### External Dependencies
 
 **OpenAI API Integration**:
-- **Whisper API** (audio.transcriptions.create): Converts recorded audio to English text
+- **Whisper API** (audio.transcriptions.create): Converts recorded audio to text in specified source language
+  - Accepts WAV format (16kHz mono PCM) converted from WebM chunks
+  - Source language parameter improves accuracy and reduces processing time
 - **GPT-4o Chat Completions**: Performs two-step text processing:
   1. Cleans transcription by removing stutters, filler words, and verbal mistakes
   2. Translates corrected text to target language
@@ -131,9 +156,15 @@ Preferred communication style: Simple, everyday language.
 
 **Supported Languages**: 12 languages including English, Spanish, French, German, Portuguese, Italian, Chinese, Arabic, Hindi, Russian, Japanese, Korean
 
-**Audio Format**: WebM format from browser MediaRecorder, processed server-side
+**Audio Processing**:
+- **Client**: Browser MediaRecorder produces WebM chunks (10s each)
+- **Server**: ffmpeg converts WebM to WAV (16kHz mono PCM) before Whisper processing
+- **Rationale**: MediaRecorder timeslice chunks lack proper WebM headers; server-side conversion ensures compatibility
 
 **API Key Management**: Environment variable (`OPENAI_API_KEY`) for authentication
+
+**System Dependencies**:
+- **ffmpeg**: Required for audio format conversion (WebM → WAV)
 
 **Replit-Specific Dependencies**:
 - `@replit/vite-plugin-runtime-error-modal`: Development error overlay
