@@ -14,8 +14,8 @@ export default function Home() {
   const [translatedText, setTranslatedText] = useState('');
   const [isDark, setIsDark] = useState(false);
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
-  const audioChunksRef = useRef<Blob[]>([]);
-  const isProcessingChunkRef = useRef(false);
+  const chunkQueueRef = useRef<Blob[]>([]);
+  const isProcessingQueueRef = useRef(false);
   const { toast } = useToast();
 
   useEffect(() => {
@@ -35,13 +35,15 @@ export default function Home() {
     localStorage.setItem('theme', !isDark ? 'dark' : 'light');
   };
 
-  const processAudioChunk = async (audioBlob: Blob) => {
-    if (isProcessingChunkRef.current) {
+  const processNextChunk = async () => {
+    if (isProcessingQueueRef.current || chunkQueueRef.current.length === 0) {
       return;
     }
 
-    isProcessingChunkRef.current = true;
+    isProcessingQueueRef.current = true;
     setIsProcessing(true);
+
+    const audioBlob = chunkQueueRef.current.shift()!;
     
     try {
       const formData = new FormData();
@@ -70,13 +72,35 @@ export default function Home() {
         variant: "destructive",
       });
     } finally {
-      isProcessingChunkRef.current = false;
+      isProcessingQueueRef.current = false;
       setIsProcessing(false);
+      
+      if (chunkQueueRef.current.length > 0) {
+        processNextChunk();
+      }
     }
   };
 
+  const enqueueAudioChunk = (audioBlob: Blob) => {
+    chunkQueueRef.current.push(audioBlob);
+    processNextChunk();
+  };
+
   const startRecording = async () => {
+    if (chunkQueueRef.current.length > 0 || isProcessingQueueRef.current) {
+      toast({
+        title: "Please wait",
+        description: "Previous recording is still being processed.",
+        variant: "destructive",
+      });
+      return;
+    }
+
     try {
+      setOriginalText('');
+      setTranslatedText('');
+      chunkQueueRef.current = [];
+      
       const stream = await navigator.mediaDevices.getUserMedia({ 
         audio: {
           echoCancellation: true,
@@ -90,23 +114,26 @@ export default function Home() {
       });
       
       mediaRecorderRef.current = mediaRecorder;
-      audioChunksRef.current = [];
 
-      mediaRecorder.ondataavailable = async (event) => {
+      mediaRecorder.ondataavailable = (event) => {
         if (event.data.size > 0) {
-          audioChunksRef.current.push(event.data);
-          
           const audioBlob = new Blob([event.data], { type: 'audio/webm' });
-          await processAudioChunk(audioBlob);
+          enqueueAudioChunk(audioBlob);
         }
       };
 
       mediaRecorder.onstop = () => {
         stream.getTracks().forEach(track => track.stop());
-        toast({
-          title: "Recording stopped",
-          description: "All audio has been processed.",
-        });
+        
+        const checkQueueComplete = setInterval(() => {
+          if (chunkQueueRef.current.length === 0 && !isProcessingQueueRef.current) {
+            clearInterval(checkQueueComplete);
+            toast({
+              title: "Recording stopped",
+              description: "All audio has been processed.",
+            });
+          }
+        }, 500);
       };
 
       mediaRecorder.start(10000);
