@@ -7,6 +7,7 @@ import TranscriptionDisplay from '@/components/TranscriptionDisplay';
 import { useToast } from '@/hooks/use-toast';
 
 export default function Home() {
+  const [sourceLanguage, setSourceLanguage] = useState('en');
   const [targetLanguage, setTargetLanguage] = useState('es');
   const [isRecording, setIsRecording] = useState(false);
   const [isProcessing, setIsProcessing] = useState(false);
@@ -14,6 +15,7 @@ export default function Home() {
   const [translatedText, setTranslatedText] = useState('');
   const [isDark, setIsDark] = useState(false);
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
+  const streamRef = useRef<MediaStream | null>(null);
   const chunkQueueRef = useRef<Blob[]>([]);
   const isProcessingQueueRef = useRef(false);
   const { toast } = useToast();
@@ -48,6 +50,7 @@ export default function Home() {
     try {
       const formData = new FormData();
       formData.append('audio', audioBlob, 'recording.webm');
+      formData.append('sourceLanguage', sourceLanguage);
       formData.append('targetLanguage', targetLanguage);
 
       const response = await fetch('/api/transcribe', {
@@ -86,6 +89,35 @@ export default function Home() {
     processNextChunk();
   };
 
+  const finalizeRecording = () => {
+    if (streamRef.current) {
+      streamRef.current.getTracks().forEach(track => track.stop());
+      streamRef.current = null;
+    }
+
+    mediaRecorderRef.current = null;
+
+    let attempts = 0;
+    const maxAttempts = 60;
+    const checkQueueComplete = setInterval(() => {
+      attempts++;
+      if (chunkQueueRef.current.length === 0 && !isProcessingQueueRef.current) {
+        clearInterval(checkQueueComplete);
+        toast({
+          title: "Recording stopped",
+          description: "All audio has been processed.",
+        });
+      } else if (attempts >= maxAttempts) {
+        clearInterval(checkQueueComplete);
+        toast({
+          title: "Recording stopped",
+          description: "Some audio may still be processing.",
+          variant: "destructive",
+        });
+      }
+    }, 500);
+  };
+
   const startRecording = async () => {
     if (chunkQueueRef.current.length > 0 || isProcessingQueueRef.current) {
       toast({
@@ -109,33 +141,24 @@ export default function Home() {
         } 
       });
       
+      streamRef.current = stream;
+      
       const mediaRecorder = new MediaRecorder(stream, {
         mimeType: 'audio/webm',
       });
       
       mediaRecorderRef.current = mediaRecorder;
-
-      mediaRecorder.ondataavailable = (event) => {
+      
+      mediaRecorder.ondataavailable = (event: BlobEvent) => {
         if (event.data.size > 0) {
-          const audioBlob = new Blob([event.data], { type: 'audio/webm' });
-          enqueueAudioChunk(audioBlob);
+          enqueueAudioChunk(event.data);
         }
       };
-
+      
       mediaRecorder.onstop = () => {
-        stream.getTracks().forEach(track => track.stop());
-        
-        const checkQueueComplete = setInterval(() => {
-          if (chunkQueueRef.current.length === 0 && !isProcessingQueueRef.current) {
-            clearInterval(checkQueueComplete);
-            toast({
-              title: "Recording stopped",
-              description: "All audio has been processed.",
-            });
-          }
-        }, 500);
+        finalizeRecording();
       };
-
+      
       mediaRecorder.start(10000);
       setIsRecording(true);
       
@@ -154,9 +177,19 @@ export default function Home() {
   };
 
   const stopRecording = () => {
-    if (mediaRecorderRef.current && isRecording) {
-      mediaRecorderRef.current.stop();
-      setIsRecording(false);
+    if (!isRecording) return;
+    
+    setIsRecording(false);
+
+    if (mediaRecorderRef.current && mediaRecorderRef.current.state !== 'inactive') {
+      try {
+        mediaRecorderRef.current.stop();
+      } catch (error) {
+        console.error('Error stopping recorder:', error);
+        finalizeRecording();
+      }
+    } else {
+      finalizeRecording();
     }
   };
 
@@ -176,11 +209,22 @@ export default function Home() {
         <RecordingIndicator isRecording={isRecording} />
         
         <div className="p-4 space-y-4 bg-background border-b border-border">
-          <LanguageSelector
-            value={targetLanguage}
-            onChange={setTargetLanguage}
-            disabled={isRecording}
-          />
+          <div className="grid grid-cols-2 gap-4">
+            <LanguageSelector
+              value={sourceLanguage}
+              onChange={setSourceLanguage}
+              disabled={isRecording}
+              label="Speaking in"
+              testId="select-source-language"
+            />
+            <LanguageSelector
+              value={targetLanguage}
+              onChange={setTargetLanguage}
+              disabled={isRecording}
+              label="Translate to"
+              testId="select-target-language"
+            />
+          </div>
           
           <RecordButton
             isRecording={isRecording}
