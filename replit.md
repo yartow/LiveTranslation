@@ -31,7 +31,10 @@ Preferred communication style: Simple, everyday language.
 **Key Design Decisions**:
 - Mobile-first responsive design with thumb-reach accessibility
 - Dark/light theme support with system preference detection and localStorage persistence
-- Real-time audio recording using browser MediaRecorder API with optimized audio settings (echo cancellation, noise suppression, 44.1kHz sample rate)
+- Continuous audio recording using browser MediaRecorder API with:
+  - 10-second timeslice for real-time chunk processing
+  - Optimized audio settings (echo cancellation, noise suppression, 44.1kHz sample rate)
+  - Queue-based sequential processing to prevent chunk loss during API calls
 
 ### Backend Architecture
 
@@ -68,14 +71,20 @@ Preferred communication style: Simple, everyday language.
 ## Implementation Status (Last Updated: November 10, 2025)
 
 ### Completed Features ✓
-1. **Live Audio Recording**: Browser-based microphone access with MediaRecorder API
+1. **Continuous Live Transcription**: Audio is automatically processed every 10 seconds while recording
+   - MediaRecorder captures 10-second audio chunks using timeslice
+   - Queue-based chunk processing ensures sequential, in-order transcription
+   - Prevents chunk dropping during long API calls
+   - Transcriptions appear in real-time as they're processed
 2. **Speech-to-Text Transcription**: Real-time audio transcription using OpenAI Whisper
 3. **Text Correction**: Automatic removal of stutters, filler words, and verbal mistakes using GPT-4o
 4. **Multi-Language Translation**: Support for 12 languages with real-time translation
 5. **Mobile-Optimized UI**: Responsive design with thumb-reach accessibility
 6. **Dark Mode**: System preference detection with manual toggle
 7. **Error Handling**: Comprehensive error handling with user-friendly toast notifications
+   - Explicit messaging when OpenAI API credits are insufficient
 8. **File Management**: Automatic cleanup of temporary audio files after processing
+9. **Session Management**: Prevents starting new recordings while previous chunks are processing
 
 ### API Endpoints
 - **POST /api/transcribe**: Accepts multipart/form-data with audio file and target language
@@ -90,7 +99,10 @@ Preferred communication style: Simple, everyday language.
 - **RecordButton**: Large circular FAB with recording/processing/idle states
 - **RecordingIndicator**: Animated badge showing active recording status
 - **TranscriptionDisplay**: Auto-scrolling text areas for original and translated content
-- **Home**: Main page orchestrating all components with state management
+- **Home**: Main page orchestrating all components with continuous transcription state management
+  - Queue-based chunk processing with `chunkQueueRef` and `isProcessingQueueRef`
+  - Sequential API calls via `processNextChunk()` and `enqueueAudioChunk()`
+  - Graceful completion waiting for queue to drain before notifying user
 
 ### Future Enhancements
 - Export transcriptions to PDF/TXT formats
