@@ -63,23 +63,39 @@ export default function Home() {
         
         setIsProcessing(true);
         
-        const mockOriginal = "And he said unto them, Go ye into all the world, and preach the gospel to every creature. For God so loved the world that he gave his only begotten Son.";
-        const mockTranslations: Record<string, string> = {
-          es: "Y les dijo: Id por todo el mundo y predicad el evangelio a toda criatura. Porque de tal manera amó Dios al mundo, que ha dado a su Hijo unigénito.",
-          fr: "Et il leur dit: Allez par tout le monde, et prêchez la bonne nouvelle à toute la création. Car Dieu a tant aimé le monde qu'il a donné son Fils unique.",
-          de: "Und er sprach zu ihnen: Gehet hin in alle Welt und predigt das Evangelium aller Kreatur. Denn also hat Gott die Welt geliebt, dass er seinen eingeborenen Sohn gab.",
-        };
-        
-        setTimeout(() => {
-          setOriginalText(prev => prev + (prev ? ' ' : '') + mockOriginal);
-          setTranslatedText(prev => prev + (prev ? ' ' : '') + (mockTranslations[targetLanguage] || mockOriginal));
-          setIsProcessing(false);
+        try {
+          const formData = new FormData();
+          formData.append('audio', audioBlob, 'recording.webm');
+          formData.append('targetLanguage', targetLanguage);
+
+          const response = await fetch('/api/transcribe', {
+            method: 'POST',
+            body: formData,
+          });
+
+          if (!response.ok) {
+            throw new Error('Transcription failed');
+          }
+
+          const data = await response.json();
+          
+          setOriginalText(prev => prev + (prev ? '\n\n' : '') + data.originalText);
+          setTranslatedText(prev => prev + (prev ? '\n\n' : '') + data.translatedText);
           
           toast({
             title: "Transcription complete",
             description: "Audio has been transcribed and translated.",
           });
-        }, 2000);
+        } catch (error) {
+          console.error('Transcription error:', error);
+          toast({
+            title: "Transcription failed",
+            description: "Failed to transcribe audio. Please try again.",
+            variant: "destructive",
+          });
+        } finally {
+          setIsProcessing(false);
+        }
       };
 
       mediaRecorder.start();
