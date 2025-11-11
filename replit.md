@@ -36,7 +36,7 @@ Preferred communication style: Simple, everyday language.
   - Simple event handlers (ondataavailable, onstop) without manual stop/restart logic
   - Optimized audio settings (echo cancellation, noise suppression, 44.1kHz sample rate)
   - Queue-based sequential processing to prevent chunk loss during API calls
-  - Server-side ffmpeg conversion from WebM to MP3 for Whisper API compatibility (handles incomplete chunks)
+  - Direct WebM upload to Whisper API (no conversion required)
 
 ### Backend Architecture
 
@@ -51,10 +51,10 @@ Preferred communication style: Simple, everyday language.
 - Automatic cleanup after processing
 
 **Audio Processing Pipeline**:
-- Accepts WebM chunks from browser MediaRecorder (incomplete chunks lack proper EBML headers)
-- Uses fluent-ffmpeg library to convert WebM to MP3 format (16kHz mono)
-- MP3 files are Whisper-compatible and handle incomplete stream chunks gracefully
-- Temporary files (both WebM and MP3) are cleaned up immediately after processing
+- Accepts WebM chunks from browser MediaRecorder
+- Sends WebM files directly to Whisper API (supports WebM natively)
+- No format conversion needed - bypasses ffmpeg parsing issues
+- Temporary WebM files are cleaned up immediately after processing
 
 **Key Design Decisions**:
 - Express middleware for request logging and JSON parsing with raw body capture
@@ -84,7 +84,7 @@ Preferred communication style: Simple, everyday language.
    - MediaRecorder's built-in timeslice (5000ms) automatically generates chunks for faster live text
    - Simple event-driven architecture with ondataavailable handler
    - Queue-based chunk processing ensures sequential, in-order transcription
-   - Server-side ffmpeg conversion from WebM to MP3 handles incomplete chunk headers
+   - WebM chunks sent directly to Whisper API (native format support)
    - Transcriptions appear in real-time as they're processed (5s latency)
 2. **Source Language Selection**: Users can specify the source language for better transcription accuracy
    - Dropdown selector with all 12 supported languages
@@ -120,13 +120,12 @@ Preferred communication style: Simple, everyday language.
   - Input: Audio blob (WebM format) + sourceLanguage + targetLanguage (en, es, fr, de, nl, pt, it, zh, zh-TW, ar, fa, hi, ru, ja, ko) + detectSpeakers (boolean)
   - Processing Pipeline:
     1. Rename uploaded file to `.webm` extension
-    2. Convert WebM to MP3 (16kHz mono) using fluent-ffmpeg with lenient error flags (-err_detect ignore_err)
-    3. Send MP3 to Whisper API with specified source language
-    4. Correct transcription with GPT-4o-mini (optionally detecting speakers if flag enabled)
-    5. Translate corrected text to target language with GPT-4o-mini
-    6. Clean up temporary WebM and MP3 files
+    2. Send WebM directly to Whisper API with specified source language (native WebM support)
+    3. Correct transcription with GPT-4o-mini (optionally detecting speakers if flag enabled)
+    4. Translate corrected text to target language with GPT-4o-mini
+    5. Clean up temporary WebM file
   - Output: JSON with correctedText (original) and translatedText
-  - Error handling: Returns 400 for missing files, 500 with details for processing/conversion errors
+  - Error handling: Returns 400 for missing files, 500 with details for processing errors
 
 - **POST /api/retranslate**: Re-translates existing transcription text to new target language and/or speaker detection setting
   - Input: JSON with originalText + targetLanguage + detectSpeakers
@@ -175,9 +174,9 @@ Preferred communication style: Simple, everyday language.
 
 **OpenAI API Integration**:
 - **Whisper API** (audio.transcriptions.create): Converts recorded audio to text in specified source language
-  - Accepts MP3 format (16kHz mono) converted from WebM chunks using fluent-ffmpeg
+  - Accepts WebM format natively (no conversion required)
   - Source language parameter improves accuracy and reduces processing time
-  - Handles incomplete stream chunks gracefully (MediaRecorder chunks lack proper EBML headers)
+  - Handles MediaRecorder chunks directly without preprocessing
 - **GPT-4o-mini Chat Completions**: Performs text processing (2-3x faster and 60-80% cheaper than GPT-4o):
   1. Cleans transcription by removing stutters, filler words, and verbal mistakes
   2. Optionally detects and labels different speakers based on conversation patterns ("Speaker 1:", "Speaker 2:", etc.)
@@ -190,13 +189,13 @@ Preferred communication style: Simple, everyday language.
 
 **Audio Processing**:
 - **Client**: Browser MediaRecorder produces WebM chunks (5s each)
-- **Server**: Converts WebM to MP3 using fluent-ffmpeg before sending to Whisper API
-- **Rationale**: MediaRecorder chunks lack proper EBML headers after first chunk; MP3 conversion ensures compatibility
+- **Server**: Sends WebM directly to Whisper API (native format support)
+- **Rationale**: Whisper API accepts WebM natively, eliminating need for conversion and bypassing header parsing issues
 
 **API Key Management**: Environment variable (`OPENAI_API_KEY`) for authentication
 
 **System Dependencies**:
-- fluent-ffmpeg: Node.js library for WebM to MP3 audio conversion (handles incomplete chunk headers)
+- None required for audio processing (WebM sent directly to Whisper API)
 
 **Replit-Specific Dependencies**:
 - `@replit/vite-plugin-runtime-error-modal`: Development error overlay
