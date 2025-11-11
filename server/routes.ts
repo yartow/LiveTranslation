@@ -5,10 +5,7 @@ import multer from "multer";
 import { transcribeAudio, correctAndTranslateText } from "./lib/openai";
 import fs from "fs";
 import path from "path";
-import { exec } from "child_process";
-import { promisify } from "util";
-
-const execAsync = promisify(exec);
+import ffmpeg from "fluent-ffmpeg";
 
 const upload = multer({
   dest: "/tmp/uploads/",
@@ -35,7 +32,16 @@ export async function registerRoutes(app: Express): Promise<Server> {
       
       fs.renameSync(req.file.path, webmFilePath);
 
-      await execAsync(`ffmpeg -i "${webmFilePath}" -ar 16000 -ac 1 -c:a pcm_s16le "${wavFilePath}"`);
+      await new Promise<void>((resolve, reject) => {
+        ffmpeg(webmFilePath!)
+          .audioFrequency(16000)
+          .audioChannels(1)
+          .audioCodec('pcm_s16le')
+          .format('wav')
+          .on('end', () => resolve())
+          .on('error', (err) => reject(err))
+          .save(wavFilePath!);
+      });
 
       const rawTranscript = await transcribeAudio(wavFilePath, sourceLanguage);
 
