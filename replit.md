@@ -108,11 +108,10 @@ Preferred communication style: Simple, everyday language.
   - Input: Audio blob (WebM format) + sourceLanguage + targetLanguage (en, es, fr, de, nl, pt, it, zh, zh-TW, ar, fa, hi, ru, ja, ko)
   - Processing Pipeline:
     1. Rename uploaded file to `.webm` extension
-    2. Convert WebM to WAV using fluent-ffmpeg library (16kHz mono PCM) with error tolerance flags
-    3. Send WAV to Whisper API with specified source language
-    4. Correct transcription with GPT-4o
-    5. Translate corrected text to target language with GPT-4o
-    6. Clean up temporary WebM and WAV files
+    2. Send WebM directly to Whisper API with specified source language
+    3. Correct transcription with GPT-4o
+    4. Translate corrected text to target language with GPT-4o
+    5. Clean up temporary WebM file
   - Output: JSON with correctedText (original) and translatedText
   - Error handling: Returns 400 for missing files, 500 with details for processing/conversion errors
 
@@ -165,15 +164,13 @@ Preferred communication style: Simple, everyday language.
 
 **Audio Processing**:
 - **Client**: Browser MediaRecorder produces WebM chunks (10s each)
-- **Server**: Uses fluent-ffmpeg library to convert WebM to WAV (16kHz mono PCM) before Whisper processing
-  - Includes error detection flags (`-err_detect ignore_err`) to handle malformed WebM chunks from MediaRecorder
-  - Security fix: Replaced unsafe shell command execution with fluent-ffmpeg library
-- **Rationale**: MediaRecorder timeslice chunks lack proper WebM headers; server-side conversion ensures compatibility
+- **Server**: Sends WebM files directly to Whisper API (no conversion needed)
+- **Rationale**: Whisper API natively supports WebM format and handles incomplete stream chunks gracefully
 
 **API Key Management**: Environment variable (`OPENAI_API_KEY`) for authentication
 
 **System Dependencies**:
-- **ffmpeg**: Required for audio format conversion (WebM → WAV)
+- None required (Whisper API handles WebM format natively)
 
 **Replit-Specific Dependencies**:
 - `@replit/vite-plugin-runtime-error-modal`: Development error overlay
