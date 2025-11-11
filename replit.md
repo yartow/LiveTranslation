@@ -92,9 +92,10 @@ Preferred communication style: Simple, everyday language.
    - Side-by-side with target language selector for clear UX
 3. **Speech-to-Text Transcription**: Real-time audio transcription using OpenAI Whisper
 4. **Text Correction**: Automatic removal of stutters, filler words, and verbal mistakes using GPT-4o
-5. **Multi-Language Translation**: Support for 14 languages with real-time translation
-   - Includes Dutch language support
+5. **Multi-Language Translation**: Support for 15 languages with real-time translation
+   - Includes Dutch and Farsi language support
    - Separate options for Simplified Chinese (zh) and Traditional Chinese (zh-TW)
+   - Right-to-left (RTL) text support for Arabic and Farsi
 6. **Mobile-Optimized UI**: Responsive design with thumb-reach accessibility
 7. **Dark Mode**: System preference detection with manual toggle
 8. **Error Handling**: Comprehensive error handling with user-friendly toast notifications
@@ -104,7 +105,7 @@ Preferred communication style: Simple, everyday language.
 
 ### API Endpoints
 - **POST /api/transcribe**: Accepts multipart/form-data with audio file, source language, and target language
-  - Input: Audio blob (WebM format) + sourceLanguage + targetLanguage (en, es, fr, de, nl, pt, it, zh, zh-TW, ar, hi, ru, ja, ko)
+  - Input: Audio blob (WebM format) + sourceLanguage + targetLanguage (en, es, fr, de, nl, pt, it, zh, zh-TW, ar, fa, hi, ru, ja, ko)
   - Processing Pipeline:
     1. Rename uploaded file to `.webm` extension
     2. Convert WebM to WAV using fluent-ffmpeg library (16kHz mono PCM) with error tolerance flags
@@ -117,11 +118,14 @@ Preferred communication style: Simple, everyday language.
 
 ### Component Architecture
 - **Header**: App title, theme toggle, sticky positioning
-- **LanguageSelector**: Shadcn select component with 14 language options (used for both source and target)
-  - Includes Dutch (nl) and separate Chinese variants (zh for Simplified, zh-TW for Traditional)
+- **LanguageSelector**: Shadcn select component with 15 language options (used for both source and target)
+  - Includes Dutch (nl), Farsi (fa), and separate Chinese variants (zh for Simplified, zh-TW for Traditional)
+  - Exports getLanguageRTL() helper function to determine text direction
 - **RecordButton**: Large circular FAB with recording/processing/idle states
 - **RecordingIndicator**: Animated badge showing active recording status
 - **TranscriptionDisplay**: Auto-scrolling text areas for original and translated content
+  - Supports right-to-left (RTL) text direction for Arabic and Farsi
+  - Automatically applies correct text direction based on selected language
 - **Home**: Main page orchestrating all components with simplified recording state management
   - MediaRecorder with built-in timeslice (10000ms) for automatic chunking
   - Event handlers: `ondataavailable` for chunk capture, `onstop` for finalization
@@ -157,7 +161,7 @@ Preferred communication style: Simple, everyday language.
 - Error correction prompt engineered to preserve sermon content meaning while improving readability
 - Startup validation ensures OPENAI_API_KEY is present before server starts
 
-**Supported Languages**: 14 languages including English, Spanish, French, German, Dutch, Portuguese, Italian, Chinese (Simplified), Chinese (Traditional), Arabic, Hindi, Russian, Japanese, Korean
+**Supported Languages**: 15 languages including English, Spanish, French, German, Dutch, Portuguese, Italian, Chinese (Simplified), Chinese (Traditional), Arabic, Farsi, Hindi, Russian, Japanese, Korean
 
 **Audio Processing**:
 - **Client**: Browser MediaRecorder produces WebM chunks (10s each)
