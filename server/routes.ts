@@ -25,6 +25,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
       const sourceLanguage = req.body.sourceLanguage || "en";
       const targetLanguage = req.body.targetLanguage || "en";
+      const detectSpeakers = req.body.detectSpeakers === 'true';
 
       webmFilePath = req.file.path + '.webm';
       mp3FilePath = req.file.path + '.mp3';
@@ -69,7 +70,8 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
       const { correctedText, translatedText } = await correctAndTranslateText(
         rawTranscript,
-        targetLanguage
+        targetLanguage,
+        detectSpeakers
       );
 
       if (webmFilePath && fs.existsSync(webmFilePath)) {
@@ -105,7 +107,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
   app.post("/api/retranslate", async (req, res) => {
     try {
-      const { originalText, targetLanguage } = req.body;
+      const { originalText, targetLanguage, detectSpeakers } = req.body;
 
       if (!originalText) {
         return res.status(400).json({ error: "No text provided" });
@@ -133,7 +135,8 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
       const { translatedText } = await correctAndTranslateText(
         originalText,
-        targetLanguage
+        targetLanguage,
+        detectSpeakers
       );
 
       res.json({ translatedText });

@@ -43,9 +43,9 @@
   --chart-3: 262 83% 58%;
   --chart-4: 32 95% 44%;
   --chart-5: 340 82% 52%;
-  --font-sans: Roboto, sans-serif;
+  --font-sans: "Avenir Next", -apple-system, BlinkMacSystemFont, sans-serif;
   --font-serif: Georgia, serif;
-  --font-mono: Roboto Mono, monospace;
+  --font-mono: "Avenir Next", monospace;
   --radius: .5rem;
   --shadow-2xs: 0px 2px 0px 0px hsl(0 0% 0% / 0.00);
   --shadow-xs: 0px 2px 0px 0px hsl(0 0% 0% / 0.00);
