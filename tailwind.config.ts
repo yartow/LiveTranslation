@@ -83,9 +83,9 @@ export default {
         },
       },
       fontFamily: {
-        sans: ["Roboto", "var(--font-sans)"],
+        sans: ["Avenir Next", "var(--font-sans)"],
         serif: ["var(--font-serif)"],
-        mono: ["Roboto Mono", "var(--font-mono)"],
+        mono: ["Avenir Next", "var(--font-mono)"],
       },
       keyframes: {
         "accordion-down": {

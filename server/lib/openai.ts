@@ -17,7 +17,8 @@ export async function transcribeAudio(audioFilePath: string, language: string = 
 
 export async function correctAndTranslateText(
   originalText: string,
-  targetLanguage: string
+  targetLanguage: string,
+  detectSpeakers: boolean = false
 ): Promise<{ correctedText: string; translatedText: string }> {
   const languageNames: Record<string, string> = {
     en: "English",
@@ -39,8 +40,15 @@ export async function correctAndTranslateText(
 
   const targetLanguageName = languageNames[targetLanguage] || "English";
 
+  const speakerInstructions = detectSpeakers
+    ? `
+4. Detect when different speakers are talking based on conversation patterns, topic changes, or speaking style differences
+5. Label each speaker's dialogue with "Speaker 1:", "Speaker 2:", etc. on separate lines
+6. Maintain speaker consistency throughout the text`
+    : '';
+
   const response = await openai.chat.completions.create({
-    model: "gpt-4o",
+    model: "gpt-4o-mini",
     messages: [
       {
         role: "system",
@@ -49,7 +57,7 @@ export async function correctAndTranslateText(
 Your tasks:
 1. Clean up the transcribed text by removing stutters, filler words (um, uh, like), and verbal mistakes while preserving the core meaning
 2. Translate the corrected text to ${targetLanguageName}
-3. Return JSON with this exact format: { "correctedText": "cleaned up original text", "translatedText": "translation in ${targetLanguageName}" }`,
+3. Return JSON with this exact format: { "correctedText": "cleaned up original text", "translatedText": "translation in ${targetLanguageName}" }${speakerInstructions}`,
       },
       {
         role: "user",

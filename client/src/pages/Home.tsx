@@ -4,6 +4,8 @@ import LanguageSelector, { getLanguageRTL } from '@/components/LanguageSelector'
 import RecordButton from '@/components/RecordButton';
 import RecordingIndicator from '@/components/RecordingIndicator';
 import TranscriptionDisplay from '@/components/TranscriptionDisplay';
+import { Checkbox } from '@/components/ui/checkbox';
+import { Label } from '@/components/ui/label';
 import { useToast } from '@/hooks/use-toast';
 
 interface TranscriptionSegment {
@@ -20,6 +22,7 @@ export default function Home() {
   const [translatedText, setTranslatedText] = useState('');
   const [isDark, setIsDark] = useState(false);
   const [isRetranslating, setIsRetranslating] = useState(false);
+  const [detectSpeakers, setDetectSpeakers] = useState(false);
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const streamRef = useRef<MediaStream | null>(null);
   const chunkQueueRef = useRef<Blob[]>([]);
@@ -27,6 +30,7 @@ export default function Home() {
   const transcriptionSegmentsRef = useRef<TranscriptionSegment[]>([]);
   const pendingRetranslationRef = useRef(false);
   const previousTargetLanguageRef = useRef(targetLanguage);
+  const previousDetectSpeakersRef = useRef(detectSpeakers);
   const { toast } = useToast();
 
   useEffect(() => {
@@ -43,14 +47,16 @@ export default function Home() {
   useEffect(() => {
     const retranslateAll = async () => {
       const languageChanged = targetLanguage !== previousTargetLanguageRef.current;
+      const speakerDetectionChanged = detectSpeakers !== previousDetectSpeakersRef.current;
       
-      if (!languageChanged && !pendingRetranslationRef.current) {
+      if (!languageChanged && !speakerDetectionChanged && !pendingRetranslationRef.current) {
         return;
       }
       
       if (transcriptionSegmentsRef.current.length === 0) {
         pendingRetranslationRef.current = false;
         previousTargetLanguageRef.current = targetLanguage;
+        previousDetectSpeakersRef.current = detectSpeakers;
         return;
       }
       
@@ -62,6 +68,7 @@ export default function Home() {
       const segmentCountBeforeTranslation = transcriptionSegmentsRef.current.length;
       pendingRetranslationRef.current = false;
       previousTargetLanguageRef.current = targetLanguage;
+      previousDetectSpeakersRef.current = detectSpeakers;
       setIsRetranslating(true);
       
       try {
@@ -74,7 +81,8 @@ export default function Home() {
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
             originalText: allOriginalText,
-            targetLanguage
+            targetLanguage,
+            detectSpeakers
           }),
         });
 
@@ -112,7 +120,7 @@ export default function Home() {
     };
 
     retranslateAll();
-  }, [targetLanguage, isProcessing, isRetranslating]);
+  }, [targetLanguage, detectSpeakers, isProcessing, isRetranslating]);
 
   const toggleTheme = () => {
     setIsDark(!isDark);
@@ -135,6 +143,7 @@ export default function Home() {
       formData.append('audio', audioBlob, 'recording.webm');
       formData.append('sourceLanguage', sourceLanguage);
       formData.append('targetLanguage', targetLanguage);
+      formData.append('detectSpeakers', String(detectSpeakers));
 
       const response = await fetch('/api/transcribe', {
         method: 'POST',
@@ -313,6 +322,22 @@ export default function Home() {
               label="Translate to"
               testId="select-target-language"
             />
+          </div>
+          
+          <div className="flex items-center space-x-2">
+            <Checkbox 
+              id="speaker-detection" 
+              checked={detectSpeakers}
+              onCheckedChange={(checked) => setDetectSpeakers(checked as boolean)}
+              disabled={isRecording}
+              data-testid="checkbox-speaker-detection"
+            />
+            <Label 
+              htmlFor="speaker-detection"
+              className="text-sm font-medium leading-none peer-disabled:cursor-not-allowed peer-disabled:opacity-70"
+            >
+              Detect different speakers
+            </Label>
           </div>
           
           <RecordButton
