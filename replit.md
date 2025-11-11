@@ -17,7 +17,7 @@ Preferred communication style: Simple, everyday language.
 **UI Component Library**: shadcn/ui (Radix UI primitives) with Tailwind CSS for styling
 
 **Design System**: Material Design principles adapted for mobile-first, content-focused usage
-- Typography: Roboto for primary text, Roboto Mono for technical indicators
+- Typography: Avenir Next for primary text, system monospace for technical indicators
 - Spacing: Tailwind utility classes with consistent 2/4/6/8 unit system
 - Layout: Full-width mobile container with sticky header and flexible content areas
 
@@ -91,8 +91,8 @@ Preferred communication style: Simple, everyday language.
    - Passed to Whisper API to improve recognition and reduce processing time
    - Side-by-side with target language selector for clear UX
 3. **Speech-to-Text Transcription**: Real-time audio transcription using OpenAI Whisper
-4. **Text Correction**: Automatic removal of stutters, filler words, and verbal mistakes using GPT-4o
-5. **Multi-Language Translation**: Support for 15 languages with real-time translation
+4. **Text Correction**: Automatic removal of stutters, filler words, and verbal mistakes using GPT-4o-mini (2-3x faster, 60-80% cheaper than GPT-4o)
+5. **Multi-Language Translation**: Support for 15 languages with real-time translation using GPT-4o-mini
    - Includes Dutch and Farsi language support
    - Separate options for Simplified Chinese (zh) and Traditional Chinese (zh-TW)
    - Right-to-left (RTL) text support for Arabic and Farsi
@@ -108,25 +108,31 @@ Preferred communication style: Simple, everyday language.
    - Monotonic UI updates - translation never regresses to stale snapshots
    - Re-translation queues automatically when processing completes
    - Full transcript rebuilt from cached segments for smooth UX
+12. **Speaker Detection**: Optional feature to identify and label different speakers
+   - Checkbox toggle to enable/disable speaker detection
+   - Uses GPT-4o-mini conversation pattern analysis (not dedicated diarization service)
+   - Labels speakers incrementally as "Speaker 1:", "Speaker 2:", etc.
+   - Retranslates all existing segments when toggled on/off for consistency
+   - Disabled during active recording to prevent mid-session configuration changes
 
 ### API Endpoints
-- **POST /api/transcribe**: Accepts multipart/form-data with audio file, source language, and target language
-  - Input: Audio blob (WebM format) + sourceLanguage + targetLanguage (en, es, fr, de, nl, pt, it, zh, zh-TW, ar, fa, hi, ru, ja, ko)
+- **POST /api/transcribe**: Accepts multipart/form-data with audio file, source language, target language, and speaker detection flag
+  - Input: Audio blob (WebM format) + sourceLanguage + targetLanguage (en, es, fr, de, nl, pt, it, zh, zh-TW, ar, fa, hi, ru, ja, ko) + detectSpeakers (boolean)
   - Processing Pipeline:
     1. Rename uploaded file to `.webm` extension
-    2. Convert WebM to MP3 (16kHz mono) using fluent-ffmpeg
+    2. Convert WebM to MP3 (16kHz mono) using fluent-ffmpeg with lenient error flags (-err_detect ignore_err)
     3. Send MP3 to Whisper API with specified source language
-    4. Correct transcription with GPT-4o
-    5. Translate corrected text to target language with GPT-4o
+    4. Correct transcription with GPT-4o-mini (optionally detecting speakers if flag enabled)
+    5. Translate corrected text to target language with GPT-4o-mini
     6. Clean up temporary WebM and MP3 files
   - Output: JSON with correctedText (original) and translatedText
   - Error handling: Returns 400 for missing files, 500 with details for processing/conversion errors
 
-- **POST /api/retranslate**: Re-translates existing transcription text to new target language
-  - Input: JSON with originalText + targetLanguage
-  - Processing: Translates full text to new language using GPT-4o
+- **POST /api/retranslate**: Re-translates existing transcription text to new target language and/or speaker detection setting
+  - Input: JSON with originalText + targetLanguage + detectSpeakers
+  - Processing: Translates full text to new language using GPT-4o-mini (with optional speaker detection)
   - Output: JSON with translatedText
-  - Used when user changes target language during recording
+  - Used when user changes target language or toggles speaker detection during/after recording
 
 ### Component Architecture
 - **Header**: App title, theme toggle, sticky positioning
@@ -172,10 +178,12 @@ Preferred communication style: Simple, everyday language.
   - Accepts MP3 format (16kHz mono) converted from WebM chunks using fluent-ffmpeg
   - Source language parameter improves accuracy and reduces processing time
   - Handles incomplete stream chunks gracefully (MediaRecorder chunks lack proper EBML headers)
-- **GPT-4o Chat Completions**: Performs text processing:
+- **GPT-4o-mini Chat Completions**: Performs text processing (2-3x faster and 60-80% cheaper than GPT-4o):
   1. Cleans transcription by removing stutters, filler words, and verbal mistakes
-  2. Translates corrected text to target language (both initial and re-translation)
+  2. Optionally detects and labels different speakers based on conversation patterns ("Speaker 1:", "Speaker 2:", etc.)
+  3. Translates corrected text to target language (both initial and re-translation)
 - Error correction prompt engineered to preserve sermon content meaning while improving readability
+- Speaker detection uses conversation pattern analysis without dedicated diarization service
 - Startup validation ensures OPENAI_API_KEY is present before server starts
 
 **Supported Languages**: 15 languages including English, Spanish, French, German, Dutch, Portuguese, Italian, Chinese (Simplified), Chinese (Traditional), Arabic, Farsi, Hindi, Russian, Japanese, Korean
