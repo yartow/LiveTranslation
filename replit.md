@@ -32,11 +32,11 @@ Preferred communication style: Simple, everyday language.
 - Mobile-first responsive design with thumb-reach accessibility
 - Dark/light theme support with system preference detection and localStorage persistence
 - Continuous audio recording using browser MediaRecorder API with:
-  - Built-in 10-second timeslice parameter for automatic chunk generation
+  - Built-in 5-second timeslice parameter for automatic chunk generation (faster live text appearance)
   - Simple event handlers (ondataavailable, onstop) without manual stop/restart logic
   - Optimized audio settings (echo cancellation, noise suppression, 44.1kHz sample rate)
   - Queue-based sequential processing to prevent chunk loss during API calls
-  - Server-side ffmpeg conversion from WebM to WAV for Whisper API compatibility
+  - Server-side ffmpeg conversion from WebM to MP3 for Whisper API compatibility (handles incomplete chunks)
 
 ### Backend Architecture
 
@@ -51,10 +51,10 @@ Preferred communication style: Simple, everyday language.
 - Automatic cleanup after processing
 
 **Audio Processing Pipeline**:
-- Accepts WebM chunks from browser MediaRecorder
-- Uses ffmpeg to convert WebM to WAV format (16kHz mono PCM)
-- WAV files are Whisper-compatible and ensure reliable transcription
-- Temporary files (both WebM and WAV) are cleaned up immediately after processing
+- Accepts WebM chunks from browser MediaRecorder (incomplete chunks lack proper EBML headers)
+- Uses fluent-ffmpeg library to convert WebM to MP3 format (16kHz mono)
+- MP3 files are Whisper-compatible and handle incomplete stream chunks gracefully
+- Temporary files (both WebM and MP3) are cleaned up immediately after processing
 
 **Key Design Decisions**:
 - Express middleware for request logging and JSON parsing with raw body capture
@@ -80,12 +80,12 @@ Preferred communication style: Simple, everyday language.
 ## Implementation Status (Last Updated: November 11, 2025)
 
 ### Completed Features ✓
-1. **Continuous Live Transcription**: Audio is automatically processed every 10 seconds while recording
-   - MediaRecorder's built-in timeslice (10000ms) automatically generates chunks
+1. **Continuous Live Transcription**: Audio is automatically processed every 5 seconds while recording
+   - MediaRecorder's built-in timeslice (5000ms) automatically generates chunks for faster live text
    - Simple event-driven architecture with ondataavailable handler
    - Queue-based chunk processing ensures sequential, in-order transcription
-   - Server-side ffmpeg conversion from WebM to WAV ensures Whisper API compatibility
-   - Transcriptions appear in real-time as they're processed
+   - Server-side ffmpeg conversion from WebM to MP3 handles incomplete chunk headers
+   - Transcriptions appear in real-time as they're processed (5s latency)
 2. **Source Language Selection**: Users can specify the source language for better transcription accuracy
    - Dropdown selector with all 12 supported languages
    - Passed to Whisper API to improve recognition and reduce processing time
@@ -100,20 +100,33 @@ Preferred communication style: Simple, everyday language.
 7. **Dark Mode**: System preference detection with manual toggle
 8. **Error Handling**: Comprehensive error handling with user-friendly toast notifications
    - Explicit messaging when OpenAI API credits are insufficient
-9. **File Management**: Automatic cleanup of temporary audio files (both WebM and WAV) after processing
+9. **File Management**: Automatic cleanup of temporary audio files (both WebM and MP3) after processing
 10. **Session Management**: Prevents starting new recordings while previous chunks are processing
+11. **Live Re-translation**: Change target language during recording with automatic re-translation
+   - Target language selector enabled during active recording
+   - Segment-based caching prevents race conditions when new chunks arrive
+   - Monotonic UI updates - translation never regresses to stale snapshots
+   - Re-translation queues automatically when processing completes
+   - Full transcript rebuilt from cached segments for smooth UX
 
 ### API Endpoints
 - **POST /api/transcribe**: Accepts multipart/form-data with audio file, source language, and target language
   - Input: Audio blob (WebM format) + sourceLanguage + targetLanguage (en, es, fr, de, nl, pt, it, zh, zh-TW, ar, fa, hi, ru, ja, ko)
   - Processing Pipeline:
     1. Rename uploaded file to `.webm` extension
-    2. Send WebM directly to Whisper API with specified source language
-    3. Correct transcription with GPT-4o
-    4. Translate corrected text to target language with GPT-4o
-    5. Clean up temporary WebM file
+    2. Convert WebM to MP3 (16kHz mono) using fluent-ffmpeg
+    3. Send MP3 to Whisper API with specified source language
+    4. Correct transcription with GPT-4o
+    5. Translate corrected text to target language with GPT-4o
+    6. Clean up temporary WebM and MP3 files
   - Output: JSON with correctedText (original) and translatedText
   - Error handling: Returns 400 for missing files, 500 with details for processing/conversion errors
+
+- **POST /api/retranslate**: Re-translates existing transcription text to new target language
+  - Input: JSON with originalText + targetLanguage
+  - Processing: Translates full text to new language using GPT-4o
+  - Output: JSON with translatedText
+  - Used when user changes target language during recording
 
 ### Component Architecture
 - **Header**: App title, theme toggle, sticky positioning
@@ -126,10 +139,14 @@ Preferred communication style: Simple, everyday language.
   - Supports right-to-left (RTL) text direction for Arabic and Farsi
   - Automatically applies correct text direction based on selected language
 - **Home**: Main page orchestrating all components with simplified recording state management
-  - MediaRecorder with built-in timeslice (10000ms) for automatic chunking
+  - MediaRecorder with built-in timeslice (5000ms) for automatic chunking
   - Event handlers: `ondataavailable` for chunk capture, `onstop` for finalization
   - Queue-based chunk processing with `chunkQueueRef` and `isProcessingQueueRef`
   - Sequential API calls via `processNextChunk()` and `enqueueAudioChunk()`
+  - Segment-based caching in `transcriptionSegmentsRef` for re-translation support
+  - Live re-translation when target language changes (gates on isProcessing and isRetranslating)
+  - Monotonic translation updates - rebuilds UI from all segments to prevent regression
+  - Race condition handling - tracks segment count and queues re-translation if new chunks arrive
   - Graceful completion waiting for queue to drain before notifying user
   - No manual stop/restart logic - relies on MediaRecorder's automatic timeslice behavior
 
@@ -152,25 +169,26 @@ Preferred communication style: Simple, everyday language.
 
 **OpenAI API Integration**:
 - **Whisper API** (audio.transcriptions.create): Converts recorded audio to text in specified source language
-  - Accepts WAV format (16kHz mono PCM) converted from WebM chunks
+  - Accepts MP3 format (16kHz mono) converted from WebM chunks using fluent-ffmpeg
   - Source language parameter improves accuracy and reduces processing time
-- **GPT-4o Chat Completions**: Performs two-step text processing:
+  - Handles incomplete stream chunks gracefully (MediaRecorder chunks lack proper EBML headers)
+- **GPT-4o Chat Completions**: Performs text processing:
   1. Cleans transcription by removing stutters, filler words, and verbal mistakes
-  2. Translates corrected text to target language
+  2. Translates corrected text to target language (both initial and re-translation)
 - Error correction prompt engineered to preserve sermon content meaning while improving readability
 - Startup validation ensures OPENAI_API_KEY is present before server starts
 
 **Supported Languages**: 15 languages including English, Spanish, French, German, Dutch, Portuguese, Italian, Chinese (Simplified), Chinese (Traditional), Arabic, Farsi, Hindi, Russian, Japanese, Korean
 
 **Audio Processing**:
-- **Client**: Browser MediaRecorder produces WebM chunks (10s each)
-- **Server**: Sends WebM files directly to Whisper API (no conversion needed)
-- **Rationale**: Whisper API natively supports WebM format and handles incomplete stream chunks gracefully
+- **Client**: Browser MediaRecorder produces WebM chunks (5s each)
+- **Server**: Converts WebM to MP3 using fluent-ffmpeg before sending to Whisper API
+- **Rationale**: MediaRecorder chunks lack proper EBML headers after first chunk; MP3 conversion ensures compatibility
 
 **API Key Management**: Environment variable (`OPENAI_API_KEY`) for authentication
 
 **System Dependencies**:
-- None required (Whisper API handles WebM format natively)
+- fluent-ffmpeg: Node.js library for WebM to MP3 audio conversion (handles incomplete chunk headers)
 
 **Replit-Specific Dependencies**:
 - `@replit/vite-plugin-runtime-error-modal`: Development error overlay
