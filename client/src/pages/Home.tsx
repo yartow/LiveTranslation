@@ -6,6 +6,11 @@ import RecordingIndicator from '@/components/RecordingIndicator';
 import TranscriptionDisplay from '@/components/TranscriptionDisplay';
 import { useToast } from '@/hooks/use-toast';
 
+interface TranscriptionSegment {
+  original: string;
+  translated: string;
+}
+
 export default function Home() {
   const [sourceLanguage, setSourceLanguage] = useState('en');
   const [targetLanguage, setTargetLanguage] = useState('es');
@@ -14,10 +19,14 @@ export default function Home() {
   const [originalText, setOriginalText] = useState('');
   const [translatedText, setTranslatedText] = useState('');
   const [isDark, setIsDark] = useState(false);
+  const [isRetranslating, setIsRetranslating] = useState(false);
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const streamRef = useRef<MediaStream | null>(null);
   const chunkQueueRef = useRef<Blob[]>([]);
   const isProcessingQueueRef = useRef(false);
+  const transcriptionSegmentsRef = useRef<TranscriptionSegment[]>([]);
+  const pendingRetranslationRef = useRef(false);
+  const previousTargetLanguageRef = useRef(targetLanguage);
   const { toast } = useToast();
 
   useEffect(() => {
@@ -30,6 +39,80 @@ export default function Home() {
       document.documentElement.classList.add('dark');
     }
   }, []);
+
+  useEffect(() => {
+    const retranslateAll = async () => {
+      const languageChanged = targetLanguage !== previousTargetLanguageRef.current;
+      
+      if (!languageChanged && !pendingRetranslationRef.current) {
+        return;
+      }
+      
+      if (transcriptionSegmentsRef.current.length === 0) {
+        pendingRetranslationRef.current = false;
+        previousTargetLanguageRef.current = targetLanguage;
+        return;
+      }
+      
+      if (isProcessing || isRetranslating) {
+        pendingRetranslationRef.current = true;
+        return;
+      }
+
+      const segmentCountBeforeTranslation = transcriptionSegmentsRef.current.length;
+      pendingRetranslationRef.current = false;
+      previousTargetLanguageRef.current = targetLanguage;
+      setIsRetranslating(true);
+      
+      try {
+        const allOriginalText = transcriptionSegmentsRef.current
+          .map(seg => seg.original)
+          .join('\n\n');
+
+        const response = await fetch('/api/retranslate', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            originalText: allOriginalText,
+            targetLanguage
+          }),
+        });
+
+        if (!response.ok) {
+          throw new Error('Re-translation failed');
+        }
+
+        const data = await response.json();
+        
+        const newSegments = data.translatedText.split('\n\n');
+        transcriptionSegmentsRef.current.slice(0, segmentCountBeforeTranslation).forEach((seg, i) => {
+          if (newSegments[i]) {
+            seg.translated = newSegments[i];
+          }
+        });
+        
+        const rebuiltTranslation = transcriptionSegmentsRef.current
+          .map(seg => seg.translated)
+          .join('\n\n');
+        setTranslatedText(rebuiltTranslation);
+        
+        if (transcriptionSegmentsRef.current.length > segmentCountBeforeTranslation) {
+          pendingRetranslationRef.current = true;
+        }
+      } catch (error) {
+        console.error('Re-translation error:', error);
+        toast({
+          title: "Re-translation failed",
+          description: "Could not translate to the new language.",
+          variant: "destructive",
+        });
+      } finally {
+        setIsRetranslating(false);
+      }
+    };
+
+    retranslateAll();
+  }, [targetLanguage, isProcessing, isRetranslating]);
 
   const toggleTheme = () => {
     setIsDark(!isDark);
@@ -64,6 +147,11 @@ export default function Home() {
       }
 
       const data = await response.json();
+      
+      transcriptionSegmentsRef.current.push({
+        original: data.originalText,
+        translated: data.translatedText
+      });
       
       setOriginalText(prev => prev + (prev ? '\n\n' : '') + data.originalText);
       setTranslatedText(prev => prev + (prev ? '\n\n' : '') + data.translatedText);
@@ -132,6 +220,7 @@ export default function Home() {
       setOriginalText('');
       setTranslatedText('');
       chunkQueueRef.current = [];
+      transcriptionSegmentsRef.current = [];
       
       const stream = await navigator.mediaDevices.getUserMedia({ 
         audio: {
@@ -159,12 +248,12 @@ export default function Home() {
         finalizeRecording();
       };
       
-      mediaRecorder.start(10000);
+      mediaRecorder.start(5000);
       setIsRecording(true);
       
       toast({
         title: "Recording started",
-        description: "Audio will be transcribed every 10 seconds while you speak.",
+        description: "Audio will be transcribed every 5 seconds while you speak.",
       });
     } catch (error) {
       console.error('Error accessing microphone:', error);
@@ -220,7 +309,7 @@ export default function Home() {
             <LanguageSelector
               value={targetLanguage}
               onChange={setTargetLanguage}
-              disabled={isRecording}
+              disabled={false}
               label="Translate to"
               testId="select-target-language"
             />
@@ -245,7 +334,7 @@ export default function Home() {
           
           <div className="flex-1 bg-card rounded-lg mx-4 mb-6 min-h-0 border border-card-border">
             <TranscriptionDisplay
-              title="Translation"
+              title={isRetranslating ? "Translation (updating...)" : "Translation"}
               text={translatedText}
               testId="text-translation"
               isRTL={getLanguageRTL(targetLanguage)}
