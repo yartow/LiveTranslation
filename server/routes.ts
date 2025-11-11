@@ -40,6 +40,10 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
       await new Promise<void>((resolve, reject) => {
         ffmpeg(webmFilePath!)
+          .inputOptions([
+            '-f', 'webm',
+            '-err_detect', 'ignore_err'
+          ])
           .toFormat('mp3')
           .audioCodec('libmp3lame')
           .audioBitrate('128k')
