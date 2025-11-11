@@ -4,9 +4,10 @@ interface TranscriptionDisplayProps {
   title: string;
   text: string;
   testId?: string;
+  isRTL?: boolean;
 }
 
-export default function TranscriptionDisplay({ title, text, testId }: TranscriptionDisplayProps) {
+export default function TranscriptionDisplay({ title, text, testId, isRTL = false }: TranscriptionDisplayProps) {
   const scrollRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -24,6 +25,7 @@ export default function TranscriptionDisplay({ title, text, testId }: Transcript
         ref={scrollRef}
         className="flex-1 overflow-y-auto px-6 pb-6 scrollbar-thin"
         data-testid={testId}
+        dir={isRTL ? 'rtl' : 'ltr'}
       >
         {text ? (
           <p className="text-lg leading-relaxed text-foreground whitespace-pre-wrap">

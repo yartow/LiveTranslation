@@ -32,21 +32,41 @@ export async function registerRoutes(app: Express): Promise<Server> {
       
       fs.renameSync(req.file.path, webmFilePath);
 
+      const fileStats = fs.statSync(webmFilePath);
+      console.log(`Processing audio file: ${fileStats.size} bytes`);
+
+      if (fileStats.size === 0) {
+        throw new Error('Audio file is empty');
+      }
+
       await new Promise<void>((resolve, reject) => {
         ffmpeg(webmFilePath!)
           .inputOptions([
             '-f', 'webm',
-            '-err_detect', 'ignore_err'
+            '-fflags', '+genpts+igndts',
+            '-err_detect', 'ignore_err',
+            '-use_wallclock_as_timestamps', '1'
           ])
           .audioFrequency(16000)
           .audioChannels(1)
           .audioCodec('pcm_s16le')
           .format('wav')
           .outputOptions([
-            '-loglevel', 'error'
+            '-loglevel', 'warning',
+            '-y'
           ])
-          .on('end', () => resolve())
-          .on('error', (err) => reject(err))
+          .on('start', (cmd) => {
+            console.log('FFmpeg command:', cmd);
+          })
+          .on('end', () => {
+            console.log('FFmpeg conversion completed');
+            resolve();
+          })
+          .on('error', (err, stdout, stderr) => {
+            console.error('FFmpeg error:', err.message);
+            console.error('FFmpeg stderr:', stderr);
+            reject(err);
+          })
           .save(wavFilePath!);
       });
 

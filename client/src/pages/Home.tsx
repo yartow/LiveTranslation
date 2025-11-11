@@ -1,6 +1,6 @@
 import { useState, useRef, useEffect } from 'react';
 import Header from '@/components/Header';
-import LanguageSelector from '@/components/LanguageSelector';
+import LanguageSelector, { getLanguageRTL } from '@/components/LanguageSelector';
 import RecordButton from '@/components/RecordButton';
 import RecordingIndicator from '@/components/RecordingIndicator';
 import TranscriptionDisplay from '@/components/TranscriptionDisplay';
@@ -239,6 +239,7 @@ export default function Home() {
               title="Original"
               text={originalText}
               testId="text-original"
+              isRTL={getLanguageRTL(sourceLanguage)}
             />
           </div>
           
@@ -247,6 +248,7 @@ export default function Home() {
               title="Translation"
               text={translatedText}
               testId="text-translation"
+              isRTL={getLanguageRTL(targetLanguage)}
             />
           </div>
         </div>

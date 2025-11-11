@@ -9,21 +9,27 @@ interface LanguageSelectorProps {
 }
 
 const LANGUAGES = [
-  { code: 'en', name: 'English' },
-  { code: 'es', name: 'Spanish' },
-  { code: 'fr', name: 'French' },
-  { code: 'de', name: 'German' },
-  { code: 'nl', name: 'Dutch' },
-  { code: 'pt', name: 'Portuguese' },
-  { code: 'it', name: 'Italian' },
-  { code: 'zh', name: 'Chinese (Simplified)' },
-  { code: 'zh-TW', name: 'Chinese (Traditional)' },
-  { code: 'ar', name: 'Arabic' },
-  { code: 'hi', name: 'Hindi' },
-  { code: 'ru', name: 'Russian' },
-  { code: 'ja', name: 'Japanese' },
-  { code: 'ko', name: 'Korean' },
+  { code: 'en', name: 'English', rtl: false },
+  { code: 'es', name: 'Spanish', rtl: false },
+  { code: 'fr', name: 'French', rtl: false },
+  { code: 'de', name: 'German', rtl: false },
+  { code: 'nl', name: 'Dutch', rtl: false },
+  { code: 'pt', name: 'Portuguese', rtl: false },
+  { code: 'it', name: 'Italian', rtl: false },
+  { code: 'zh', name: 'Chinese (Simplified)', rtl: false },
+  { code: 'zh-TW', name: 'Chinese (Traditional)', rtl: false },
+  { code: 'ar', name: 'Arabic', rtl: true },
+  { code: 'fa', name: 'Farsi', rtl: true },
+  { code: 'hi', name: 'Hindi', rtl: false },
+  { code: 'ru', name: 'Russian', rtl: false },
+  { code: 'ja', name: 'Japanese', rtl: false },
+  { code: 'ko', name: 'Korean', rtl: false },
 ];
+
+export function getLanguageRTL(code: string): boolean {
+  const lang = LANGUAGES.find(l => l.code === code);
+  return lang?.rtl || false;
+}
 
 export default function LanguageSelector({ 
   value, 
