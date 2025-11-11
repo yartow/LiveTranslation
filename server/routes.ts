@@ -34,10 +34,17 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
       await new Promise<void>((resolve, reject) => {
         ffmpeg(webmFilePath!)
+          .inputOptions([
+            '-f', 'webm',
+            '-err_detect', 'ignore_err'
+          ])
           .audioFrequency(16000)
           .audioChannels(1)
           .audioCodec('pcm_s16le')
           .format('wav')
+          .outputOptions([
+            '-loglevel', 'error'
+          ])
           .on('end', () => resolve())
           .on('error', (err) => reject(err))
           .save(wavFilePath!);
