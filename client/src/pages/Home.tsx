@@ -31,6 +31,7 @@ export default function Home() {
   const pendingRetranslationRef = useRef(false);
   const previousTargetLanguageRef = useRef(targetLanguage);
   const previousDetectSpeakersRef = useRef(detectSpeakers);
+  const isRecordingRef = useRef(false);
   const { toast } = useToast();
 
   useEffect(() => {
@@ -215,6 +216,42 @@ export default function Home() {
     }, 500);
   };
 
+  const restartRecordingCycle = () => {
+    if (!isRecordingRef.current || !streamRef.current) {
+      return;
+    }
+
+    const mediaRecorder = new MediaRecorder(streamRef.current, {
+      mimeType: 'audio/webm',
+    });
+
+    mediaRecorderRef.current = mediaRecorder;
+
+    mediaRecorder.ondataavailable = (event: BlobEvent) => {
+      if (event.data.size > 0) {
+        enqueueAudioChunk(event.data);
+      }
+      
+      if (isRecordingRef.current) {
+        setTimeout(() => restartRecordingCycle(), 100);
+      }
+    };
+
+    mediaRecorder.onstop = () => {
+      if (!isRecordingRef.current) {
+        finalizeRecording();
+      }
+    };
+
+    mediaRecorder.start();
+    
+    setTimeout(() => {
+      if (mediaRecorderRef.current && mediaRecorderRef.current.state === 'recording') {
+        mediaRecorderRef.current.stop();
+      }
+    }, 5000);
+  };
+
   const startRecording = async () => {
     if (chunkQueueRef.current.length > 0 || isProcessingQueueRef.current) {
       toast({
@@ -240,6 +277,8 @@ export default function Home() {
       });
       
       streamRef.current = stream;
+      isRecordingRef.current = true;
+      setIsRecording(true);
       
       const mediaRecorder = new MediaRecorder(stream, {
         mimeType: 'audio/webm',
@@ -251,14 +290,25 @@ export default function Home() {
         if (event.data.size > 0) {
           enqueueAudioChunk(event.data);
         }
+        
+        if (isRecordingRef.current) {
+          setTimeout(() => restartRecordingCycle(), 100);
+        }
       };
       
       mediaRecorder.onstop = () => {
-        finalizeRecording();
+        if (!isRecordingRef.current) {
+          finalizeRecording();
+        }
       };
       
-      mediaRecorder.start(5000);
-      setIsRecording(true);
+      mediaRecorder.start();
+      
+      setTimeout(() => {
+        if (mediaRecorderRef.current && mediaRecorderRef.current.state === 'recording') {
+          mediaRecorderRef.current.stop();
+        }
+      }, 5000);
       
       toast({
         title: "Recording started",
@@ -277,6 +327,7 @@ export default function Home() {
   const stopRecording = () => {
     if (!isRecording) return;
     
+    isRecordingRef.current = false;
     setIsRecording(false);
 
     if (mediaRecorderRef.current && mediaRecorderRef.current.state !== 'inactive') {

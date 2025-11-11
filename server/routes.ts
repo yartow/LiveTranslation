@@ -4,6 +4,7 @@ import { storage } from "./storage";
 import multer from "multer";
 import { transcribeAudio, correctAndTranslateText } from "./lib/openai";
 import fs from "fs";
+import ffmpeg from "fluent-ffmpeg";
 
 const upload = multer({
   dest: "/tmp/uploads/",
@@ -15,6 +16,7 @@ const upload = multer({
 export async function registerRoutes(app: Express): Promise<Server> {
   app.post("/api/transcribe", upload.single("audio"), async (req, res) => {
     let webmFilePath: string | null = null;
+    let mp3FilePath: string | null = null;
     
     try {
       if (!req.file) {
@@ -26,6 +28,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
       const detectSpeakers = req.body.detectSpeakers === 'true';
 
       webmFilePath = req.file.path + '.webm';
+      mp3FilePath = req.file.path + '.mp3';
       
       fs.renameSync(req.file.path, webmFilePath);
 
@@ -36,7 +39,39 @@ export async function registerRoutes(app: Express): Promise<Server> {
         throw new Error('Audio file is empty');
       }
 
-      const rawTranscript = await transcribeAudio(webmFilePath, sourceLanguage);
+      // Convert WebM to MP3 with aggressive error handling for incomplete chunks
+      await new Promise<void>((resolve, reject) => {
+        ffmpeg(webmFilePath!)
+          .inputFormat('webm')
+          .inputOptions([
+            '-err_detect', 'ignore_err',
+            '-fflags', '+genpts+igndts+ignidx+discardcorrupt',
+            '-analyzeduration', '0',
+            '-probesize', '32',
+            '-max_error_rate', '1.0'
+          ])
+          .toFormat('mp3')
+          .audioCodec('libmp3lame')
+          .audioBitrate('128k')
+          .audioChannels(1)
+          .audioFrequency(16000)
+          .outputOptions([
+            '-write_xing', '0',
+            '-id3v2_version', '0'
+          ])
+          .on('end', () => {
+            console.log('Audio conversion completed');
+            resolve();
+          })
+          .on('error', (err, stdout, stderr) => {
+            console.error('FFmpeg conversion failed:', err.message);
+            console.error('FFmpeg stderr:', stderr);
+            reject(new Error(`Audio conversion failed: ${err.message}`));
+          })
+          .save(mp3FilePath!);
+      });
+
+      const rawTranscript = await transcribeAudio(mp3FilePath, sourceLanguage);
 
       const { correctedText, translatedText } = await correctAndTranslateText(
         rawTranscript,
@@ -44,8 +79,12 @@ export async function registerRoutes(app: Express): Promise<Server> {
         detectSpeakers
       );
 
+      // Clean up temporary files
       if (webmFilePath && fs.existsSync(webmFilePath)) {
         fs.unlinkSync(webmFilePath);
+      }
+      if (mp3FilePath && fs.existsSync(mp3FilePath)) {
+        fs.unlinkSync(mp3FilePath);
       }
 
       res.json({
@@ -55,8 +94,12 @@ export async function registerRoutes(app: Express): Promise<Server> {
     } catch (error) {
       console.error("Transcription error:", error);
       
+      // Clean up temporary files on error
       if (webmFilePath && fs.existsSync(webmFilePath)) {
         fs.unlinkSync(webmFilePath);
+      }
+      if (mp3FilePath && fs.existsSync(mp3FilePath)) {
+        fs.unlinkSync(mp3FilePath);
       }
       if (req.file?.path && fs.existsSync(req.file.path)) {
         fs.unlinkSync(req.file.path);
