@@ -6,6 +6,9 @@ import RecordingIndicator from '@/components/RecordingIndicator';
 import TranscriptionDisplay from '@/components/TranscriptionDisplay';
 import { Checkbox } from '@/components/ui/checkbox';
 import { Label } from '@/components/ui/label';
+import { Button } from '@/components/ui/button';
+import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/components/ui/collapsible';
+import { ChevronDown, ChevronUp } from 'lucide-react';
 import { useToast } from '@/hooks/use-toast';
 
 interface TranscriptionSegment {
@@ -23,6 +26,7 @@ export default function Home() {
   const [isDark, setIsDark] = useState(false);
   const [isRetranslating, setIsRetranslating] = useState(false);
   const [detectSpeakers, setDetectSpeakers] = useState(false);
+  const [isConfigOpen, setIsConfigOpen] = useState(true);
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const streamRef = useRef<MediaStream | null>(null);
   const chunkQueueRef = useRef<Blob[]>([]);
@@ -32,6 +36,7 @@ export default function Home() {
   const previousTargetLanguageRef = useRef(targetLanguage);
   const previousDetectSpeakersRef = useRef(detectSpeakers);
   const isRecordingRef = useRef(false);
+  const lastRetroactiveCorrectionSentenceCountRef = useRef(0);
   const { toast } = useToast();
 
   useEffect(() => {
@@ -75,7 +80,7 @@ export default function Home() {
       try {
         const allOriginalText = transcriptionSegmentsRef.current
           .map(seg => seg.original)
-          .join('\n\n');
+          .join(' ');
 
         const response = await fetch('/api/retranslate', {
           method: 'POST',
@@ -93,21 +98,13 @@ export default function Home() {
 
         const data = await response.json();
         
-        const newSegments = data.translatedText.split('\n\n');
-        transcriptionSegmentsRef.current.slice(0, segmentCountBeforeTranslation).forEach((seg, i) => {
-          if (newSegments[i]) {
-            seg.translated = newSegments[i];
-          }
-        });
+        transcriptionSegmentsRef.current = [{
+          original: allOriginalText,
+          translated: data.translatedText,
+        }];
         
-        const rebuiltTranslation = transcriptionSegmentsRef.current
-          .map(seg => seg.translated)
-          .join('\n\n');
-        setTranslatedText(rebuiltTranslation);
-        
-        if (transcriptionSegmentsRef.current.length > segmentCountBeforeTranslation) {
-          pendingRetranslationRef.current = true;
-        }
+        setOriginalText(allOriginalText);
+        setTranslatedText(data.translatedText);
       } catch (error) {
         console.error('Re-translation error:', error);
         toast({
@@ -127,6 +124,55 @@ export default function Home() {
     setIsDark(!isDark);
     document.documentElement.classList.toggle('dark');
     localStorage.setItem('theme', !isDark ? 'dark' : 'light');
+  };
+
+  const countSentences = (text: string): number => {
+    if (!text.trim()) return 0;
+    const sentences = text.match(/[.!?]+/g);
+    return sentences ? sentences.length : 0;
+  };
+
+  const performRetroactiveCorrection = async () => {
+    if (transcriptionSegmentsRef.current.length === 0) return;
+
+    const allOriginalText = transcriptionSegmentsRef.current
+      .map(seg => seg.original)
+      .join(' ');
+
+    try {
+      const response = await fetch('/api/retroactive-correct', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          accumulatedText: allOriginalText,
+          targetLanguage,
+          detectSpeakers,
+        }),
+      });
+
+      if (!response.ok) {
+        throw new Error('Retroactive correction failed');
+      }
+
+      const data = await response.json();
+      
+      transcriptionSegmentsRef.current = [{
+        original: data.correctedText,
+        translated: data.translatedText,
+      }];
+
+      setOriginalText(data.correctedText);
+      setTranslatedText(data.translatedText);
+    } catch (error) {
+      console.error('Retroactive correction error:', error);
+      toast({
+        title: "Retroactive correction failed",
+        description: "Could not perform coherence check and grammar correction.",
+        variant: "destructive",
+      });
+    }
   };
 
   const processNextChunk = async () => {
@@ -163,8 +209,19 @@ export default function Home() {
         translated: data.translatedText
       });
       
-      setOriginalText(prev => prev + (prev ? '\n\n' : '') + data.originalText);
-      setTranslatedText(prev => prev + (prev ? '\n\n' : '') + data.translatedText);
+      setOriginalText(prev => prev + (prev ? ' ' : '') + data.originalText);
+      setTranslatedText(prev => prev + (prev ? ' ' : '') + data.translatedText);
+
+      const allOriginalText = transcriptionSegmentsRef.current
+        .map(seg => seg.original)
+        .join(' ');
+      const totalSentences = countSentences(allOriginalText);
+      
+      if (totalSentences >= 5 && 
+          Math.floor(totalSentences / 5) > Math.floor(lastRetroactiveCorrectionSentenceCountRef.current / 5)) {
+        lastRetroactiveCorrectionSentenceCountRef.current = totalSentences;
+        await performRetroactiveCorrection();
+      }
     } catch (error) {
       console.error('Transcription error:', error);
       toast({
@@ -267,6 +324,7 @@ export default function Home() {
       setTranslatedText('');
       chunkQueueRef.current = [];
       transcriptionSegmentsRef.current = [];
+      lastRetroactiveCorrectionSentenceCountRef.current = 0;
       
       const stream = await navigator.mediaDevices.getUserMedia({ 
         audio: {
@@ -358,38 +416,56 @@ export default function Home() {
         <RecordingIndicator isRecording={isRecording} />
         
         <div className="p-4 space-y-4 bg-background border-b border-border">
-          <div className="grid grid-cols-2 gap-4">
-            <LanguageSelector
-              value={sourceLanguage}
-              onChange={setSourceLanguage}
-              disabled={isRecording}
-              label="Speaking in"
-              testId="select-source-language"
-            />
-            <LanguageSelector
-              value={targetLanguage}
-              onChange={setTargetLanguage}
-              disabled={false}
-              label="Translate to"
-              testId="select-target-language"
-            />
-          </div>
-          
-          <div className="flex items-center space-x-2">
-            <Checkbox 
-              id="speaker-detection" 
-              checked={detectSpeakers}
-              onCheckedChange={(checked) => setDetectSpeakers(checked as boolean)}
-              disabled={isRecording}
-              data-testid="checkbox-speaker-detection"
-            />
-            <Label 
-              htmlFor="speaker-detection"
-              className="text-sm font-medium leading-none peer-disabled:cursor-not-allowed peer-disabled:opacity-70"
-            >
-              Detect different speakers
-            </Label>
-          </div>
+          <Collapsible open={isConfigOpen} onOpenChange={setIsConfigOpen}>
+            <div className="flex items-center justify-between mb-3">
+              <CollapsibleTrigger asChild>
+                <Button 
+                  variant="ghost" 
+                  size="sm" 
+                  className="flex items-center gap-2 px-0"
+                  data-testid="button-configure-toggle"
+                >
+                  {isConfigOpen ? <ChevronUp className="h-4 w-4" /> : <ChevronDown className="h-4 w-4" />}
+                  <span className="text-sm font-medium">Configure</span>
+                </Button>
+              </CollapsibleTrigger>
+            </div>
+            
+            <CollapsibleContent className="space-y-4">
+              <div className="grid grid-cols-2 gap-4">
+                <LanguageSelector
+                  value={sourceLanguage}
+                  onChange={setSourceLanguage}
+                  disabled={isRecording}
+                  label="Speaking in"
+                  testId="select-source-language"
+                />
+                <LanguageSelector
+                  value={targetLanguage}
+                  onChange={setTargetLanguage}
+                  disabled={false}
+                  label="Translate to"
+                  testId="select-target-language"
+                />
+              </div>
+              
+              <div className="flex items-center space-x-2">
+                <Checkbox 
+                  id="speaker-detection" 
+                  checked={detectSpeakers}
+                  onCheckedChange={(checked) => setDetectSpeakers(checked as boolean)}
+                  disabled={isRecording}
+                  data-testid="checkbox-speaker-detection"
+                />
+                <Label 
+                  htmlFor="speaker-detection"
+                  className="text-sm font-medium leading-none peer-disabled:cursor-not-allowed peer-disabled:opacity-70"
+                >
+                  Detect different speakers
+                </Label>
+              </div>
+            </CollapsibleContent>
+          </Collapsible>
           
           <RecordButton
             isRecording={isRecording}
@@ -399,7 +475,7 @@ export default function Home() {
         </div>
 
         <div className="flex-1 flex flex-col gap-6 overflow-hidden pb-20">
-          <div className="flex-1 bg-card rounded-lg mx-4 mt-6 min-h-0 border border-card-border">
+          <div className="flex-1 bg-card rounded-lg mx-4 mt-6 min-h-[200px] border border-card-border">
             <TranscriptionDisplay
               title="Original"
               text={originalText}
@@ -408,7 +484,7 @@ export default function Home() {
             />
           </div>
           
-          <div className="flex-1 bg-card rounded-lg mx-4 mb-6 min-h-0 border border-card-border">
+          <div className="flex-1 bg-card rounded-lg mx-4 mb-6 min-h-[200px] border border-card-border">
             <TranscriptionDisplay
               title={isRetranslating ? "Translation (updating...)" : "Translation"}
               text={translatedText}
