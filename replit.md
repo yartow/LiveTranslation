@@ -75,3 +75,15 @@ Default translation language: Dutch (nl)
 
 ### Default Language
 - Changed default translation language from Spanish to Dutch (nl)
+
+### Google Drive Integration
+- Users can now upload transcripts directly to Google Drive
+- Folder selector allows choosing specific Drive folders for upload
+- Supports both plain text and Markdown file formats
+- Automatic folder loading with root folder fallback
+
+### Cross-Platform Download Support
+- Download functionality works on iOS (Safari 13.2+), Android Chrome, and desktop browsers
+- Uses setTimeout delay for Safari compatibility
+- Proper MIME type handling for txt and md files
+- Timestamped filenames for easy organization

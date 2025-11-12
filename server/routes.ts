@@ -3,6 +3,7 @@ import { createServer, type Server } from "http";
 import { storage } from "./storage";
 import multer from "multer";
 import { transcribeAudio, correctAndTranslateText, retroactiveCorrection, formatForExport } from "./lib/openai";
+import { uploadFileToDrive, listDriveFolders } from "./lib/google-drive";
 import fs from "fs";
 import ffmpeg from "fluent-ffmpeg";
 
@@ -201,6 +202,44 @@ export async function registerRoutes(app: Express): Promise<Server> {
       console.error("Export formatting error:", error);
       res.status(500).json({
         error: "Failed to format export",
+        details: error instanceof Error ? error.message : "Unknown error",
+      });
+    }
+  });
+
+  app.post("/api/upload-to-drive", async (req, res) => {
+    try {
+      const { fileName, fileContent, mimeType, folderId } = req.body;
+
+      if (!fileName || !fileContent) {
+        return res.status(400).json({ error: "Missing required fields" });
+      }
+
+      const result = await uploadFileToDrive(
+        fileName,
+        fileContent,
+        mimeType,
+        folderId
+      );
+
+      res.json(result);
+    } catch (error) {
+      console.error("Google Drive upload error:", error);
+      res.status(500).json({
+        error: "Failed to upload to Google Drive",
+        details: error instanceof Error ? error.message : "Unknown error",
+      });
+    }
+  });
+
+  app.get("/api/drive-folders", async (req, res) => {
+    try {
+      const folders = await listDriveFolders();
+      res.json({ folders });
+    } catch (error) {
+      console.error("Google Drive folders error:", error);
+      res.status(500).json({
+        error: "Failed to fetch Google Drive folders",
         details: error instanceof Error ? error.message : "Unknown error",
       });
     }

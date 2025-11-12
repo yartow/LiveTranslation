@@ -16,16 +16,16 @@ localPort = 5000
 externalPort = 80
 
 [[ports]]
-localPort = 37913
-externalPort = 3001
-
-[[ports]]
 localPort = 43199
 externalPort = 3002
 
 [[ports]]
 localPort = 45425
 externalPort = 3000
+
+[[ports]]
+localPort = 46297
+externalPort = 3001
 
 [env]
 PORT = "5000"
@@ -52,4 +52,4 @@ args = "npm run dev"
 waitForPort = 5000
 
 [agent]
-integrations = ["javascript_openai:1.0.0"]
+integrations = ["javascript_openai:1.0.0", "google-drive:1.0.0"]
