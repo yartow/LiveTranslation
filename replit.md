@@ -2,7 +2,7 @@
 
 ## Overview
 
-SermonScribe is a mobile-first web application designed for real-time sermon transcription and translation. The app allows users to record audio during sermons, transcribe speech to text using OpenAI's Whisper model, correct transcription errors, and translate the content into multiple languages. The application prioritizes readability, minimal distraction, and one-handed mobile operation to enhance the spiritual and educational experience.
+SermonScribe is a mobile-first web application for real-time sermon transcription and multi-language translation. It leverages OpenAI's Whisper for speech-to-text and GPT-4o-mini for text correction and translation. The app prioritizes a distraction-free, readable experience with a focus on one-handed mobile operation for an enhanced spiritual and educational journey.
 
 ## User Preferences
 
@@ -11,203 +11,34 @@ Preferred communication style: Simple, everyday language.
 ## System Architecture
 
 ### Frontend Architecture
-
-**Framework**: React with TypeScript using Vite as the build tool
-
-**UI Component Library**: shadcn/ui (Radix UI primitives) with Tailwind CSS for styling
-
-**Design System**: Material Design principles adapted for mobile-first, content-focused usage
-- Typography: Avenir Next for primary text, system monospace for technical indicators
-- Spacing: Tailwind utility classes with consistent 2/4/6/8 unit system
-- Layout: Full-width mobile container with sticky header and flexible content areas
-
-**State Management**: 
-- React hooks (useState, useRef, useEffect) for local component state
-- TanStack Query (React Query) for server state management and caching
-- No global state management library (Redux/Zustand) - using lightweight local state
-
-**Routing**: Wouter for minimal client-side routing
-
-**Key Design Decisions**:
-- Mobile-first responsive design with thumb-reach accessibility
-- Dark/light theme support with system preference detection and localStorage persistence
-- Continuous audio recording using browser MediaRecorder API with:
-  - MediaRecorder restart every 5 seconds to create complete, standalone WebM files
-  - Each chunk has full EBML header (prevents ffmpeg parsing errors)
-  - Simple event handlers (ondataavailable, onstop) with restart cycle logic
-  - Optimized audio settings (echo cancellation, noise suppression, 44.1kHz sample rate)
-  - Queue-based sequential processing to prevent chunk loss during API calls
-  - Server-side ffmpeg conversion from WebM to MP3 before sending to Whisper API
+- **Framework**: React with TypeScript (Vite build tool)
+- **UI/UX**: shadcn/ui (Radix UI, Tailwind CSS), Material Design principles (mobile-first, content-focused, thumb-reach accessibility), dark/light theme support.
+- **State Management**: React hooks for local state, TanStack Query for server state.
+- **Routing**: Wouter for client-side routing.
+- **Key Features**: Continuous audio recording using MediaRecorder (restarts every 5s for standalone WebM chunks), queue-based sequential audio processing, real-time transcription display with book-style formatting, live re-translation on target language change, collapsible configuration, retroactive text correction every 5 sentences, optional speaker detection.
 
 ### Backend Architecture
+- **Runtime**: Node.js with Express.js.
+- **API**: RESTful, primarily `POST /api/transcribe` for audio processing.
+- **File Handling**: Multer for multipart form data, temporary file storage, automatic cleanup.
+- **Audio Processing Pipeline**: Converts WebM to MP3 using FFmpeg, sends to Whisper API, processes text with GPT-4o-mini (correction, translation, speaker detection), cleans up temporary files.
+- **Database**: Drizzle ORM for PostgreSQL (Neon Database). Schema defined for `users` and `transcriptions`, but currently operates statelessly, prioritizing real-time functionality over persistence.
 
-**Runtime**: Node.js with Express.js server
+### System Design Choices
+- **Real-time Processing**: Emphasis on immediate transcription and translation.
+- **Error Handling**: Comprehensive client and server-side error handling with user-friendly notifications.
+- **Responsiveness**: Mobile-first design ensures optimal experience on small screens.
+- **Scalability**: Backend designed to handle audio processing efficiently, with a clear path for future database integration.
 
-**API Structure**: RESTful API with single primary endpoint:
-- POST `/api/transcribe` - Accepts audio file upload, returns transcribed and translated text
+## External Dependencies
 
-**File Upload Handling**: Multer middleware for multipart form data
-- Temporary file storage in `/tmp/uploads/`
-- 25MB file size limit
-- Automatic cleanup after processing
-
-**Audio Processing Pipeline**:
-- Accepts complete WebM chunks from browser MediaRecorder (restart-based approach)
-- Uses ffmpeg to convert WebM to MP3 with aggressive error handling flags
-- MP3 files sent to Whisper API for transcription
-- Temporary WebM and MP3 files are cleaned up immediately after processing
-
-**Key Design Decisions**:
-- Express middleware for request logging and JSON parsing with raw body capture
-- Development-only Vite integration for HMR (Hot Module Replacement)
-- Production build serves static React app from compiled output
-- In-memory user storage (MemStorage) - database schema defined but not actively used
-- Server-side audio format conversion isolates complexity from frontend
-
-### Data Storage Solutions
-
-**Database ORM**: Drizzle ORM configured for PostgreSQL
-
-**Database Provider**: Neon Database (serverless PostgreSQL)
-
-**Schema Design**:
-- `users` table: Basic authentication structure (id, username, password)
-- `transcriptions` table: Stores transcription history (id, originalText, translatedText, targetLanguage, timestamp)
-
-**Current State**: Database schema is defined but application currently operates statelessly - transcriptions are not persisted. The storage layer exists as infrastructure for future feature expansion.
-
-**Rationale**: The application prioritizes real-time interaction over historical data retention. Database integration is prepared but not activated to reduce complexity and latency in the initial implementation.
-
-## Implementation Status (Last Updated: November 11, 2025)
-
-### Completed Features ✓
-1. **Continuous Live Transcription**: Audio is automatically processed every 5 seconds while recording
-   - MediaRecorder restart every 5 seconds creates complete, standalone WebM files
-   - Each chunk has full EBML header (prevents ffmpeg error 183 and Whisper 400 errors)
-   - Event-driven architecture with ondataavailable handler triggering restart cycle
-   - Queue-based chunk processing ensures sequential, in-order transcription
-   - Server-side ffmpeg conversion from WebM to MP3 before Whisper API
-   - Transcriptions appear in real-time as they're processed (5s latency)
-2. **Source Language Selection**: Users can specify the source language for better transcription accuracy
-   - Dropdown selector with all 12 supported languages
-   - Passed to Whisper API to improve recognition and reduce processing time
-   - Side-by-side with target language selector for clear UX
-3. **Speech-to-Text Transcription**: Real-time audio transcription using OpenAI Whisper
-4. **Text Correction**: Automatic removal of stutters, filler words, and verbal mistakes using GPT-4o-mini (2-3x faster, 60-80% cheaper than GPT-4o)
-5. **Multi-Language Translation**: Support for 15 languages with real-time translation using GPT-4o-mini
-   - Includes Dutch and Farsi language support
-   - Separate options for Simplified Chinese (zh) and Traditional Chinese (zh-TW)
-   - Right-to-left (RTL) text support for Arabic and Farsi
-6. **Mobile-Optimized UI**: Responsive design with thumb-reach accessibility
-7. **Dark Mode**: System preference detection with manual toggle
-8. **Error Handling**: Comprehensive error handling with user-friendly toast notifications
-   - Explicit messaging when OpenAI API credits are insufficient
-9. **File Management**: Automatic cleanup of temporary audio files (both WebM and MP3) after processing
-10. **Session Management**: Prevents starting new recordings while previous chunks are processing
-11. **Live Re-translation**: Change target language during recording with automatic re-translation
-   - Target language selector enabled during active recording
-   - Segment-based caching prevents race conditions when new chunks arrive
-   - Monotonic UI updates - translation never regresses to stale snapshots
-   - Re-translation queues automatically when processing completes
-   - Full transcript rebuilt from cached segments for smooth UX
-12. **Speaker Detection**: Optional feature to identify and label different speakers
-   - Checkbox toggle to enable/disable speaker detection
-   - Uses GPT-4o-mini conversation pattern analysis (not dedicated diarization service)
-   - Labels speakers incrementally as "Speaker 1:", "Speaker 2:", etc.
-   - Retranslates all existing segments when toggled on/off for consistency
-   - Disabled during active recording to prevent mid-session configuration changes
-
-### API Endpoints
-- **POST /api/transcribe**: Accepts multipart/form-data with audio file, source language, target language, and speaker detection flag
-  - Input: Audio blob (WebM format) + sourceLanguage + targetLanguage (en, es, fr, de, nl, pt, it, zh, zh-TW, ar, fa, hi, ru, ja, ko) + detectSpeakers (boolean)
-  - Processing Pipeline:
-    1. Rename uploaded file to `.webm` extension
-    2. Convert WebM to MP3 using ffmpeg with aggressive error handling flags (inputFormat('webm'), err_detect ignore_err, +discardcorrupt, max_error_rate 1.0)
-    3. Send MP3 to Whisper API with specified source language
-    4. Correct transcription with GPT-4o-mini (optionally detecting speakers if flag enabled)
-    5. Translate corrected text to target language with GPT-4o-mini
-    6. Clean up temporary WebM and MP3 files
-  - Output: JSON with correctedText (original) and translatedText
-  - Error handling: Returns 400 for missing files, 500 with details for conversion/processing errors
-
-- **POST /api/retranslate**: Re-translates existing transcription text to new target language and/or speaker detection setting
-  - Input: JSON with originalText + targetLanguage + detectSpeakers
-  - Processing: Translates full text to new language using GPT-4o-mini (with optional speaker detection)
-  - Output: JSON with translatedText
-  - Used when user changes target language or toggles speaker detection during/after recording
-
-### Component Architecture
-- **Header**: App title, theme toggle, sticky positioning
-- **LanguageSelector**: Shadcn select component with 15 language options (used for both source and target)
-  - Includes Dutch (nl), Farsi (fa), and separate Chinese variants (zh for Simplified, zh-TW for Traditional)
-  - Exports getLanguageRTL() helper function to determine text direction
-- **RecordButton**: Large circular FAB with recording/processing/idle states
-- **RecordingIndicator**: Animated badge showing active recording status
-- **TranscriptionDisplay**: Auto-scrolling text areas for original and translated content
-  - Supports right-to-left (RTL) text direction for Arabic and Farsi
-  - Automatically applies correct text direction based on selected language
-- **Home**: Main page orchestrating all components with MediaRecorder restart-based recording
-  - MediaRecorder restart every 5 seconds via `restartRecordingCycle()` creates complete WebM files
-  - Uses `isRecordingRef` mutable ref to avoid closure issues in callbacks
-  - Event handlers: `ondataavailable` for chunk capture and restart trigger, `onstop` for finalization
-  - Queue-based chunk processing with `chunkQueueRef` and `isProcessingQueueRef`
-  - Sequential API calls via `processNextChunk()` and `enqueueAudioChunk()`
-  - Segment-based caching in `transcriptionSegmentsRef` for re-translation support
-  - Live re-translation when target language changes (gates on isProcessing and isRetranslating)
-  - Monotonic translation updates - rebuilds UI from all segments to prevent regression
-  - Race condition handling - tracks segment count and queues re-translation if new chunks arrive
-  - Graceful completion waiting for queue to drain before notifying user
-  - Restart cycle: stop recorder → ondataavailable fires → enqueue chunk → start new recorder
-
-### Future Enhancements
-- Export transcriptions to PDF/TXT formats
-- Save transcription history to database
-- Speaker identification for multi-person sermons
-- Custom vocabulary for religious terminology
-- Offline recording with batch processing
-
-### Authentication and Authorization
-
-**Current Implementation**: Basic user schema exists but no active authentication flow
-
-**Future Consideration**: User storage interface (IStorage) provides abstraction for future auth implementation with methods for user creation and retrieval
-
-**Decision**: Authentication deferred to prioritize core transcription/translation functionality
-
-### External Dependencies
-
-**OpenAI API Integration**:
-- **Whisper API** (audio.transcriptions.create): Converts recorded audio to text in specified source language
-  - Accepts MP3 format (converted from WebM via ffmpeg)
-  - Source language parameter improves accuracy and reduces processing time
-  - Receives complete, standalone audio files (each chunk is a full recording)
-- **GPT-4o-mini Chat Completions**: Performs text processing (2-3x faster and 60-80% cheaper than GPT-4o):
-  1. Cleans transcription by removing stutters, filler words, and verbal mistakes
-  2. Optionally detects and labels different speakers based on conversation patterns ("Speaker 1:", "Speaker 2:", etc.)
-  3. Translates corrected text to target language (both initial and re-translation)
-- Error correction prompt engineered to preserve sermon content meaning while improving readability
-- Speaker detection uses conversation pattern analysis without dedicated diarization service
-- Startup validation ensures OPENAI_API_KEY is present before server starts
-
-**Supported Languages**: 15 languages including English, Spanish, French, German, Dutch, Portuguese, Italian, Chinese (Simplified), Chinese (Traditional), Arabic, Farsi, Hindi, Russian, Japanese, Korean
-
-**Audio Processing**:
-- **Client**: Browser MediaRecorder restarts every 5s to produce complete WebM files
-- **Server**: Converts WebM to MP3 using ffmpeg with aggressive error handling, then sends to Whisper API
-- **Rationale**: MediaRecorder restart creates standalone files with full EBML headers; ffmpeg conversion prevents Whisper 400 errors; aggressive flags prevent ffmpeg error 183
-
-**API Key Management**: Environment variable (`OPENAI_API_KEY`) for authentication
-
-**System Dependencies**:
-- fluent-ffmpeg: Node.js library for WebM to MP3 audio conversion with aggressive error handling
-
-**Replit-Specific Dependencies**:
-- `@replit/vite-plugin-runtime-error-modal`: Development error overlay
-- `@replit/vite-plugin-cartographer`: Development tooling integration
-- `@replit/vite-plugin-dev-banner`: Development environment indicator
-
-**Build and Development Tools**:
-- TypeScript for type safety across client and server
-- ESBuild for server bundling in production
-- PostCSS with Autoprefixer for CSS processing
-- Drizzle Kit for database migrations
+- **OpenAI API**:
+    - **Whisper API**: For speech-to-text transcription (accepts MP3, converted from WebM).
+    - **GPT-4o-mini**: For text correction (removing filler words, book-style formatting, retroactive coherence checks), multi-language translation (initial and re-translation), and optional speaker detection.
+- **Audio Processing**:
+    - **Client-side**: Browser MediaRecorder API for audio capture.
+    - **Server-side**: `fluent-ffmpeg` for WebM to MP3 conversion with aggressive error handling.
+- **Database**: Neon Database (PostgreSQL) integrated via Drizzle ORM.
+- **API Key Management**: `OPENAI_API_KEY` environment variable.
+- **Build/Development Tools (Replit-specific)**: `@replit/vite-plugin-runtime-error-modal`, `@replit/vite-plugin-cartographer`, `@replit/vite-plugin-dev-banner`.
+- **Supported Languages**: English, Spanish, French, German, Dutch, Portuguese, Italian, Chinese (Simplified), Chinese (Traditional), Arabic, Farsi, Hindi, Russian, Japanese, Korean.
