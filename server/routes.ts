@@ -211,8 +211,16 @@ export async function registerRoutes(app: Express): Promise<Server> {
     try {
       const { fileName, fileContent, mimeType, folderId } = req.body;
 
-      if (!fileName || !fileContent) {
-        return res.status(400).json({ error: "Missing required fields" });
+      if (!fileName || !fileContent || typeof fileName !== 'string' || typeof fileContent !== 'string') {
+        return res.status(400).json({ error: "Missing or invalid required fields" });
+      }
+
+      if (mimeType && typeof mimeType !== 'string') {
+        return res.status(400).json({ error: "Invalid MIME type" });
+      }
+
+      if (fileContent.length > 10 * 1024 * 1024) {
+        return res.status(400).json({ error: "File content too large (max 10MB)" });
       }
 
       const result = await uploadFileToDrive(
