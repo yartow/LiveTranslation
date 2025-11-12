@@ -7,6 +7,7 @@ SermonScribe is a mobile-first web application for real-time sermon transcriptio
 ## User Preferences
 
 Preferred communication style: Simple, everyday language.
+Default translation language: Dutch (nl)
 
 ## System Architecture
 
@@ -42,3 +43,35 @@ Preferred communication style: Simple, everyday language.
 - **API Key Management**: `OPENAI_API_KEY` environment variable.
 - **Build/Development Tools (Replit-specific)**: `@replit/vite-plugin-runtime-error-modal`, `@replit/vite-plugin-cartographer`, `@replit/vite-plugin-dev-banner`.
 - **Supported Languages**: English, Spanish, French, German, Dutch, Portuguese, Italian, Chinese (Simplified), Chinese (Traditional), Arabic, Farsi, Hindi, Russian, Japanese, Korean.
+
+## Key Features
+
+1. **Continuous Live Transcription** - Audio processed every 5 seconds with book-style formatting
+2. **Silence Detection** - Prevents Whisper hallucinations from background noise
+3. **Multi-language Translation** - Real-time translation to 15 languages (default: Dutch)
+4. **Live Re-translation** - Change target language mid-recording
+5. **Retroactive Correction** - Grammar and coherence checks every 5 sentences
+6. **Speaker Detection** - Optional speaker identification and labeling
+7. **Export Functionality** - Download transcripts as TXT/MD with AI formatting
+8. **Collapsible Configuration** - Space-saving UI for language settings
+9. **Enhanced Text Visibility** - Minimum 200px height for comfortable reading
+10. **Dark/Light Theme** - Automatic theme detection with manual toggle
+
+## Recent Updates (November 12, 2025)
+
+### Silence Detection
+- Client-side audio volume analysis using Web Audio API
+- Skips chunks with average volume < 0.01
+- Prevents "Thanks for watching" hallucinations from fan noise
+- Graceful error handling if analysis fails
+
+### Export Features
+- Export original text, translation, or both side-by-side
+- File formats: plain text (.txt) or Markdown (.md)
+- GPT-4o-mini final formatting with proper line breaks and punctuation
+- Minor corrections marked with asterisks for transparency
+- Local file download with timestamped filenames
+- Google Drive export placeholder (ready for connector integration)
+
+### Default Language
+- Changed default translation language from Spanish to Dutch (nl)
