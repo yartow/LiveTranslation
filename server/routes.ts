@@ -2,7 +2,7 @@ import type { Express } from "express";
 import { createServer, type Server } from "http";
 import { storage } from "./storage";
 import multer from "multer";
-import { transcribeAudio, correctAndTranslateText } from "./lib/openai";
+import { transcribeAudio, correctAndTranslateText, retroactiveCorrection } from "./lib/openai";
 import fs from "fs";
 import ffmpeg from "fluent-ffmpeg";
 
@@ -151,6 +151,30 @@ export async function registerRoutes(app: Express): Promise<Server> {
       console.error("Re-translation error:", error);
       res.status(500).json({
         error: "Failed to re-translate text",
+        details: error instanceof Error ? error.message : "Unknown error",
+      });
+    }
+  });
+
+  app.post("/api/retroactive-correct", async (req, res) => {
+    try {
+      const { accumulatedText, targetLanguage, detectSpeakers } = req.body;
+
+      if (!accumulatedText) {
+        return res.status(400).json({ error: "No text provided" });
+      }
+
+      const { correctedText, translatedText } = await retroactiveCorrection(
+        accumulatedText,
+        targetLanguage,
+        detectSpeakers
+      );
+
+      res.json({ correctedText, translatedText });
+    } catch (error) {
+      console.error("Retroactive correction error:", error);
+      res.status(500).json({
+        error: "Failed to perform retroactive correction",
         details: error instanceof Error ? error.message : "Unknown error",
       });
     }
