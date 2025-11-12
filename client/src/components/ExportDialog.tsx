@@ -167,8 +167,14 @@ export default function ExportDialog({
       
       toast({
         title: "Uploaded to Google Drive",
-        description: "Your transcript has been saved to Google Drive.",
+        description: data.webViewLink 
+          ? "Your transcript has been saved successfully." 
+          : "Your transcript has been saved to Google Drive.",
       });
+
+      if (data.webViewLink) {
+        window.open(data.webViewLink, '_blank');
+      }
 
       return data;
     } catch (error) {
