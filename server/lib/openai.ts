@@ -141,3 +141,74 @@ Your tasks:
     translatedText: result.translatedText || accumulatedText,
   };
 }
+
+export async function formatForExport(
+  originalText: string,
+  translatedText: string,
+  targetLanguage: string,
+  exportType: 'original' | 'translation' | 'both',
+  fileFormat: 'txt' | 'md'
+): Promise<string> {
+  const languageNames: Record<string, string> = {
+    en: "English",
+    es: "Spanish",
+    fr: "French",
+    de: "German",
+    nl: "Dutch",
+    pt: "Portuguese",
+    it: "Italian",
+    zh: "Chinese (Simplified)",
+    "zh-TW": "Chinese (Traditional)",
+    ar: "Arabic",
+    fa: "Farsi",
+    hi: "Hindi",
+    ru: "Russian",
+    ja: "Japanese",
+    ko: "Korean",
+  };
+
+  const targetLanguageName = languageNames[targetLanguage] || "English";
+
+  const formatInstructions = fileFormat === 'md'
+    ? 'Format the output in proper Markdown with headings, paragraphs, and formatting.'
+    : 'Format the output as plain text with proper paragraphs and line breaks.';
+
+  let contentToFormat = '';
+  let formatPrompt = '';
+
+  if (exportType === 'original') {
+    contentToFormat = originalText;
+    formatPrompt = `Format this sermon transcript for export. Add proper line breaks between paragraphs, correct punctuation, and make minor corrections where there are obvious misinterpretations. Mark any corrections you make with asterisks (e.g., "he went to *their* house" if you corrected "there" to "their"). ${formatInstructions}`;
+  } else if (exportType === 'translation') {
+    contentToFormat = translatedText;
+    formatPrompt = `Format this sermon transcript translation (in ${targetLanguageName}) for export. Add proper line breaks between paragraphs, correct punctuation, and make minor corrections where there are obvious misinterpretations. Mark any corrections you make with asterisks (e.g., "fue a *su* casa" if you corrected a word). ${formatInstructions}`;
+  } else {
+    formatPrompt = `Format both the original sermon transcript and its ${targetLanguageName} translation for side-by-side export. For each version:
+1. Add proper line breaks between paragraphs
+2. Correct punctuation
+3. Make minor corrections where there are obvious misinterpretations
+4. Mark any corrections with asterisks
+
+Present them with clear section headers. ${formatInstructions}
+
+Original text: "${originalText}"
+
+Translation (${targetLanguageName}): "${translatedText}"`;
+  }
+
+  const response = await openai.chat.completions.create({
+    model: "gpt-4o-mini",
+    messages: [
+      {
+        role: "system",
+        content: `You are a helpful assistant that formats sermon transcripts for export. You add proper formatting, fix punctuation, and make minor corrections to obvious transcription errors. Always mark corrections with asterisks so readers can see what was changed.`,
+      },
+      {
+        role: "user",
+        content: exportType === 'both' ? formatPrompt : `${formatPrompt}\n\nText to format: "${contentToFormat}"`,
+      },
+    ],
+  });
+
+  return response.choices[0].message.content || contentToFormat;
+}

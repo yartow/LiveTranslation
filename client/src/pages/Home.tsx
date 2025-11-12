@@ -8,8 +8,9 @@ import { Checkbox } from '@/components/ui/checkbox';
 import { Label } from '@/components/ui/label';
 import { Button } from '@/components/ui/button';
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/components/ui/collapsible';
-import { ChevronDown, ChevronUp } from 'lucide-react';
+import { ChevronDown, ChevronUp, Download } from 'lucide-react';
 import { useToast } from '@/hooks/use-toast';
+import ExportDialog from '@/components/ExportDialog';
 
 interface TranscriptionSegment {
   original: string;
@@ -18,7 +19,7 @@ interface TranscriptionSegment {
 
 export default function Home() {
   const [sourceLanguage, setSourceLanguage] = useState('en');
-  const [targetLanguage, setTargetLanguage] = useState('es');
+  const [targetLanguage, setTargetLanguage] = useState('nl');
   const [isRecording, setIsRecording] = useState(false);
   const [isProcessing, setIsProcessing] = useState(false);
   const [originalText, setOriginalText] = useState('');
@@ -27,6 +28,7 @@ export default function Home() {
   const [isRetranslating, setIsRetranslating] = useState(false);
   const [detectSpeakers, setDetectSpeakers] = useState(false);
   const [isConfigOpen, setIsConfigOpen] = useState(true);
+  const [isExportDialogOpen, setIsExportDialogOpen] = useState(false);
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const streamRef = useRef<MediaStream | null>(null);
   const chunkQueueRef = useRef<Blob[]>([]);
@@ -239,7 +241,50 @@ export default function Home() {
     }
   };
 
-  const enqueueAudioChunk = (audioBlob: Blob) => {
+  const analyzeAudioVolume = async (audioBlob: Blob): Promise<boolean> => {
+    return new Promise((resolve) => {
+      const audioContext = new (window.AudioContext || (window as any).webkitAudioContext)();
+      const reader = new FileReader();
+      
+      reader.onload = async () => {
+        try {
+          const arrayBuffer = reader.result as ArrayBuffer;
+          const audioBuffer = await audioContext.decodeAudioData(arrayBuffer);
+          
+          const channelData = audioBuffer.getChannelData(0);
+          let sum = 0;
+          for (let i = 0; i < channelData.length; i++) {
+            sum += Math.abs(channelData[i]);
+          }
+          const average = sum / channelData.length;
+          
+          const isSilent = average < 0.01;
+          resolve(!isSilent);
+        } catch (error) {
+          console.error('Audio analysis failed:', error);
+          resolve(true);
+        } finally {
+          audioContext.close();
+        }
+      };
+      
+      reader.onerror = () => {
+        console.error('FileReader error');
+        resolve(true);
+      };
+      
+      reader.readAsArrayBuffer(audioBlob);
+    });
+  };
+
+  const enqueueAudioChunk = async (audioBlob: Blob) => {
+    const hasAudio = await analyzeAudioVolume(audioBlob);
+    
+    if (!hasAudio) {
+      console.log('Skipping silent audio chunk');
+      return;
+    }
+    
     chunkQueueRef.current.push(audioBlob);
     processNextChunk();
   };
@@ -284,9 +329,9 @@ export default function Home() {
 
     mediaRecorderRef.current = mediaRecorder;
 
-    mediaRecorder.ondataavailable = (event: BlobEvent) => {
+    mediaRecorder.ondataavailable = async (event: BlobEvent) => {
       if (event.data.size > 0) {
-        enqueueAudioChunk(event.data);
+        await enqueueAudioChunk(event.data);
       }
       
       if (isRecordingRef.current) {
@@ -467,11 +512,24 @@ export default function Home() {
             </CollapsibleContent>
           </Collapsible>
           
-          <RecordButton
-            isRecording={isRecording}
-            isProcessing={isProcessing}
-            onClick={handleRecordClick}
-          />
+          <div className="flex items-center gap-3">
+            <RecordButton
+              isRecording={isRecording}
+              isProcessing={isProcessing}
+              onClick={handleRecordClick}
+            />
+            <Button
+              variant="outline"
+              size="default"
+              onClick={() => setIsExportDialogOpen(true)}
+              disabled={!originalText && !translatedText}
+              className="flex items-center gap-2"
+              data-testid="button-export"
+            >
+              <Download className="h-4 w-4" />
+              Export
+            </Button>
+          </div>
         </div>
 
         <div className="flex-1 flex flex-col gap-6 overflow-hidden pb-20">
@@ -494,6 +552,14 @@ export default function Home() {
           </div>
         </div>
       </div>
+      
+      <ExportDialog
+        isOpen={isExportDialogOpen}
+        onClose={() => setIsExportDialogOpen(false)}
+        originalText={originalText}
+        translatedText={translatedText}
+        targetLanguage={targetLanguage}
+      />
     </div>
   );
 }

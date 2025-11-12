@@ -2,7 +2,7 @@ import type { Express } from "express";
 import { createServer, type Server } from "http";
 import { storage } from "./storage";
 import multer from "multer";
-import { transcribeAudio, correctAndTranslateText, retroactiveCorrection } from "./lib/openai";
+import { transcribeAudio, correctAndTranslateText, retroactiveCorrection, formatForExport } from "./lib/openai";
 import fs from "fs";
 import ffmpeg from "fluent-ffmpeg";
 
@@ -175,6 +175,32 @@ export async function registerRoutes(app: Express): Promise<Server> {
       console.error("Retroactive correction error:", error);
       res.status(500).json({
         error: "Failed to perform retroactive correction",
+        details: error instanceof Error ? error.message : "Unknown error",
+      });
+    }
+  });
+
+  app.post("/api/export-format", async (req, res) => {
+    try {
+      const { originalText, translatedText, targetLanguage, exportType, fileFormat } = req.body;
+
+      if (!originalText && !translatedText) {
+        return res.status(400).json({ error: "No text provided" });
+      }
+
+      const formattedContent = await formatForExport(
+        originalText || '',
+        translatedText || '',
+        targetLanguage,
+        exportType,
+        fileFormat
+      );
+
+      res.json({ formattedContent });
+    } catch (error) {
+      console.error("Export formatting error:", error);
+      res.status(500).json({
+        error: "Failed to format export",
         details: error instanceof Error ? error.message : "Unknown error",
       });
     }
