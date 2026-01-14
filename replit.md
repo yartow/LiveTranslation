@@ -2,7 +2,7 @@
 
 ## Overview
 
-SermonScribe is a mobile-first web application for real-time sermon transcription and multi-language translation. It leverages OpenAI's Whisper for speech-to-text and GPT-4o-mini for text correction and translation. The app prioritizes a distraction-free, readable experience with a focus on one-handed mobile operation for an enhanced spiritual and educational journey.
+SermonScribe is a mobile-first web application for real-time sermon transcription and multi-language translation. It uses AssemblyAI for streaming speech-to-text with ~300ms latency and GPT-4o-mini for text correction and translation. The app prioritizes a distraction-free, readable experience with a focus on one-handed mobile operation for an enhanced spiritual and educational journey.
 
 ## User Preferences
 
@@ -16,13 +16,14 @@ Default translation language: Dutch (nl)
 - **UI/UX**: shadcn/ui (Radix UI, Tailwind CSS), Material Design principles (mobile-first, content-focused, thumb-reach accessibility), dark/light theme support.
 - **State Management**: React hooks for local state, TanStack Query for server state.
 - **Routing**: Wouter for client-side routing.
-- **Key Features**: Continuous audio recording using MediaRecorder (restarts every 5s for standalone WebM chunks), queue-based sequential audio processing, real-time transcription display with book-style formatting, live re-translation on target language change, collapsible configuration, retroactive text correction every 5 sentences, optional speaker detection.
+- **Audio Streaming**: WebSocket-based real-time audio streaming using Web Audio API (ScriptProcessorNode) at 16kHz sample rate, PCM16 format.
+- **Key Features**: Real-time streaming transcription with ~300ms latency, partial transcript display with typing indicator, live re-translation on target language change, collapsible configuration, retroactive text correction every 5 sentences, optional speaker detection.
 
 ### Backend Architecture
 - **Runtime**: Node.js with Express.js.
-- **API**: RESTful, primarily `POST /api/transcribe` for audio processing.
-- **File Handling**: Multer for multipart form data, temporary file storage, automatic cleanup.
-- **Audio Processing Pipeline**: Converts WebM to MP3 using FFmpeg, sends to Whisper API, processes text with GPT-4o-mini (correction, translation, speaker detection), cleans up temporary files.
+- **API**: RESTful endpoints for retranslation, retroactive correction, export formatting, and Google Drive integration.
+- **WebSocket**: `/ws/transcribe` endpoint for real-time audio streaming to AssemblyAI.
+- **Streaming Pipeline**: Browser audio → WebSocket → AssemblyAI Real-time API → Transcription → GPT-4o-mini (correction, translation) → Browser.
 - **Database**: Drizzle ORM for PostgreSQL (Neon Database). Schema defined for `users` and `transcriptions`, but currently operates statelessly, prioritizing real-time functionality over persistence.
 
 ### System Design Choices
@@ -33,20 +34,22 @@ Default translation language: Dutch (nl)
 
 ## External Dependencies
 
+- **AssemblyAI API**:
+    - **Real-time Transcription API**: WebSocket-based streaming transcription with ~300ms latency.
+    - Configured with word boost for religious terms (sermon, scripture, bible, gospel, faith, prayer, amen).
 - **OpenAI API**:
-    - **Whisper API**: For speech-to-text transcription (accepts MP3, converted from WebM).
     - **GPT-4o-mini**: For text correction (removing filler words, book-style formatting, retroactive coherence checks), multi-language translation (initial and re-translation), and optional speaker detection.
 - **Audio Processing**:
-    - **Client-side**: Browser MediaRecorder API for audio capture.
-    - **Server-side**: `fluent-ffmpeg` for WebM to MP3 conversion with aggressive error handling.
+    - **Client-side**: Web Audio API (AudioContext, ScriptProcessorNode) for real-time audio capture at 16kHz, PCM16 format.
+    - **Server-side**: WebSocket relay to AssemblyAI, translation debouncing with 500ms window.
 - **Database**: Neon Database (PostgreSQL) integrated via Drizzle ORM.
-- **API Key Management**: `OPENAI_API_KEY` environment variable.
+- **API Key Management**: `OPENAI_API_KEY` and `ASSEMBLYAI_API_KEY` environment variables (required).
 - **Build/Development Tools (Replit-specific)**: `@replit/vite-plugin-runtime-error-modal`, `@replit/vite-plugin-cartographer`, `@replit/vite-plugin-dev-banner`.
 - **Supported Languages**: English, Spanish, French, German, Dutch, Portuguese, Italian, Chinese (Simplified), Chinese (Traditional), Arabic, Farsi, Hindi, Russian, Japanese, Korean.
 
 ## Key Features
 
-1. **Continuous Live Transcription** - Audio processed every 5 seconds with book-style formatting
+1. **Real-time Streaming Transcription** - ~300ms latency with partial transcript display and typing indicator
 2. **Silence Detection** - Prevents Whisper hallucinations from background noise
 3. **Multi-language Translation** - Real-time translation to 15 languages (default: Dutch)
 4. **Live Re-translation** - Change target language mid-recording
@@ -87,3 +90,19 @@ Default translation language: Dutch (nl)
 - Uses setTimeout delay for Safari compatibility
 - Proper MIME type handling for txt and md files
 - Timestamped filenames for easy organization
+
+## Recent Updates (January 14, 2026)
+
+### AssemblyAI Streaming Transcription
+- Replaced 5-second chunked Whisper approach with real-time WebSocket streaming
+- ~300ms latency (vs ~5+ seconds previously)
+- Partial transcript display with typing indicator as you speak
+- Word boost configured for religious terminology
+- Cost reduced from ~€0.36/hour to ~€0.14/hour
+
+### Technical Implementation
+- Server: WebSocket handler at `/ws/transcribe` relays audio to AssemblyAI
+- Client: Web Audio API captures 16kHz PCM16 audio, streams via WebSocket
+- Translation: 500ms debounce to batch translations efficiently
+- Proper binary/text frame handling for WebSocket messages
+- Startup validation for required API keys (OPENAI_API_KEY, ASSEMBLYAI_API_KEY)
