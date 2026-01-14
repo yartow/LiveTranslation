@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect } from 'react';
+import { useState, useRef, useEffect, useCallback } from 'react';
 import Header from '@/components/Header';
 import LanguageSelector, { getLanguageRTL } from '@/components/LanguageSelector';
 import RecordButton from '@/components/RecordButton';
@@ -11,6 +11,7 @@ import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/component
 import { ChevronDown, ChevronUp, Download } from 'lucide-react';
 import { useToast } from '@/hooks/use-toast';
 import ExportDialog from '@/components/ExportDialog';
+import { StreamingTranscription } from '@/lib/streaming-transcription';
 
 interface TranscriptionSegment {
   original: string;
@@ -24,20 +25,18 @@ export default function Home() {
   const [isProcessing, setIsProcessing] = useState(false);
   const [originalText, setOriginalText] = useState('');
   const [translatedText, setTranslatedText] = useState('');
+  const [partialText, setPartialText] = useState('');
   const [isDark, setIsDark] = useState(false);
   const [isRetranslating, setIsRetranslating] = useState(false);
   const [detectSpeakers, setDetectSpeakers] = useState(false);
   const [isConfigOpen, setIsConfigOpen] = useState(true);
   const [isExportDialogOpen, setIsExportDialogOpen] = useState(false);
-  const mediaRecorderRef = useRef<MediaRecorder | null>(null);
-  const streamRef = useRef<MediaStream | null>(null);
-  const chunkQueueRef = useRef<Blob[]>([]);
-  const isProcessingQueueRef = useRef(false);
+  
+  const streamingRef = useRef<StreamingTranscription | null>(null);
   const transcriptionSegmentsRef = useRef<TranscriptionSegment[]>([]);
   const pendingRetranslationRef = useRef(false);
   const previousTargetLanguageRef = useRef(targetLanguage);
   const previousDetectSpeakersRef = useRef(detectSpeakers);
-  const isRecordingRef = useRef(false);
   const lastRetroactiveCorrectionSentenceCountRef = useRef(0);
   const { toast } = useToast();
 
@@ -73,11 +72,14 @@ export default function Home() {
         return;
       }
 
-      const segmentCountBeforeTranslation = transcriptionSegmentsRef.current.length;
       pendingRetranslationRef.current = false;
       previousTargetLanguageRef.current = targetLanguage;
       previousDetectSpeakersRef.current = detectSpeakers;
       setIsRetranslating(true);
+      
+      if (streamingRef.current) {
+        streamingRef.current.updateConfig(targetLanguage, detectSpeakers);
+      }
       
       try {
         const allOriginalText = transcriptionSegmentsRef.current
@@ -177,273 +179,102 @@ export default function Home() {
     }
   };
 
-  const processNextChunk = async () => {
-    if (isProcessingQueueRef.current || chunkQueueRef.current.length === 0) {
-      return;
-    }
-
-    isProcessingQueueRef.current = true;
-    setIsProcessing(true);
-
-    const audioBlob = chunkQueueRef.current.shift()!;
-    
-    try {
-      const formData = new FormData();
-      formData.append('audio', audioBlob, 'recording.webm');
-      formData.append('sourceLanguage', sourceLanguage);
-      formData.append('targetLanguage', targetLanguage);
-      formData.append('detectSpeakers', String(detectSpeakers));
-
-      const response = await fetch('/api/transcribe', {
-        method: 'POST',
-        body: formData,
-      });
-
-      if (!response.ok) {
-        const errorData = await response.json().catch(() => ({}));
-        throw new Error(errorData.details || 'Transcription failed');
-      }
-
-      const data = await response.json();
-      
-      transcriptionSegmentsRef.current.push({
-        original: data.originalText,
-        translated: data.translatedText
-      });
-      
-      setOriginalText(prev => prev + (prev ? ' ' : '') + data.originalText);
-      setTranslatedText(prev => prev + (prev ? ' ' : '') + data.translatedText);
-
-      const allOriginalText = transcriptionSegmentsRef.current
-        .map(seg => seg.original)
-        .join(' ');
-      const totalSentences = countSentences(allOriginalText);
-      
-      if (totalSentences >= 5 && 
-          Math.floor(totalSentences / 5) > Math.floor(lastRetroactiveCorrectionSentenceCountRef.current / 5)) {
-        lastRetroactiveCorrectionSentenceCountRef.current = totalSentences;
-        await performRetroactiveCorrection();
-      }
-    } catch (error) {
-      console.error('Transcription error:', error);
-      toast({
-        title: "Transcription failed",
-        description: error instanceof Error ? error.message : "Failed to transcribe audio. Please check your OpenAI API credits.",
-        variant: "destructive",
-      });
-    } finally {
-      isProcessingQueueRef.current = false;
-      setIsProcessing(false);
-      
-      if (chunkQueueRef.current.length > 0) {
-        processNextChunk();
-      }
-    }
-  };
-
-  const analyzeAudioVolume = async (audioBlob: Blob): Promise<boolean> => {
-    return new Promise((resolve) => {
-      const audioContext = new (window.AudioContext || (window as any).webkitAudioContext)();
-      const reader = new FileReader();
-      
-      reader.onload = async () => {
-        try {
-          const arrayBuffer = reader.result as ArrayBuffer;
-          const audioBuffer = await audioContext.decodeAudioData(arrayBuffer);
-          
-          const channelData = audioBuffer.getChannelData(0);
-          let sum = 0;
-          for (let i = 0; i < channelData.length; i++) {
-            sum += Math.abs(channelData[i]);
-          }
-          const average = sum / channelData.length;
-          
-          const isSilent = average < 0.01;
-          resolve(!isSilent);
-        } catch (error) {
-          console.error('Audio analysis failed:', error);
-          resolve(true);
-        } finally {
-          audioContext.close();
-        }
-      };
-      
-      reader.onerror = () => {
-        console.error('FileReader error');
-        resolve(true);
-      };
-      
-      reader.readAsArrayBuffer(audioBlob);
-    });
-  };
-
-  const enqueueAudioChunk = async (audioBlob: Blob) => {
-    const hasAudio = await analyzeAudioVolume(audioBlob);
-    
-    if (!hasAudio) {
-      console.log('Skipping silent audio chunk');
-      return;
-    }
-    
-    chunkQueueRef.current.push(audioBlob);
-    processNextChunk();
-  };
-
-  const finalizeRecording = () => {
-    if (streamRef.current) {
-      streamRef.current.getTracks().forEach(track => track.stop());
-      streamRef.current = null;
-    }
-
-    mediaRecorderRef.current = null;
-
-    let attempts = 0;
-    const maxAttempts = 60;
-    const checkQueueComplete = setInterval(() => {
-      attempts++;
-      if (chunkQueueRef.current.length === 0 && !isProcessingQueueRef.current) {
-        clearInterval(checkQueueComplete);
-        toast({
-          title: "Recording stopped",
-          description: "All audio has been processed.",
-        });
-      } else if (attempts >= maxAttempts) {
-        clearInterval(checkQueueComplete);
-        toast({
-          title: "Recording stopped",
-          description: "Some audio may still be processing.",
-          variant: "destructive",
-        });
-      }
-    }, 500);
-  };
-
-  const restartRecordingCycle = () => {
-    if (!isRecordingRef.current || !streamRef.current) {
-      return;
-    }
-
-    const mediaRecorder = new MediaRecorder(streamRef.current, {
-      mimeType: 'audio/webm',
-    });
-
-    mediaRecorderRef.current = mediaRecorder;
-
-    mediaRecorder.ondataavailable = async (event: BlobEvent) => {
-      if (event.data.size > 0) {
-        await enqueueAudioChunk(event.data);
-      }
-      
-      if (isRecordingRef.current) {
-        setTimeout(() => restartRecordingCycle(), 100);
-      }
-    };
-
-    mediaRecorder.onstop = () => {
-      if (!isRecordingRef.current) {
-        finalizeRecording();
-      }
-    };
-
-    mediaRecorder.start();
-    
-    setTimeout(() => {
-      if (mediaRecorderRef.current && mediaRecorderRef.current.state === 'recording') {
-        mediaRecorderRef.current.stop();
-      }
-    }, 5000);
-  };
-
-  const startRecording = async () => {
-    if (chunkQueueRef.current.length > 0 || isProcessingQueueRef.current) {
-      toast({
-        title: "Please wait",
-        description: "Previous recording is still being processed.",
-        variant: "destructive",
-      });
-      return;
-    }
-
+  const startRecording = useCallback(async () => {
     try {
       setOriginalText('');
       setTranslatedText('');
-      chunkQueueRef.current = [];
+      setPartialText('');
       transcriptionSegmentsRef.current = [];
       lastRetroactiveCorrectionSentenceCountRef.current = 0;
       
-      const stream = await navigator.mediaDevices.getUserMedia({ 
-        audio: {
-          echoCancellation: true,
-          noiseSuppression: true,
-          sampleRate: 44100,
-        } 
+      const streaming = new StreamingTranscription({
+        onReady: () => {
+          console.log('Streaming transcription ready');
+          toast({
+            title: "Recording started",
+            description: "Real-time transcription is active. Speak naturally.",
+          });
+        },
+        onPartial: (text) => {
+          setPartialText(text);
+        },
+        onFinal: (text) => {
+          setOriginalText(prev => prev + (prev ? ' ' : '') + text);
+          setPartialText('');
+        },
+        onTranslation: (original, translated, isFinal) => {
+          if (isFinal) {
+            transcriptionSegmentsRef.current.push({
+              original,
+              translated,
+            });
+            setTranslatedText(prev => prev + (prev ? ' ' : '') + translated);
+            
+            const allOriginalText = transcriptionSegmentsRef.current
+              .map(seg => seg.original)
+              .join(' ');
+            const totalSentences = countSentences(allOriginalText);
+            
+            if (totalSentences >= 5 && 
+                Math.floor(totalSentences / 5) > Math.floor(lastRetroactiveCorrectionSentenceCountRef.current / 5)) {
+              lastRetroactiveCorrectionSentenceCountRef.current = totalSentences;
+              performRetroactiveCorrection();
+            }
+          }
+        },
+        onError: (message) => {
+          console.error('Streaming error:', message);
+          toast({
+            title: "Transcription error",
+            description: message,
+            variant: "destructive",
+          });
+        },
+        onClose: () => {
+          console.log('Streaming connection closed');
+          setIsRecording(false);
+          setIsProcessing(false);
+        },
       });
       
-      streamRef.current = stream;
-      isRecordingRef.current = true;
+      streamingRef.current = streaming;
       setIsRecording(true);
+      setIsProcessing(true);
       
-      const mediaRecorder = new MediaRecorder(stream, {
-        mimeType: 'audio/webm',
-      });
+      await streaming.start(targetLanguage, detectSpeakers);
+      setIsProcessing(false);
       
-      mediaRecorderRef.current = mediaRecorder;
-      
-      mediaRecorder.ondataavailable = (event: BlobEvent) => {
-        if (event.data.size > 0) {
-          enqueueAudioChunk(event.data);
-        }
-        
-        if (isRecordingRef.current) {
-          setTimeout(() => restartRecordingCycle(), 100);
-        }
-      };
-      
-      mediaRecorder.onstop = () => {
-        if (!isRecordingRef.current) {
-          finalizeRecording();
-        }
-      };
-      
-      mediaRecorder.start();
-      
-      setTimeout(() => {
-        if (mediaRecorderRef.current && mediaRecorderRef.current.state === 'recording') {
-          mediaRecorderRef.current.stop();
-        }
-      }, 5000);
-      
-      toast({
-        title: "Recording started",
-        description: "Audio will be transcribed every 5 seconds while you speak.",
-      });
     } catch (error) {
-      console.error('Error accessing microphone:', error);
+      console.error('Error starting streaming:', error);
+      setIsRecording(false);
+      setIsProcessing(false);
       toast({
-        title: "Microphone access denied",
-        description: "Please allow microphone access to use this feature.",
+        title: "Failed to start recording",
+        description: error instanceof Error ? error.message : "Please check microphone permissions.",
         variant: "destructive",
       });
     }
-  };
+  }, [targetLanguage, detectSpeakers, toast]);
 
-  const stopRecording = () => {
+  const stopRecording = useCallback(async () => {
     if (!isRecording) return;
     
-    isRecordingRef.current = false;
-    setIsRecording(false);
-
-    if (mediaRecorderRef.current && mediaRecorderRef.current.state !== 'inactive') {
-      try {
-        mediaRecorderRef.current.stop();
-      } catch (error) {
-        console.error('Error stopping recorder:', error);
-        finalizeRecording();
-      }
-    } else {
-      finalizeRecording();
+    setIsProcessing(true);
+    
+    if (streamingRef.current) {
+      await streamingRef.current.stop();
+      streamingRef.current = null;
     }
-  };
+    
+    setIsRecording(false);
+    setIsProcessing(false);
+    setPartialText('');
+    
+    toast({
+      title: "Recording stopped",
+      description: "All audio has been processed.",
+    });
+  }, [isRecording, toast]);
 
   const handleRecordClick = () => {
     if (isRecording) {
@@ -452,6 +283,10 @@ export default function Home() {
       startRecording();
     }
   };
+
+  const displayOriginalText = partialText 
+    ? (originalText ? originalText + ' ' + partialText : partialText)
+    : originalText;
 
   return (
     <div className="flex flex-col h-screen bg-background">
@@ -536,9 +371,10 @@ export default function Home() {
           <div className="flex-1 bg-card rounded-lg mx-4 mt-6 min-h-[200px] border border-card-border">
             <TranscriptionDisplay
               title="Original"
-              text={originalText}
+              text={displayOriginalText}
               testId="text-original"
               isRTL={getLanguageRTL(sourceLanguage)}
+              isPartial={!!partialText}
             />
           </div>
           
