@@ -1,9 +1,16 @@
 import express, { type Request, Response, NextFunction } from "express";
 import { registerRoutes } from "./routes";
 import { setupVite, serveStatic, log } from "./vite";
+import { WebSocketServer } from 'ws';
+import { setupStreamingWebSocket } from './lib/assemblyai-streaming';
 
 if (!process.env.OPENAI_API_KEY) {
   console.error("Error: OPENAI_API_KEY environment variable is required");
+  process.exit(1);
+}
+
+if (!process.env.ASSEMBLYAI_API_KEY) {
+  console.error("Error: ASSEMBLYAI_API_KEY environment variable is required for streaming transcription");
   process.exit(1);
 }
 
@@ -70,6 +77,11 @@ app.use((req, res, next) => {
   } else {
     serveStatic(app);
   }
+
+  // Set up WebSocket server for streaming transcription
+  const wss = new WebSocketServer({ server, path: '/ws/transcribe' });
+  setupStreamingWebSocket(wss);
+  log('WebSocket server set up for streaming transcription');
 
   // ALWAYS serve the app on the port specified in the environment variable PORT
   // Other ports are firewalled. Default to 5000 if not specified.

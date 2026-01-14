@@ -5,9 +5,10 @@ interface TranscriptionDisplayProps {
   text: string;
   testId?: string;
   isRTL?: boolean;
+  isPartial?: boolean;
 }
 
-export default function TranscriptionDisplay({ title, text, testId, isRTL = false }: TranscriptionDisplayProps) {
+export default function TranscriptionDisplay({ title, text, testId, isRTL = false, isPartial = false }: TranscriptionDisplayProps) {
   const scrollRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -28,8 +29,9 @@ export default function TranscriptionDisplay({ title, text, testId, isRTL = fals
         dir={isRTL ? 'rtl' : 'ltr'}
       >
         {text ? (
-          <p className="text-lg leading-relaxed text-foreground whitespace-pre-wrap">
+          <p className={`text-lg leading-relaxed whitespace-pre-wrap ${isPartial ? 'text-muted-foreground' : 'text-foreground'}`}>
             {text}
+            {isPartial && <span className="inline-block w-2 h-5 bg-primary ml-1 animate-pulse" />}
           </p>
         ) : (
           <p className="text-base leading-relaxed text-muted-foreground italic">
