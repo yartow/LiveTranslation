@@ -1,5 +1,6 @@
 import { WebSocket as WsWebSocket, WebSocketServer } from 'ws';
 import { transcribeAudio, correctAndTranslateText } from './openai';
+import { correctAndTranslateWithClaude } from './anthropic';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { writeFile, unlink } from 'fs/promises';
@@ -7,14 +8,19 @@ import { existsSync } from 'fs';
 import { randomUUID } from 'crypto';
 import ffmpeg from 'fluent-ffmpeg';
 
+type TranslationProvider = 'openai' | 'claude' | 'none';
+
 interface ChunkSession {
   clientWs: WsWebSocket;
   targetLanguage: string;
   sourceLanguage: string;
   detectSpeakers: boolean;
-  // Tracks which chunk index should be sent to client next (ordered delivery)
+  translationProvider: TranslationProvider;
+  openaiApiKey: string;
+  anthropicApiKey: string;
+  // Tracks which chunk index to send to the client next (ordered delivery)
   nextExpectedChunk: number;
-  // Stores completed chunk results waiting for earlier chunks to finish
+  // Stores completed results waiting for earlier chunks to finish
   pendingResults: Map<number, ChunkResult>;
 }
 
@@ -24,6 +30,10 @@ interface ChunkResult {
 }
 
 const activeSessions = new Map<WsWebSocket, ChunkSession>();
+
+// Safety limit: reject chunk indexes that are unreasonably far ahead to
+// prevent unbounded memory growth in pendingResults.
+const MAX_CHUNK_QUEUE_DEPTH = 200;
 
 async function safeUnlink(path: string): Promise<void> {
   try {
@@ -65,8 +75,8 @@ async function convertAudioToMp3(inputBuffer: Buffer): Promise<string> {
   return outputPath;
 }
 
-// Flush completed chunks to the client in strict order.
-// A chunk is only sent after all lower-indexed chunks have been sent.
+// Flush completed results to the client in strict recording order.
+// A chunk is only delivered after all lower-indexed chunks have been sent.
 function flushInOrder(session: ChunkSession): void {
   while (session.pendingResults.has(session.nextExpectedChunk)) {
     const result = session.pendingResults.get(session.nextExpectedChunk)!;
@@ -86,9 +96,8 @@ function flushInOrder(session: ChunkSession): void {
   }
 }
 
-// Each chunk is processed independently and concurrently.
-// Pipeline per chunk: ffmpeg convert → Whisper → GPT correct+translate
-// Results are buffered and delivered to the client in recording order.
+// Pipeline per chunk: ffmpeg convert → Whisper → GPT/Claude correct+translate.
+// Chunks are processed concurrently; results are buffered and delivered in order.
 async function processChunk(
   session: ChunkSession,
   audioBuffer: Buffer,
@@ -99,18 +108,16 @@ async function processChunk(
   try {
     mp3Path = await convertAudioToMp3(audioBuffer);
 
-    const rawText = await transcribeAudio(mp3Path, session.sourceLanguage);
+    const rawText = await transcribeAudio(mp3Path, session.sourceLanguage, session.openaiApiKey || undefined);
 
     if (!rawText.trim()) {
-      // Silent chunk: register empty result so ordering can advance
+      // Silent chunk — register empty result so ordering can advance
       session.pendingResults.set(chunkIndex, { correctedText: '', translatedText: '' });
       flushInOrder(session);
       return;
     }
 
-    // Send raw Whisper output immediately so the UI can show a preview
-    // before GPT correction finishes (may arrive out of order relative to
-    // earlier chunks still being corrected)
+    // Send raw Whisper output immediately as a preview while correction runs
     if (session.clientWs.readyState === WsWebSocket.OPEN) {
       session.clientWs.send(JSON.stringify({
         type: 'raw_transcript',
@@ -119,18 +126,35 @@ async function processChunk(
       }));
     }
 
-    // GPT correction + translation (single call for efficiency)
-    const { correctedText, translatedText } = await correctAndTranslateText(
-      rawText,
-      session.targetLanguage,
-      session.detectSpeakers,
-    );
+    let correctedText: string;
+    let translatedText: string;
+
+    if (session.translationProvider === 'none') {
+      // Skip LLM call entirely — return raw Whisper text as-is
+      correctedText = rawText;
+      translatedText = '';
+    } else if (session.translationProvider === 'claude') {
+      ({ correctedText, translatedText } = await correctAndTranslateWithClaude(
+        rawText,
+        session.targetLanguage,
+        session.detectSpeakers,
+        session.anthropicApiKey,
+      ));
+    } else {
+      // Default: OpenAI GPT-4o-mini
+      ({ correctedText, translatedText } = await correctAndTranslateText(
+        rawText,
+        session.targetLanguage,
+        session.detectSpeakers,
+        session.openaiApiKey || undefined,
+      ));
+    }
 
     session.pendingResults.set(chunkIndex, { correctedText, translatedText });
     flushInOrder(session);
 
   } catch (error) {
-    console.error(`Chunk ${chunkIndex} processing error:`, error);
+    console.error(`Chunk ${chunkIndex} error:`, error);
     if (session.clientWs.readyState === WsWebSocket.OPEN) {
       session.clientWs.send(JSON.stringify({
         type: 'chunk_error',
@@ -162,6 +186,9 @@ export function setupChunkTranscriptionWebSocket(wss: WebSocketServer): void {
               targetLanguage: message.targetLanguage || 'nl',
               sourceLanguage: message.sourceLanguage || 'en',
               detectSpeakers: message.detectSpeakers ?? false,
+              translationProvider: (message.translationProvider as TranslationProvider) || 'openai',
+              openaiApiKey: message.openaiApiKey || '',
+              anthropicApiKey: message.anthropicApiKey || '',
               nextExpectedChunk: 0,
               pendingResults: new Map(),
             };
@@ -173,6 +200,9 @@ export function setupChunkTranscriptionWebSocket(wss: WebSocketServer): void {
               if (message.targetLanguage) session.targetLanguage = message.targetLanguage;
               if (message.sourceLanguage) session.sourceLanguage = message.sourceLanguage;
               if (message.detectSpeakers !== undefined) session.detectSpeakers = message.detectSpeakers;
+              if (message.translationProvider) session.translationProvider = message.translationProvider;
+              if (message.openaiApiKey !== undefined) session.openaiApiKey = message.openaiApiKey;
+              if (message.anthropicApiKey !== undefined) session.anthropicApiKey = message.anthropicApiKey;
             }
 
           } else if (message.type === 'stop') {
@@ -184,12 +214,18 @@ export function setupChunkTranscriptionWebSocket(wss: WebSocketServer): void {
           if (!session) return;
 
           // Binary protocol: first 4 bytes = chunk index (big-endian uint32),
-          // remaining bytes = raw audio data (webm/opus from MediaRecorder)
+          // remaining bytes = raw audio (webm/opus from MediaRecorder)
           const buf = Buffer.isBuffer(data) ? data : Buffer.from(data as ArrayBuffer);
           if (buf.length < 5) return;
 
           const chunkIndex = buf.readUInt32BE(0);
           const audioBuffer = buf.subarray(4);
+
+          // Reject unreasonably large indexes to prevent memory exhaustion
+          if (chunkIndex > session.nextExpectedChunk + MAX_CHUNK_QUEUE_DEPTH) {
+            console.warn(`Chunk index ${chunkIndex} exceeds queue depth limit; discarding`);
+            return;
+          }
 
           // Fire-and-forget: chunks are processed concurrently.
           // flushInOrder() ensures the client receives results in recording order.

@@ -1,12 +1,12 @@
 export interface ChunkTranscriptionEvents {
   onReady: () => void;
-  // Raw Whisper output before GPT correction — used as a live preview
   onRawTranscript: (text: string, chunkIndex: number) => void;
-  // Final corrected + translated result delivered in recording order
   onTranslation: (original: string, translated: string, chunkIndex: number) => void;
   onError: (message: string) => void;
   onClose: () => void;
 }
+
+export type TranslationProvider = 'openai' | 'claude' | 'none';
 
 export class ChunkBasedTranscription {
   private ws: WebSocket | null = null;
@@ -20,6 +20,12 @@ export class ChunkBasedTranscription {
   private chunkDurationMs: number;
   private chunkIndex = 0;
   private isRecording = false;
+  private translationProvider: TranslationProvider;
+  private openaiApiKey: string;
+  private anthropicApiKey: string;
+  // Resolver called from onstop when the last partial chunk has been sent,
+  // so stop() can wait before closing the WebSocket.
+  private lastChunkSentResolve: (() => void) | null = null;
 
   constructor(events: ChunkTranscriptionEvents, chunkDurationMs = 5000) {
     this.events = events;
@@ -27,17 +33,26 @@ export class ChunkBasedTranscription {
     this.sourceLanguage = 'en';
     this.detectSpeakers = false;
     this.chunkDurationMs = chunkDurationMs;
+    this.translationProvider = 'openai';
+    this.openaiApiKey = '';
+    this.anthropicApiKey = '';
   }
 
   async start(
     sourceLanguage: string,
     targetLanguage: string,
     detectSpeakers: boolean,
+    translationProvider: TranslationProvider = 'openai',
+    openaiApiKey = '',
+    anthropicApiKey = '',
   ): Promise<void> {
     this.sourceLanguage = sourceLanguage;
     this.targetLanguage = targetLanguage;
     this.detectSpeakers = detectSpeakers;
     this.chunkIndex = 0;
+    this.translationProvider = translationProvider;
+    this.openaiApiKey = openaiApiKey;
+    this.anthropicApiKey = anthropicApiKey;
 
     const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
     const wsUrl = `${protocol}//${window.location.host}/ws/transcribe`;
@@ -52,18 +67,26 @@ export class ChunkBasedTranscription {
           sourceLanguage: this.sourceLanguage,
           targetLanguage: this.targetLanguage,
           detectSpeakers: this.detectSpeakers,
+          translationProvider: this.translationProvider,
+          openaiApiKey: this.openaiApiKey,
+          anthropicApiKey: this.anthropicApiKey,
         }));
       };
 
-      this.ws.onmessage = async (event) => {
+      this.ws.onmessage = (event) => {
         try {
           const message = JSON.parse(event.data as string);
 
           switch (message.type) {
             case 'ready':
-              await this.startAudioCapture();
-              this.events.onReady();
-              resolve();
+              // Propagate startAudioCapture errors through reject so the
+              // caller's await start() throws instead of hanging forever.
+              this.startAudioCapture()
+                .then(() => {
+                  this.events.onReady();
+                  resolve();
+                })
+                .catch(reject);
               break;
 
             case 'raw_transcript':
@@ -122,9 +145,11 @@ export class ChunkBasedTranscription {
     return '';
   }
 
-  // Records one chunk of audio, then immediately starts the next chunk so
-  // recording is continuous. The completed chunk blob is sent to the server
-  // asynchronously while the next chunk is already being recorded.
+  // Records one chunk and starts the next one immediately when this chunk ends.
+  // The current chunk's audio is sent asynchronously so recording never pauses.
+  // When isRecording is false (stop() called) this is the final chunk:
+  // lastChunkSentResolve is called after the blob is sent so stop() can
+  // safely close the WebSocket only after the last audio has been transmitted.
   private startNextChunk(): void {
     if (!this.isRecording || !this.mediaStream) return;
 
@@ -132,37 +157,52 @@ export class ChunkBasedTranscription {
     const recordedParts: Blob[] = [];
     const currentIndex = this.chunkIndex++;
 
+    let recorder: MediaRecorder;
     try {
-      this.mediaRecorder = new MediaRecorder(
+      recorder = new MediaRecorder(
         this.mediaStream,
         mimeType ? { mimeType } : undefined,
       );
     } catch {
-      this.mediaRecorder = new MediaRecorder(this.mediaStream);
+      recorder = new MediaRecorder(this.mediaStream);
     }
+    this.mediaRecorder = recorder;
 
-    this.mediaRecorder.ondataavailable = (e) => {
+    recorder.ondataavailable = (e) => {
       if (e.data.size > 0) recordedParts.push(e.data);
     };
 
-    this.mediaRecorder.onstop = () => {
-      // Start the next chunk IMMEDIATELY so there is no gap in recording
-      if (this.isRecording) this.startNextChunk();
+    recorder.onstop = () => {
+      const isLastChunk = !this.isRecording;
 
-      if (recordedParts.length === 0) return;
-      const blob = new Blob(recordedParts, {
-        type: this.mediaRecorder?.mimeType || 'audio/webm',
-      });
-      // Send asynchronously — does not block the next chunk
-      this.sendChunk(blob, currentIndex);
+      // Start next chunk IMMEDIATELY to keep recording continuous
+      if (!isLastChunk) this.startNextChunk();
+
+      if (recordedParts.length === 0) {
+        if (isLastChunk) {
+          this.lastChunkSentResolve?.();
+          this.lastChunkSentResolve = null;
+        }
+        return;
+      }
+
+      const blob = new Blob(recordedParts, { type: mimeType || 'audio/webm' });
+      const sendPromise = this.sendChunk(blob, currentIndex);
+
+      if (isLastChunk) {
+        sendPromise.finally(() => {
+          this.lastChunkSentResolve?.();
+          this.lastChunkSentResolve = null;
+        });
+      }
     };
 
-    this.mediaRecorder.start();
+    recorder.start();
 
+    // Clear any stale timer before arming a new one
+    if (this.chunkTimer) clearTimeout(this.chunkTimer);
     this.chunkTimer = setTimeout(() => {
-      if (this.mediaRecorder?.state === 'recording') {
-        this.mediaRecorder.stop();
-      }
+      if (recorder.state === 'recording') recorder.stop();
     }, this.chunkDurationMs);
   }
 
@@ -173,16 +213,26 @@ export class ChunkBasedTranscription {
     const audioBuffer = await blob.arrayBuffer();
     const combined = new ArrayBuffer(4 + audioBuffer.byteLength);
     const view = new DataView(combined);
-    view.setUint32(0, index, false); // big-endian
+    view.setUint32(0, index, false); // big-endian, matches server readUInt32BE
     new Uint8Array(combined).set(new Uint8Array(audioBuffer), 4);
 
     this.ws.send(combined);
   }
 
-  updateConfig(sourceLanguage: string, targetLanguage: string, detectSpeakers: boolean): void {
+  updateConfig(
+    sourceLanguage: string,
+    targetLanguage: string,
+    detectSpeakers: boolean,
+    translationProvider?: TranslationProvider,
+    openaiApiKey?: string,
+    anthropicApiKey?: string,
+  ): void {
     this.sourceLanguage = sourceLanguage;
     this.targetLanguage = targetLanguage;
     this.detectSpeakers = detectSpeakers;
+    if (translationProvider) this.translationProvider = translationProvider;
+    if (openaiApiKey !== undefined) this.openaiApiKey = openaiApiKey;
+    if (anthropicApiKey !== undefined) this.anthropicApiKey = anthropicApiKey;
 
     if (this.ws?.readyState === WebSocket.OPEN) {
       this.ws.send(JSON.stringify({
@@ -190,6 +240,9 @@ export class ChunkBasedTranscription {
         sourceLanguage,
         targetLanguage,
         detectSpeakers,
+        translationProvider: this.translationProvider,
+        openaiApiKey: this.openaiApiKey,
+        anthropicApiKey: this.anthropicApiKey,
       }));
     }
   }
@@ -202,16 +255,24 @@ export class ChunkBasedTranscription {
       this.chunkTimer = null;
     }
 
-    if (this.mediaRecorder?.state === 'recording') {
-      // Let the final partial chunk be sent before closing
-      this.mediaRecorder.stop();
-    }
-    this.mediaRecorder = null;
-
     if (this.mediaStream) {
       this.mediaStream.getTracks().forEach((track) => track.stop());
       this.mediaStream = null;
     }
+
+    // Wait for the final partial chunk to be sent before closing the WebSocket.
+    // lastChunkSentResolve is set up here and called from onstop after the
+    // blob is transmitted, preventing lost audio at session end.
+    let waitForLastChunk = Promise.resolve();
+    if (this.mediaRecorder?.state === 'recording') {
+      waitForLastChunk = new Promise<void>((resolve) => {
+        this.lastChunkSentResolve = resolve;
+      });
+      this.mediaRecorder.stop();
+    }
+    this.mediaRecorder = null;
+
+    await waitForLastChunk;
 
     if (this.ws?.readyState === WebSocket.OPEN) {
       this.ws.send(JSON.stringify({ type: 'stop' }));

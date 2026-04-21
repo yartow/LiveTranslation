@@ -4,14 +4,19 @@ import LanguageSelector, { getLanguageRTL } from '@/components/LanguageSelector'
 import RecordButton from '@/components/RecordButton';
 import RecordingIndicator from '@/components/RecordingIndicator';
 import TranscriptionDisplay from '@/components/TranscriptionDisplay';
+import SettingsDialog from '@/components/SettingsDialog';
 import { Checkbox } from '@/components/ui/checkbox';
 import { Label } from '@/components/ui/label';
 import { Button } from '@/components/ui/button';
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/components/ui/collapsible';
 import { ChevronDown, ChevronUp, Download } from 'lucide-react';
 import { useToast } from '@/hooks/use-toast';
+import { useSettings } from '@/hooks/useSettings';
 import ExportDialog from '@/components/ExportDialog';
 import { ChunkBasedTranscription } from '@/lib/chunk-based-transcription';
+import { BrowserSpeechTranscription } from '@/lib/browser-speech-transcription';
+
+type AnyTranscriptionBackend = ChunkBasedTranscription | BrowserSpeechTranscription;
 
 interface TranscriptionSegment {
   original: string;
@@ -25,47 +30,51 @@ export default function Home() {
   const [isProcessing, setIsProcessing] = useState(false);
   const [originalText, setOriginalText] = useState('');
   const [translatedText, setTranslatedText] = useState('');
-  // Shows the most recent raw Whisper output as a live preview while GPT
-  // correction is in progress
+  // Raw Whisper / interim SpeechRecognition output shown as greyed-out preview
   const [previewText, setPreviewText] = useState('');
   const [isDark, setIsDark] = useState(false);
   const [isRetranslating, setIsRetranslating] = useState(false);
   const [detectSpeakers, setDetectSpeakers] = useState(false);
   const [isConfigOpen, setIsConfigOpen] = useState(true);
   const [isExportDialogOpen, setIsExportDialogOpen] = useState(false);
-  // Chunk duration in seconds (how long each audio chunk is before it is sent
-  // to Whisper; shorter = more responsive, longer = better context for Whisper)
+  const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const [chunkDurationSecs, setChunkDurationSecs] = useState(5);
 
-  const chunkRef = useRef<ChunkBasedTranscription | null>(null);
+  const { settings, updateSettings } = useSettings();
+
+  const backendRef = useRef<AnyTranscriptionBackend | null>(null);
   const transcriptionSegmentsRef = useRef<TranscriptionSegment[]>([]);
   const pendingRetranslationRef = useRef(false);
   const previousTargetLanguageRef = useRef(targetLanguage);
   const previousDetectSpeakersRef = useRef(detectSpeakers);
-  const lastRetroactiveCorrectionSentenceCountRef = useRef(0);
+  const lastRetroactiveSentenceCountRef = useRef(0);
   const { toast } = useToast();
+
+  // Keep refs in sync so async callbacks always read the latest values
+  // without causing stale-closure bugs when called from startRecording's events.
+  const targetLanguageRef = useRef(targetLanguage);
+  const detectSpeakersRef = useRef(detectSpeakers);
+  const settingsRef = useRef(settings);
+
+  useEffect(() => { targetLanguageRef.current = targetLanguage; }, [targetLanguage]);
+  useEffect(() => { detectSpeakersRef.current = detectSpeakers; }, [detectSpeakers]);
+  useEffect(() => { settingsRef.current = settings; }, [settings]);
 
   useEffect(() => {
     const prefersDark = window.matchMedia('(prefers-color-scheme: dark)').matches;
     const savedTheme = localStorage.getItem('theme');
     const shouldBeDark = savedTheme === 'dark' || (!savedTheme && prefersDark);
-
     setIsDark(shouldBeDark);
-    if (shouldBeDark) {
-      document.documentElement.classList.add('dark');
-    }
+    if (shouldBeDark) document.documentElement.classList.add('dark');
   }, []);
 
-  // Re-translate all accumulated text when the target language or speaker
-  // detection setting changes
+  // Re-translate all accumulated text when target language or speaker detection changes
   useEffect(() => {
     const retranslateAll = async () => {
       const languageChanged = targetLanguage !== previousTargetLanguageRef.current;
-      const speakerDetectionChanged = detectSpeakers !== previousDetectSpeakersRef.current;
+      const speakerChanged = detectSpeakers !== previousDetectSpeakersRef.current;
 
-      if (!languageChanged && !speakerDetectionChanged && !pendingRetranslationRef.current) {
-        return;
-      }
+      if (!languageChanged && !speakerChanged && !pendingRetranslationRef.current) return;
 
       if (transcriptionSegmentsRef.current.length === 0) {
         pendingRetranslationRef.current = false;
@@ -84,39 +93,40 @@ export default function Home() {
       previousDetectSpeakersRef.current = detectSpeakers;
       setIsRetranslating(true);
 
-      if (chunkRef.current) {
-        chunkRef.current.updateConfig(sourceLanguage, targetLanguage, detectSpeakers);
+      if (backendRef.current) {
+        backendRef.current.updateConfig(
+          sourceLanguage, targetLanguage, detectSpeakers,
+          settings.translationProvider,
+          settings.openaiApiKey,
+          settings.anthropicApiKey,
+        );
       }
 
       try {
-        const allOriginalText = transcriptionSegmentsRef.current
-          .map(seg => seg.original)
-          .join(' ');
+        const allOriginalText = transcriptionSegmentsRef.current.map(s => s.original).join(' ');
 
         const response = await fetch('/api/retranslate', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ originalText: allOriginalText, targetLanguage, detectSpeakers }),
+          body: JSON.stringify({
+            originalText: allOriginalText,
+            targetLanguage,
+            detectSpeakers,
+            translationProvider: settings.translationProvider,
+            openaiApiKey: settings.openaiApiKey,
+            anthropicApiKey: settings.anthropicApiKey,
+          }),
         });
 
         if (!response.ok) throw new Error('Re-translation failed');
 
         const data = await response.json();
-
-        transcriptionSegmentsRef.current = [{
-          original: allOriginalText,
-          translated: data.translatedText,
-        }];
-
+        transcriptionSegmentsRef.current = [{ original: allOriginalText, translated: data.translatedText }];
         setOriginalText(allOriginalText);
         setTranslatedText(data.translatedText);
       } catch (error) {
         console.error('Re-translation error:', error);
-        toast({
-          title: "Re-translation failed",
-          description: "Could not translate to the new language.",
-          variant: "destructive",
-        });
+        toast({ title: 'Re-translation failed', description: 'Could not translate to the new language.', variant: 'destructive' });
       } finally {
         setIsRetranslating(false);
       }
@@ -133,44 +143,44 @@ export default function Home() {
 
   const countSentences = (text: string): number => {
     if (!text.trim()) return 0;
-    const sentences = text.match(/[.!?]+/g);
-    return sentences ? sentences.length : 0;
+    return (text.match(/[.!?]+/g) || []).length;
   };
 
-  const performRetroactiveCorrection = async () => {
+  // Uses refs so it always reads current targetLanguage/detectSpeakers/settings
+  // regardless of when it was captured in a callback closure.
+  const performRetroactiveCorrection = useCallback(async () => {
     if (transcriptionSegmentsRef.current.length === 0) return;
 
-    const allOriginalText = transcriptionSegmentsRef.current
-      .map(seg => seg.original)
-      .join(' ');
+    const allOriginalText = transcriptionSegmentsRef.current.map(s => s.original).join(' ');
+    const lang = targetLanguageRef.current;
+    const speakers = detectSpeakersRef.current;
+    const s = settingsRef.current;
 
     try {
       const response = await fetch('/api/retroactive-correct', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ accumulatedText: allOriginalText, targetLanguage, detectSpeakers }),
+        body: JSON.stringify({
+          accumulatedText: allOriginalText,
+          targetLanguage: lang,
+          detectSpeakers: speakers,
+          translationProvider: s.translationProvider,
+          openaiApiKey: s.openaiApiKey,
+          anthropicApiKey: s.anthropicApiKey,
+        }),
       });
 
       if (!response.ok) throw new Error('Retroactive correction failed');
 
       const data = await response.json();
-
-      transcriptionSegmentsRef.current = [{
-        original: data.correctedText,
-        translated: data.translatedText,
-      }];
-
+      transcriptionSegmentsRef.current = [{ original: data.correctedText, translated: data.translatedText }];
       setOriginalText(data.correctedText);
       setTranslatedText(data.translatedText);
     } catch (error) {
       console.error('Retroactive correction error:', error);
-      toast({
-        title: "Retroactive correction failed",
-        description: "Could not perform coherence check and grammar correction.",
-        variant: "destructive",
-      });
+      toast({ title: 'Retroactive correction failed', description: 'Could not perform coherence check.', variant: 'destructive' });
     }
-  };
+  }, [toast]);
 
   const startRecording = useCallback(async () => {
     try {
@@ -178,117 +188,112 @@ export default function Home() {
       setTranslatedText('');
       setPreviewText('');
       transcriptionSegmentsRef.current = [];
-      lastRetroactiveCorrectionSentenceCountRef.current = 0;
+      lastRetroactiveSentenceCountRef.current = 0;
 
-      const chunk = new ChunkBasedTranscription(
-        {
-          onReady: () => {
-            toast({
-              title: "Recording started",
-              description: `Listening in ${chunkDurationSecs}s intervals. Speak naturally.`,
-            });
-          },
-
-          // Raw Whisper output arrives while GPT correction is in progress.
-          // Show it greyed-out as a live preview.
-          onRawTranscript: (text) => {
-            setPreviewText(text);
-          },
-
-          // Final corrected + translated result, delivered in recording order.
-          onTranslation: (original, translated) => {
-            transcriptionSegmentsRef.current.push({ original, translated });
-            setOriginalText(prev => prev + (prev ? ' ' : '') + original);
-            setTranslatedText(prev => prev + (prev ? ' ' : '') + translated);
-
-            const allOriginalText = transcriptionSegmentsRef.current
-              .map(seg => seg.original)
-              .join(' ');
-            const totalSentences = countSentences(allOriginalText);
-
-            if (
-              totalSentences >= 5 &&
-              Math.floor(totalSentences / 5) >
-                Math.floor(lastRetroactiveCorrectionSentenceCountRef.current / 5)
-            ) {
-              lastRetroactiveCorrectionSentenceCountRef.current = totalSentences;
-              performRetroactiveCorrection();
-            }
-          },
-
-          onError: (message) => {
-            console.error('Chunk transcription error:', message);
-            toast({
-              title: "Transcription error",
-              description: message,
-              variant: "destructive",
-            });
-          },
-
-          onClose: () => {
-            setIsRecording(false);
-            setIsProcessing(false);
-            setPreviewText('');
-          },
+      const events = {
+        onReady: () => {
+          const desc = settings.transcriptionProvider === 'browser'
+            ? 'Browser speech recognition is active. Speak clearly.'
+            : `Listening in ${chunkDurationSecs}s intervals. Speak naturally.`;
+          toast({ title: 'Recording started', description: desc });
         },
-        chunkDurationSecs * 1000,
-      );
+        onRawTranscript: (text: string) => {
+          setPreviewText(text);
+        },
+        onTranslation: (original: string, translated: string) => {
+          if (!original) return;
+          transcriptionSegmentsRef.current.push({ original, translated });
+          setOriginalText(prev => prev + (prev ? ' ' : '') + original);
+          setTranslatedText(prev => prev + (prev ? ' ' : '') + translated);
 
-      chunkRef.current = chunk;
+          const allText = transcriptionSegmentsRef.current.map(s => s.original).join(' ');
+          const totalSentences = countSentences(allText);
+          if (
+            totalSentences >= 5 &&
+            Math.floor(totalSentences / 5) > Math.floor(lastRetroactiveSentenceCountRef.current / 5)
+          ) {
+            lastRetroactiveSentenceCountRef.current = totalSentences;
+            performRetroactiveCorrection();
+          }
+        },
+        onError: (message: string) => {
+          console.error('Transcription error:', message);
+          toast({ title: 'Transcription error', description: message, variant: 'destructive' });
+        },
+        onClose: () => {
+          setIsRecording(false);
+          setIsProcessing(false);
+          setPreviewText('');
+        },
+      };
+
+      let backend: AnyTranscriptionBackend;
+
+      if (settings.transcriptionProvider === 'browser') {
+        backend = new BrowserSpeechTranscription(events);
+      } else {
+        backend = new ChunkBasedTranscription(events, chunkDurationSecs * 1000);
+      }
+
+      backendRef.current = backend;
       setIsRecording(true);
       setIsProcessing(true);
 
-      await chunk.start(sourceLanguage, targetLanguage, detectSpeakers);
-      setIsProcessing(false);
+      await backend.start(
+        sourceLanguage,
+        targetLanguage,
+        detectSpeakers,
+        settings.translationProvider,
+        settings.openaiApiKey,
+        settings.anthropicApiKey,
+      );
 
+      setIsProcessing(false);
     } catch (error) {
       console.error('Error starting recording:', error);
       setIsRecording(false);
       setIsProcessing(false);
       toast({
-        title: "Failed to start recording",
-        description: error instanceof Error ? error.message : "Please check microphone permissions.",
-        variant: "destructive",
+        title: 'Failed to start recording',
+        description: error instanceof Error ? error.message : 'Please check microphone permissions.',
+        variant: 'destructive',
       });
     }
-  }, [sourceLanguage, targetLanguage, detectSpeakers, chunkDurationSecs, toast]);
+  }, [sourceLanguage, targetLanguage, detectSpeakers, settings, chunkDurationSecs, toast, performRetroactiveCorrection]);
 
   const stopRecording = useCallback(async () => {
     if (!isRecording) return;
-
     setIsProcessing(true);
 
-    if (chunkRef.current) {
-      await chunkRef.current.stop();
-      chunkRef.current = null;
+    if (backendRef.current) {
+      await backendRef.current.stop();
+      backendRef.current = null;
     }
 
     setIsRecording(false);
     setIsProcessing(false);
     setPreviewText('');
-
-    toast({
-      title: "Recording stopped",
-      description: "All audio has been processed.",
-    });
+    toast({ title: 'Recording stopped', description: 'All audio has been processed.' });
   }, [isRecording, toast]);
 
   const handleRecordClick = () => {
-    if (isRecording) {
-      stopRecording();
-    } else {
-      startRecording();
-    }
+    if (isRecording) stopRecording();
+    else startRecording();
   };
 
-  // Combine confirmed text with the in-flight Whisper preview
   const displayOriginalText = previewText
     ? (originalText ? originalText + ' ' + previewText : previewText)
     : originalText;
 
+  const translationTitle = () => {
+    if (isRetranslating) return 'Translation (updating...)';
+    if (settings.translationProvider === 'none') return 'Translation (disabled)';
+    return 'Translation';
+  };
+
   return (
     <div className="flex flex-col h-screen bg-background">
-      <Header onThemeToggle={toggleTheme} />
+      <Header onThemeToggle={toggleTheme} onSettingsOpen={() => setIsSettingsOpen(true)} />
 
       <div className="relative flex-1 flex flex-col overflow-hidden">
         <RecordingIndicator isRecording={isRecording} />
@@ -327,7 +332,7 @@ export default function Home() {
                 />
               </div>
 
-              <div className="flex items-center gap-6">
+              <div className="flex flex-wrap items-center gap-6">
                 <div className="flex items-center space-x-2">
                   <Checkbox
                     id="speaker-detection"
@@ -344,24 +349,36 @@ export default function Home() {
                   </Label>
                 </div>
 
-                <div className="flex items-center gap-2">
-                  <Label htmlFor="chunk-duration" className="text-sm font-medium whitespace-nowrap">
-                    Listen interval:
-                  </Label>
-                  <select
-                    id="chunk-duration"
-                    value={chunkDurationSecs}
-                    onChange={(e) => setChunkDurationSecs(Number(e.target.value))}
-                    disabled={isRecording}
-                    className="text-sm border border-input rounded px-2 py-1 bg-background"
-                    data-testid="select-chunk-duration"
-                  >
-                    <option value={3}>3s</option>
-                    <option value={5}>5s</option>
-                    <option value={8}>8s</option>
-                    <option value={10}>10s</option>
-                    <option value={15}>15s</option>
-                  </select>
+                {settings.transcriptionProvider === 'whisper' && (
+                  <div className="flex items-center gap-2">
+                    <Label htmlFor="chunk-duration" className="text-sm font-medium whitespace-nowrap">
+                      Listen interval:
+                    </Label>
+                    <select
+                      id="chunk-duration"
+                      value={chunkDurationSecs}
+                      onChange={(e) => setChunkDurationSecs(Number(e.target.value))}
+                      disabled={isRecording}
+                      className="text-sm border border-input rounded px-2 py-1 bg-background"
+                      data-testid="select-chunk-duration"
+                    >
+                      <option value={3}>3s</option>
+                      <option value={5}>5s</option>
+                      <option value={8}>8s</option>
+                      <option value={10}>10s</option>
+                      <option value={15}>15s</option>
+                    </select>
+                  </div>
+                )}
+
+                {/* Provider badges */}
+                <div className="flex items-center gap-2 ml-auto">
+                  <span className="text-xs text-muted-foreground">
+                    {settings.transcriptionProvider === 'browser' ? '🎤 Browser' : '🎙 Whisper'}
+                    {' · '}
+                    {settings.translationProvider === 'none' ? 'No translation' :
+                      settings.translationProvider === 'claude' ? '🤖 Claude' : '⚡ GPT-4o-mini'}
+                  </span>
                 </div>
               </div>
             </CollapsibleContent>
@@ -400,7 +417,7 @@ export default function Home() {
 
           <div className="flex-1 bg-card rounded-lg mx-4 mb-6 min-h-[200px] border border-card-border">
             <TranscriptionDisplay
-              title={isRetranslating ? "Translation (updating...)" : "Translation"}
+              title={translationTitle()}
               text={translatedText}
               testId="text-translation"
               isRTL={getLanguageRTL(targetLanguage)}
@@ -415,6 +432,13 @@ export default function Home() {
         originalText={originalText}
         translatedText={translatedText}
         targetLanguage={targetLanguage}
+      />
+
+      <SettingsDialog
+        isOpen={isSettingsOpen}
+        onClose={() => setIsSettingsOpen(false)}
+        settings={settings}
+        onUpdate={updateSettings}
       />
     </div>
   );
