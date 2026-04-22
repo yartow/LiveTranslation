@@ -1,46 +1,88 @@
-import type { Express } from "express";
-import { createServer, type Server } from "http";
-import { storage } from "./storage";
-import multer from "multer";
-import { transcribeAudio, correctAndTranslateText, retroactiveCorrection, formatForExport } from "./lib/openai";
-import { uploadFileToDrive, listDriveFolders } from "./lib/google-drive";
-import fs from "fs";
-import ffmpeg from "fluent-ffmpeg";
+import type { Express } from 'express';
+import { createServer, type Server } from 'http';
+import { storage } from './storage';
+import multer from 'multer';
+import {
+  transcribeAudio,
+  correctAndTranslateText,
+  retroactiveCorrection,
+  formatForExport,
+} from './lib/openai';
+import { correctAndTranslateWithClaude, retroactiveCorrectionWithClaude } from './lib/anthropic';
+import { uploadFileToDrive, listDriveFolders } from './lib/google-drive';
+import fs from 'fs';
+import ffmpeg from 'fluent-ffmpeg';
 
 const upload = multer({
-  dest: "/tmp/uploads/",
-  limits: {
-    fileSize: 25 * 1024 * 1024,
-  },
+  dest: '/tmp/uploads/',
+  limits: { fileSize: 25 * 1024 * 1024 },
 });
 
+type TranslationProvider = 'openai' | 'claude' | 'none';
+
+// Route translation/correction to the appropriate provider.
+// Falls back to OpenAI if no provider is specified.
+async function runCorrectAndTranslate(
+  text: string,
+  targetLanguage: string,
+  detectSpeakers: boolean,
+  provider: TranslationProvider,
+  openaiApiKey?: string,
+  anthropicApiKey?: string,
+): Promise<{ correctedText: string; translatedText: string }> {
+  if (provider === 'claude') {
+    return correctAndTranslateWithClaude(text, targetLanguage, detectSpeakers, anthropicApiKey || '');
+  }
+  if (provider === 'none') {
+    return { correctedText: text, translatedText: '' };
+  }
+  return correctAndTranslateText(text, targetLanguage, detectSpeakers, openaiApiKey);
+}
+
+async function runRetroactiveCorrection(
+  accumulatedText: string,
+  targetLanguage: string,
+  detectSpeakers: boolean,
+  provider: TranslationProvider,
+  openaiApiKey?: string,
+  anthropicApiKey?: string,
+): Promise<{ correctedText: string; translatedText: string }> {
+  if (provider === 'claude') {
+    return retroactiveCorrectionWithClaude(accumulatedText, targetLanguage, detectSpeakers, anthropicApiKey || '');
+  }
+  if (provider === 'none') {
+    return { correctedText: accumulatedText, translatedText: '' };
+  }
+  return retroactiveCorrection(accumulatedText, targetLanguage, detectSpeakers, openaiApiKey);
+}
+
 export async function registerRoutes(app: Express): Promise<Server> {
-  app.post("/api/transcribe", upload.single("audio"), async (req, res) => {
+
+  // Legacy file-upload transcription endpoint (used by tests / direct API consumers)
+  app.post('/api/transcribe', upload.single('audio'), async (req, res) => {
     let webmFilePath: string | null = null;
     let mp3FilePath: string | null = null;
-    
+
     try {
       if (!req.file) {
-        return res.status(400).json({ error: "No audio file provided" });
+        return res.status(400).json({ error: 'No audio file provided' });
       }
 
-      const sourceLanguage = req.body.sourceLanguage || "en";
-      const targetLanguage = req.body.targetLanguage || "en";
+      const sourceLanguage = req.body.sourceLanguage || 'en';
+      const targetLanguage = req.body.targetLanguage || 'en';
       const detectSpeakers = req.body.detectSpeakers === 'true';
+      const provider: TranslationProvider = req.body.translationProvider || 'openai';
+      const openaiApiKey = req.body.openaiApiKey || undefined;
+      const anthropicApiKey = req.body.anthropicApiKey || undefined;
 
       webmFilePath = req.file.path + '.webm';
       mp3FilePath = req.file.path + '.mp3';
-      
+
       fs.renameSync(req.file.path, webmFilePath);
 
       const fileStats = fs.statSync(webmFilePath);
-      console.log(`Processing audio file: ${fileStats.size} bytes`);
+      if (fileStats.size === 0) throw new Error('Audio file is empty');
 
-      if (fileStats.size === 0) {
-        throw new Error('Audio file is empty');
-      }
-
-      // Convert WebM to MP3 with aggressive error handling for incomplete chunks
       await new Promise<void>((resolve, reject) => {
         ffmpeg(webmFilePath!)
           .inputFormat('webm')
@@ -49,144 +91,125 @@ export async function registerRoutes(app: Express): Promise<Server> {
             '-fflags', '+genpts+igndts+ignidx+discardcorrupt',
             '-analyzeduration', '0',
             '-probesize', '32',
-            '-max_error_rate', '1.0'
+            '-max_error_rate', '1.0',
           ])
           .toFormat('mp3')
           .audioCodec('libmp3lame')
           .audioBitrate('128k')
           .audioChannels(1)
           .audioFrequency(16000)
-          .outputOptions([
-            '-write_xing', '0',
-            '-id3v2_version', '0'
-          ])
-          .on('end', () => {
-            console.log('Audio conversion completed');
-            resolve();
-          })
-          .on('error', (err, stdout, stderr) => {
-            console.error('FFmpeg conversion failed:', err.message);
-            console.error('FFmpeg stderr:', stderr);
+          .outputOptions(['-write_xing', '0', '-id3v2_version', '0'])
+          .on('end', resolve)
+          .on('error', (err, _stdout, stderr) => {
+            console.error('FFmpeg error:', err.message, stderr);
             reject(new Error(`Audio conversion failed: ${err.message}`));
           })
           .save(mp3FilePath!);
       });
 
-      const rawTranscript = await transcribeAudio(mp3FilePath, sourceLanguage);
-
-      const { correctedText, translatedText } = await correctAndTranslateText(
-        rawTranscript,
-        targetLanguage,
-        detectSpeakers
+      const rawTranscript = await transcribeAudio(mp3FilePath, sourceLanguage, openaiApiKey);
+      const { correctedText, translatedText } = await runCorrectAndTranslate(
+        rawTranscript, targetLanguage, detectSpeakers, provider, openaiApiKey, anthropicApiKey,
       );
 
-      // Clean up temporary files
-      if (webmFilePath && fs.existsSync(webmFilePath)) {
-        fs.unlinkSync(webmFilePath);
-      }
-      if (mp3FilePath && fs.existsSync(mp3FilePath)) {
-        fs.unlinkSync(mp3FilePath);
-      }
+      if (webmFilePath && fs.existsSync(webmFilePath)) fs.unlinkSync(webmFilePath);
+      if (mp3FilePath && fs.existsSync(mp3FilePath)) fs.unlinkSync(mp3FilePath);
 
-      res.json({
-        originalText: correctedText,
-        translatedText,
-      });
+      res.json({ originalText: correctedText, translatedText });
     } catch (error) {
-      console.error("Transcription error:", error);
-      
-      // Clean up temporary files on error
-      if (webmFilePath && fs.existsSync(webmFilePath)) {
-        fs.unlinkSync(webmFilePath);
-      }
-      if (mp3FilePath && fs.existsSync(mp3FilePath)) {
-        fs.unlinkSync(mp3FilePath);
-      }
-      if (req.file?.path && fs.existsSync(req.file.path)) {
-        fs.unlinkSync(req.file.path);
-      }
-
+      console.error('Transcription error:', error);
+      if (webmFilePath && fs.existsSync(webmFilePath)) fs.unlinkSync(webmFilePath);
+      if (mp3FilePath && fs.existsSync(mp3FilePath)) fs.unlinkSync(mp3FilePath);
+      if (req.file?.path && fs.existsSync(req.file.path)) fs.unlinkSync(req.file.path);
       res.status(500).json({
-        error: "Failed to transcribe audio",
-        details: error instanceof Error ? error.message : "Unknown error",
+        error: 'Failed to transcribe audio',
+        details: error instanceof Error ? error.message : 'Unknown error',
       });
     }
   });
 
-  app.post("/api/retranslate", async (req, res) => {
+  // Text-only translation — used by browser SpeechRecognition mode and re-translation
+  app.post('/api/translate', async (req, res) => {
     try {
-      const { originalText, targetLanguage, detectSpeakers } = req.body;
+      const { text, targetLanguage, detectSpeakers, translationProvider, openaiApiKey, anthropicApiKey } = req.body;
 
-      if (!originalText) {
-        return res.status(400).json({ error: "No text provided" });
-      }
+      if (!text) return res.status(400).json({ error: 'No text provided' });
 
-      const languageNames: Record<string, string> = {
-        en: "English",
-        es: "Spanish",
-        fr: "French",
-        de: "German",
-        nl: "Dutch",
-        pt: "Portuguese",
-        it: "Italian",
-        zh: "Chinese (Simplified)",
-        "zh-TW": "Chinese (Traditional)",
-        ar: "Arabic",
-        fa: "Farsi",
-        hi: "Hindi",
-        ru: "Russian",
-        ja: "Japanese",
-        ko: "Korean",
-      };
-
-      const targetLanguageName = languageNames[targetLanguage] || "English";
-
-      const { translatedText } = await correctAndTranslateText(
-        originalText,
-        targetLanguage,
-        detectSpeakers
-      );
-
-      res.json({ translatedText });
-    } catch (error) {
-      console.error("Re-translation error:", error);
-      res.status(500).json({
-        error: "Failed to re-translate text",
-        details: error instanceof Error ? error.message : "Unknown error",
-      });
-    }
-  });
-
-  app.post("/api/retroactive-correct", async (req, res) => {
-    try {
-      const { accumulatedText, targetLanguage, detectSpeakers } = req.body;
-
-      if (!accumulatedText) {
-        return res.status(400).json({ error: "No text provided" });
-      }
-
-      const { correctedText, translatedText } = await retroactiveCorrection(
-        accumulatedText,
-        targetLanguage,
-        detectSpeakers
+      const { correctedText, translatedText } = await runCorrectAndTranslate(
+        text,
+        targetLanguage || 'nl',
+        detectSpeakers ?? false,
+        (translationProvider as TranslationProvider) || 'openai',
+        openaiApiKey || undefined,
+        anthropicApiKey || undefined,
       );
 
       res.json({ correctedText, translatedText });
     } catch (error) {
-      console.error("Retroactive correction error:", error);
+      console.error('Translation error:', error);
       res.status(500).json({
-        error: "Failed to perform retroactive correction",
-        details: error instanceof Error ? error.message : "Unknown error",
+        error: 'Failed to translate text',
+        details: error instanceof Error ? error.message : 'Unknown error',
       });
     }
   });
 
-  app.post("/api/export-format", async (req, res) => {
+  app.post('/api/retranslate', async (req, res) => {
     try {
-      const { originalText, translatedText, targetLanguage, exportType, fileFormat } = req.body;
+      const { originalText, targetLanguage, detectSpeakers, translationProvider, openaiApiKey, anthropicApiKey } = req.body;
+
+      if (!originalText) return res.status(400).json({ error: 'No text provided' });
+
+      const { correctedText, translatedText } = await runCorrectAndTranslate(
+        originalText,
+        targetLanguage || 'nl',
+        detectSpeakers ?? false,
+        (translationProvider as TranslationProvider) || 'openai',
+        openaiApiKey || undefined,
+        anthropicApiKey || undefined,
+      );
+
+      res.json({ correctedText, translatedText });
+    } catch (error) {
+      console.error('Re-translation error:', error);
+      res.status(500).json({
+        error: 'Failed to re-translate text',
+        details: error instanceof Error ? error.message : 'Unknown error',
+      });
+    }
+  });
+
+  app.post('/api/retroactive-correct', async (req, res) => {
+    try {
+      const { accumulatedText, targetLanguage, detectSpeakers, translationProvider, openaiApiKey, anthropicApiKey } = req.body;
+
+      if (!accumulatedText) return res.status(400).json({ error: 'No text provided' });
+
+      const { correctedText, translatedText } = await runRetroactiveCorrection(
+        accumulatedText,
+        targetLanguage || 'nl',
+        detectSpeakers ?? false,
+        (translationProvider as TranslationProvider) || 'openai',
+        openaiApiKey || undefined,
+        anthropicApiKey || undefined,
+      );
+
+      res.json({ correctedText, translatedText });
+    } catch (error) {
+      console.error('Retroactive correction error:', error);
+      res.status(500).json({
+        error: 'Failed to perform retroactive correction',
+        details: error instanceof Error ? error.message : 'Unknown error',
+      });
+    }
+  });
+
+  app.post('/api/export-format', async (req, res) => {
+    try {
+      const { originalText, translatedText, targetLanguage, exportType, fileFormat, openaiApiKey } = req.body;
 
       if (!originalText && !translatedText) {
-        return res.status(400).json({ error: "No text provided" });
+        return res.status(400).json({ error: 'No text provided' });
       }
 
       const formattedContent = await formatForExport(
@@ -194,66 +217,58 @@ export async function registerRoutes(app: Express): Promise<Server> {
         translatedText || '',
         targetLanguage,
         exportType,
-        fileFormat
+        fileFormat,
+        openaiApiKey || undefined,
       );
 
       res.json({ formattedContent });
     } catch (error) {
-      console.error("Export formatting error:", error);
+      console.error('Export formatting error:', error);
       res.status(500).json({
-        error: "Failed to format export",
-        details: error instanceof Error ? error.message : "Unknown error",
+        error: 'Failed to format export',
+        details: error instanceof Error ? error.message : 'Unknown error',
       });
     }
   });
 
-  app.post("/api/upload-to-drive", async (req, res) => {
+  app.post('/api/upload-to-drive', async (req, res) => {
     try {
       const { fileName, fileContent, mimeType, folderId } = req.body;
 
       if (!fileName || !fileContent || typeof fileName !== 'string' || typeof fileContent !== 'string') {
-        return res.status(400).json({ error: "Missing or invalid required fields" });
+        return res.status(400).json({ error: 'Missing or invalid required fields' });
       }
-
       if (mimeType && typeof mimeType !== 'string') {
-        return res.status(400).json({ error: "Invalid MIME type" });
+        return res.status(400).json({ error: 'Invalid MIME type' });
       }
-
       if (fileContent.length > 10 * 1024 * 1024) {
-        return res.status(400).json({ error: "File content too large (max 10MB)" });
+        return res.status(400).json({ error: 'File content too large (max 10MB)' });
       }
 
-      const result = await uploadFileToDrive(
-        fileName,
-        fileContent,
-        mimeType,
-        folderId
-      );
-
+      const result = await uploadFileToDrive(fileName, fileContent, mimeType, folderId);
       res.json(result);
     } catch (error) {
-      console.error("Google Drive upload error:", error);
+      console.error('Google Drive upload error:', error);
       res.status(500).json({
-        error: "Failed to upload to Google Drive",
-        details: error instanceof Error ? error.message : "Unknown error",
+        error: 'Failed to upload to Google Drive',
+        details: error instanceof Error ? error.message : 'Unknown error',
       });
     }
   });
 
-  app.get("/api/drive-folders", async (req, res) => {
+  app.get('/api/drive-folders', async (req, res) => {
     try {
       const folders = await listDriveFolders();
       res.json({ folders });
     } catch (error) {
-      console.error("Google Drive folders error:", error);
+      console.error('Google Drive folders error:', error);
       res.status(500).json({
-        error: "Failed to fetch Google Drive folders",
-        details: error instanceof Error ? error.message : "Unknown error",
+        error: 'Failed to fetch Google Drive folders',
+        details: error instanceof Error ? error.message : 'Unknown error',
       });
     }
   });
 
   const httpServer = createServer(app);
-
   return httpServer;
 }

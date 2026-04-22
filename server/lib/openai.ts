@@ -1,15 +1,41 @@
-import OpenAI from "openai";
-import fs from "fs";
+import OpenAI from 'openai';
+import fs from 'fs';
 
-const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
+const sharedClient = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 
-export async function transcribeAudio(audioFilePath: string, language: string = "en"): Promise<string> {
+function client(apiKey?: string): OpenAI {
+  return apiKey ? new OpenAI({ apiKey }) : sharedClient;
+}
+
+const LANGUAGE_NAMES: Record<string, string> = {
+  en: 'English',
+  es: 'Spanish',
+  fr: 'French',
+  de: 'German',
+  nl: 'Dutch',
+  pt: 'Portuguese',
+  it: 'Italian',
+  zh: 'Chinese (Simplified)',
+  'zh-TW': 'Chinese (Traditional)',
+  ar: 'Arabic',
+  fa: 'Farsi',
+  hi: 'Hindi',
+  ru: 'Russian',
+  ja: 'Japanese',
+  ko: 'Korean',
+};
+
+export async function transcribeAudio(
+  audioFilePath: string,
+  language: string = 'en',
+  apiKey?: string,
+): Promise<string> {
   const audioReadStream = fs.createReadStream(audioFilePath);
 
-  const transcription = await openai.audio.transcriptions.create({
+  const transcription = await client(apiKey).audio.transcriptions.create({
     file: audioReadStream,
-    model: "whisper-1",
-    language: language,
+    model: 'whisper-1',
+    language: language.split('-')[0], // Whisper uses simple language codes
   });
 
   return transcription.text;
@@ -18,27 +44,10 @@ export async function transcribeAudio(audioFilePath: string, language: string = 
 export async function correctAndTranslateText(
   originalText: string,
   targetLanguage: string,
-  detectSpeakers: boolean = false
+  detectSpeakers = false,
+  apiKey?: string,
 ): Promise<{ correctedText: string; translatedText: string }> {
-  const languageNames: Record<string, string> = {
-    en: "English",
-    es: "Spanish",
-    fr: "French",
-    de: "German",
-    nl: "Dutch",
-    pt: "Portuguese",
-    it: "Italian",
-    zh: "Chinese (Simplified)",
-    "zh-TW": "Chinese (Traditional)",
-    ar: "Arabic",
-    fa: "Farsi",
-    hi: "Hindi",
-    ru: "Russian",
-    ja: "Japanese",
-    ko: "Korean",
-  };
-
-  const targetLanguageName = languageNames[targetLanguage] || "English";
+  const targetLanguageName = LANGUAGE_NAMES[targetLanguage] ?? 'English';
 
   const speakerInstructions = detectSpeakers
     ? `
@@ -47,13 +56,13 @@ export async function correctAndTranslateText(
 7. Maintain speaker consistency throughout the text`
     : '';
 
-  const response = await openai.chat.completions.create({
-    model: "gpt-4o-mini",
+  const response = await client(apiKey).chat.completions.create({
+    model: 'gpt-4o-mini',
     messages: [
       {
-        role: "system",
-        content: `You are a helpful assistant that corrects speech transcription errors (stutters, filler words, repetitions) and translates text. 
-        
+        role: 'system',
+        content: `You are a helpful assistant that corrects speech transcription errors (stutters, filler words, repetitions) and translates text.
+
 Your tasks:
 1. Clean up the transcribed text by removing stutters, filler words (um, uh, like), and verbal mistakes while preserving the core meaning
 2. Format the text like prose in a book - write sentences continuously in paragraphs
@@ -63,14 +72,14 @@ Your tasks:
 6. Return JSON with this exact format: { "correctedText": "cleaned up original text", "translatedText": "translation in ${targetLanguageName}" }${speakerInstructions}`,
       },
       {
-        role: "user",
+        role: 'user',
         content: `Original transcription: "${originalText}"`,
       },
     ],
-    response_format: { type: "json_object" },
+    response_format: { type: 'json_object' },
   });
 
-  const result = JSON.parse(response.choices[0].message.content || "{}");
+  const result = JSON.parse(response.choices[0].message.content || '{}');
 
   return {
     correctedText: result.correctedText || originalText,
@@ -81,27 +90,10 @@ Your tasks:
 export async function retroactiveCorrection(
   accumulatedText: string,
   targetLanguage: string,
-  detectSpeakers: boolean = false
+  detectSpeakers = false,
+  apiKey?: string,
 ): Promise<{ correctedText: string; translatedText: string }> {
-  const languageNames: Record<string, string> = {
-    en: "English",
-    es: "Spanish",
-    fr: "French",
-    de: "German",
-    nl: "Dutch",
-    pt: "Portuguese",
-    it: "Italian",
-    zh: "Chinese (Simplified)",
-    "zh-TW": "Chinese (Traditional)",
-    ar: "Arabic",
-    fa: "Farsi",
-    hi: "Hindi",
-    ru: "Russian",
-    ja: "Japanese",
-    ko: "Korean",
-  };
-
-  const targetLanguageName = languageNames[targetLanguage] || "English";
+  const targetLanguageName = LANGUAGE_NAMES[targetLanguage] ?? 'English';
 
   const speakerInstructions = detectSpeakers
     ? `
@@ -109,13 +101,13 @@ export async function retroactiveCorrection(
 6. Ensure speaker consistency throughout the text`
     : '';
 
-  const response = await openai.chat.completions.create({
-    model: "gpt-4o-mini",
+  const response = await client(apiKey).chat.completions.create({
+    model: 'gpt-4o-mini',
     messages: [
       {
-        role: "system",
+        role: 'system',
         content: `You are a helpful assistant that performs retroactive coherence checking and grammar correction on accumulated transcribed text.
-        
+
 Your tasks:
 1. Review the accumulated text for overall coherence and flow
 2. Check if any words were transcribed incorrectly based on context (e.g., "their" vs "there", "to" vs "too")
@@ -127,14 +119,14 @@ Your tasks:
 8. Return JSON with this exact format: { "correctedText": "corrected original text", "translatedText": "translation in ${targetLanguageName}" }${speakerInstructions}`,
       },
       {
-        role: "user",
+        role: 'user',
         content: `Accumulated transcription to review and correct: "${accumulatedText}"`,
       },
     ],
-    response_format: { type: "json_object" },
+    response_format: { type: 'json_object' },
   });
 
-  const result = JSON.parse(response.choices[0].message.content || "{}");
+  const result = JSON.parse(response.choices[0].message.content || '{}');
 
   return {
     correctedText: result.correctedText || accumulatedText,
@@ -147,27 +139,10 @@ export async function formatForExport(
   translatedText: string,
   targetLanguage: string,
   exportType: 'original' | 'translation' | 'both',
-  fileFormat: 'txt' | 'md'
+  fileFormat: 'txt' | 'md',
+  apiKey?: string,
 ): Promise<string> {
-  const languageNames: Record<string, string> = {
-    en: "English",
-    es: "Spanish",
-    fr: "French",
-    de: "German",
-    nl: "Dutch",
-    pt: "Portuguese",
-    it: "Italian",
-    zh: "Chinese (Simplified)",
-    "zh-TW": "Chinese (Traditional)",
-    ar: "Arabic",
-    fa: "Farsi",
-    hi: "Hindi",
-    ru: "Russian",
-    ja: "Japanese",
-    ko: "Korean",
-  };
-
-  const targetLanguageName = languageNames[targetLanguage] || "English";
+  const targetLanguageName = LANGUAGE_NAMES[targetLanguage] ?? 'English';
 
   const formatInstructions = fileFormat === 'md'
     ? 'Format the output in proper Markdown with headings, paragraphs, and formatting.'
@@ -181,7 +156,7 @@ export async function formatForExport(
     formatPrompt = `Format this sermon transcript for export. Add proper line breaks between paragraphs, correct punctuation, and make minor corrections where there are obvious misinterpretations. Mark any corrections you make with asterisks (e.g., "he went to *their* house" if you corrected "there" to "their"). ${formatInstructions}`;
   } else if (exportType === 'translation') {
     contentToFormat = translatedText;
-    formatPrompt = `Format this sermon transcript translation (in ${targetLanguageName}) for export. Add proper line breaks between paragraphs, correct punctuation, and make minor corrections where there are obvious misinterpretations. Mark any corrections you make with asterisks (e.g., "fue a *su* casa" if you corrected a word). ${formatInstructions}`;
+    formatPrompt = `Format this sermon transcript translation (in ${targetLanguageName}) for export. Add proper line breaks between paragraphs, correct punctuation, and make minor corrections where there are obvious misinterpretations. Mark any corrections you make with asterisks. ${formatInstructions}`;
   } else {
     formatPrompt = `Format both the original sermon transcript and its ${targetLanguageName} translation for side-by-side export. For each version:
 1. Add proper line breaks between paragraphs
@@ -196,16 +171,18 @@ Original text: "${originalText}"
 Translation (${targetLanguageName}): "${translatedText}"`;
   }
 
-  const response = await openai.chat.completions.create({
-    model: "gpt-4o-mini",
+  const response = await client(apiKey).chat.completions.create({
+    model: 'gpt-4o-mini',
     messages: [
       {
-        role: "system",
-        content: `You are a helpful assistant that formats sermon transcripts for export. You add proper formatting, fix punctuation, and make minor corrections to obvious transcription errors. Always mark corrections with asterisks so readers can see what was changed.`,
+        role: 'system',
+        content: 'You are a helpful assistant that formats sermon transcripts for export. You add proper formatting, fix punctuation, and make minor corrections to obvious transcription errors. Always mark corrections with asterisks so readers can see what was changed.',
       },
       {
-        role: "user",
-        content: exportType === 'both' ? formatPrompt : `${formatPrompt}\n\nText to format: "${contentToFormat}"`,
+        role: 'user',
+        content: exportType === 'both'
+          ? formatPrompt
+          : `${formatPrompt}\n\nText to format: "${contentToFormat}"`,
       },
     ],
   });
