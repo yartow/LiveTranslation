@@ -104,7 +104,7 @@ function ApiKeyField({ label, placeholder, description, value, onChange }: ApiKe
             onChange={(e) => setDraft(e.target.value)}
             onKeyDown={handleKeyDown}
             autoComplete="off"
-            autoFocus={isEditing}
+            autoFocus={!isSet || isEditing}
             className="font-mono text-sm"
           />
           <Button size="sm" onClick={handleSave} disabled={!draft.trim()}>

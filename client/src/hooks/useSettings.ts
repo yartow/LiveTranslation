@@ -10,7 +10,7 @@ export interface AppSettings {
   translationProvider: TranslationProvider;
 }
 
-const STORAGE_KEY = 'sermonscribe_settings';
+const PREFS_KEY = 'sermonscribe_prefs';
 
 const defaultSettings: AppSettings = {
   openaiApiKey: '',
@@ -19,16 +19,34 @@ const defaultSettings: AppSettings = {
   translationProvider: 'openai',
 };
 
+const VALID_TRANSCRIPTION: TranscriptionProvider[] = ['whisper', 'browser'];
+const VALID_TRANSLATION: TranslationProvider[] = ['openai', 'claude', 'none'];
+
 function loadSettings(): AppSettings {
+  let prefs: Partial<AppSettings> = {};
+  let keys: Partial<AppSettings> = {};
+
   try {
-    const stored = localStorage.getItem(STORAGE_KEY);
-    if (stored) {
-      return { ...defaultSettings, ...JSON.parse(stored) };
-    }
-  } catch {
-    // Ignore parse errors — start fresh
+    const stored = localStorage.getItem(PREFS_KEY);
+    if (stored) prefs = JSON.parse(stored);
+  } catch {}
+
+  try {
+    const stored = sessionStorage.getItem(PREFS_KEY);
+    if (stored) keys = JSON.parse(stored);
+  } catch {}
+
+  const merged = { ...defaultSettings, ...prefs, ...keys };
+
+  // Validate enums; fall back to defaults for unrecognised values
+  if (!VALID_TRANSCRIPTION.includes(merged.transcriptionProvider)) {
+    merged.transcriptionProvider = defaultSettings.transcriptionProvider;
   }
-  return { ...defaultSettings };
+  if (!VALID_TRANSLATION.includes(merged.translationProvider)) {
+    merged.translationProvider = defaultSettings.translationProvider;
+  }
+
+  return merged;
 }
 
 export function useSettings() {
@@ -37,11 +55,23 @@ export function useSettings() {
   const updateSettings = useCallback((updates: Partial<AppSettings>) => {
     setSettings((prev) => {
       const next = { ...prev, ...updates };
+
+      // Provider preferences are not sensitive — persist across sessions
       try {
-        localStorage.setItem(STORAGE_KEY, JSON.stringify(next));
-      } catch {
-        // Storage quota exceeded or private browsing — silently continue
-      }
+        localStorage.setItem(PREFS_KEY, JSON.stringify({
+          transcriptionProvider: next.transcriptionProvider,
+          translationProvider: next.translationProvider,
+        }));
+      } catch {}
+
+      // API keys are sensitive — use sessionStorage so they clear on tab close
+      try {
+        sessionStorage.setItem(PREFS_KEY, JSON.stringify({
+          openaiApiKey: next.openaiApiKey,
+          anthropicApiKey: next.anthropicApiKey,
+        }));
+      } catch {}
+
       return next;
     });
   }, []);

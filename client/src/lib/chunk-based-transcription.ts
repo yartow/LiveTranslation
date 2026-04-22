@@ -102,8 +102,8 @@ export class ChunkBasedTranscription {
               this.events.onError(message.message ?? 'Processing error');
               break;
           }
-        } catch {
-          // Ignore unparseable messages
+        } catch (e) {
+          console.warn('Unparseable WebSocket message:', e);
         }
       };
 
@@ -261,14 +261,18 @@ export class ChunkBasedTranscription {
     }
 
     // Wait for the final partial chunk to be sent before closing the WebSocket.
-    // lastChunkSentResolve is set up here and called from onstop after the
-    // blob is transmitted, preventing lost audio at session end.
+    // We create the promise whenever mediaRecorder exists, not only when it is
+    // in 'recording' state: the chunk timer may have fired and set the state to
+    // 'inactive' while onstop is still queued in the microtask queue, so we
+    // must be ready to receive that onstop callback regardless of current state.
     let waitForLastChunk = Promise.resolve();
-    if (this.mediaRecorder?.state === 'recording') {
+    if (this.mediaRecorder) {
       waitForLastChunk = new Promise<void>((resolve) => {
         this.lastChunkSentResolve = resolve;
       });
-      this.mediaRecorder.stop();
+      if (this.mediaRecorder.state === 'recording') {
+        this.mediaRecorder.stop();
+      }
     }
     this.mediaRecorder = null;
 

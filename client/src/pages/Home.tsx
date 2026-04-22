@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect, useCallback } from 'react';
+import { useState, useRef, useEffect, useCallback, useMemo } from 'react';
 import Header from '@/components/Header';
 import LanguageSelector, { getLanguageRTL } from '@/components/LanguageSelector';
 import RecordButton from '@/components/RecordButton';
@@ -52,10 +52,12 @@ export default function Home() {
 
   // Keep refs in sync so async callbacks always read the latest values
   // without causing stale-closure bugs when called from startRecording's events.
+  const sourceLanguageRef = useRef(sourceLanguage);
   const targetLanguageRef = useRef(targetLanguage);
   const detectSpeakersRef = useRef(detectSpeakers);
   const settingsRef = useRef(settings);
 
+  useEffect(() => { sourceLanguageRef.current = sourceLanguage; }, [sourceLanguage]);
   useEffect(() => { targetLanguageRef.current = targetLanguage; }, [targetLanguage]);
   useEffect(() => { detectSpeakersRef.current = detectSpeakers; }, [detectSpeakers]);
   useEffect(() => { settingsRef.current = settings; }, [settings]);
@@ -93,17 +95,19 @@ export default function Home() {
       previousDetectSpeakersRef.current = detectSpeakers;
       setIsRetranslating(true);
 
+      const s = settingsRef.current;
+
       if (backendRef.current) {
         backendRef.current.updateConfig(
-          sourceLanguage, targetLanguage, detectSpeakers,
-          settings.translationProvider,
-          settings.openaiApiKey,
-          settings.anthropicApiKey,
+          sourceLanguageRef.current, targetLanguage, detectSpeakers,
+          s.translationProvider,
+          s.openaiApiKey,
+          s.anthropicApiKey,
         );
       }
 
       try {
-        const allOriginalText = transcriptionSegmentsRef.current.map(s => s.original).join(' ');
+        const allOriginalText = transcriptionSegmentsRef.current.map(seg => seg.original).join(' ');
 
         const response = await fetch('/api/retranslate', {
           method: 'POST',
@@ -112,9 +116,9 @@ export default function Home() {
             originalText: allOriginalText,
             targetLanguage,
             detectSpeakers,
-            translationProvider: settings.translationProvider,
-            openaiApiKey: settings.openaiApiKey,
-            anthropicApiKey: settings.anthropicApiKey,
+            translationProvider: s.translationProvider,
+            openaiApiKey: s.openaiApiKey,
+            anthropicApiKey: s.anthropicApiKey,
           }),
         });
 
@@ -202,6 +206,7 @@ export default function Home() {
         },
         onTranslation: (original: string, translated: string) => {
           if (!original) return;
+          setPreviewText('');
           transcriptionSegmentsRef.current.push({ original, translated });
           setOriginalText(prev => prev + (prev ? ' ' : '') + original);
           setTranslatedText(prev => prev + (prev ? ' ' : '') + translated);
@@ -285,11 +290,11 @@ export default function Home() {
     ? (originalText ? originalText + ' ' + previewText : previewText)
     : originalText;
 
-  const translationTitle = () => {
+  const translationTitle = useMemo(() => {
     if (isRetranslating) return 'Translation (updating...)';
     if (settings.translationProvider === 'none') return 'Translation (disabled)';
     return 'Translation';
-  };
+  }, [isRetranslating, settings.translationProvider]);
 
   return (
     <div className="flex flex-col h-screen bg-background">
@@ -417,7 +422,7 @@ export default function Home() {
 
           <div className="flex-1 bg-card rounded-lg mx-4 mb-6 min-h-[200px] border border-card-border">
             <TranscriptionDisplay
-              title={translationTitle()}
+              title={translationTitle}
               text={translatedText}
               testId="text-translation"
               isRTL={getLanguageRTL(targetLanguage)}

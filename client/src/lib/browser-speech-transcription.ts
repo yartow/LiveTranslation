@@ -10,6 +10,7 @@ export class BrowserSpeechTranscription {
   private openaiApiKey = '';
   private anthropicApiKey = '';
   private chunkIndex = 0;
+  private intentionalStop = false;
 
   constructor(events: ChunkTranscriptionEvents) {
     this.events = events;
@@ -30,6 +31,7 @@ export class BrowserSpeechTranscription {
     this.openaiApiKey = openaiApiKey;
     this.anthropicApiKey = anthropicApiKey;
     this.chunkIndex = 0;
+    this.intentionalStop = false;
 
     const SpeechRecognition =
       (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
@@ -41,12 +43,19 @@ export class BrowserSpeechTranscription {
       );
     }
 
-    this.recognition = new SpeechRecognition();
-    this.recognition.continuous = true;
-    this.recognition.interimResults = true;
-    this.recognition.lang = this.sourceLanguage;
+    const rec = new SpeechRecognition();
+    this.recognition = rec;
+    this.attachHandlers(rec);
+    rec.start();
+    this.events.onReady();
+  }
 
-    this.recognition.onresult = (event: any) => {
+  private attachHandlers(rec: any): void {
+    rec.continuous = true;
+    rec.interimResults = true;
+    rec.lang = this.sourceLanguage;
+
+    rec.onresult = (event: any) => {
       let interim = '';
       let final = '';
 
@@ -68,7 +77,7 @@ export class BrowserSpeechTranscription {
       }
     };
 
-    this.recognition.onerror = (event: any) => {
+    rec.onerror = (event: any) => {
       if (event.error === 'not-allowed') {
         this.events.onError('Microphone access denied. Please allow microphone access and try again.');
       } else if (event.error !== 'no-speech') {
@@ -76,13 +85,19 @@ export class BrowserSpeechTranscription {
       }
     };
 
-    // onend fires both on explicit stop() and on browser-initiated disconnects
-    this.recognition.onend = () => {
-      this.events.onClose();
+    // Chrome ends recognition after ~15s of silence or on network disruptions.
+    // Restart automatically unless stop() was explicitly called.
+    rec.onend = () => {
+      if (this.intentionalStop) {
+        this.events.onClose();
+        return;
+      }
+      try {
+        rec.start();
+      } catch {
+        this.events.onClose();
+      }
     };
-
-    this.recognition.start();
-    this.events.onReady();
   }
 
   private async processText(text: string): Promise<void> {
@@ -143,10 +158,11 @@ export class BrowserSpeechTranscription {
 
   async stop(): Promise<void> {
     if (this.recognition) {
-      this.recognition.onend = null; // prevent duplicate onClose call
+      this.intentionalStop = true;
       this.recognition.stop();
       this.recognition = null;
+    } else {
+      this.events.onClose();
     }
-    this.events.onClose();
   }
 }

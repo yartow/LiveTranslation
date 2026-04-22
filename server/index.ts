@@ -5,8 +5,7 @@ import { WebSocketServer } from 'ws';
 import { setupChunkTranscriptionWebSocket } from './lib/chunk-transcription';
 
 if (!process.env.OPENAI_API_KEY) {
-  console.error("Error: OPENAI_API_KEY environment variable is required");
-  process.exit(1);
+  console.warn("Warning: OPENAI_API_KEY is not set. Whisper transcription and OpenAI translation will require a key from the client.");
 }
 
 const app = express();
@@ -22,6 +21,17 @@ app.use(express.json({
   }
 }));
 app.use(express.urlencoded({ extended: false }));
+
+// HSTS: redirect HTTP→HTTPS and add Strict-Transport-Security in production
+app.use((req, res, next) => {
+  if (app.get('env') !== 'development') {
+    if (req.headers['x-forwarded-proto'] === 'http') {
+      return res.redirect(301, `https://${req.headers.host}${req.url}`);
+    }
+    res.setHeader('Strict-Transport-Security', 'max-age=31536000; includeSubDomains');
+  }
+  next();
+});
 
 app.use((req, res, next) => {
   const start = Date.now();
@@ -74,7 +84,7 @@ app.use((req, res, next) => {
   }
 
   // Set up WebSocket server for streaming transcription
-  const wss = new WebSocketServer({ server, path: '/ws/transcribe' });
+  const wss = new WebSocketServer({ server, path: '/ws/transcribe', maxPayload: 10 * 1024 * 1024 });
   setupChunkTranscriptionWebSocket(wss);
   log('WebSocket server set up for chunk-based transcription');
 
