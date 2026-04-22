@@ -1,0 +1,268 @@
+import { useState } from 'react';
+import {
+  Dialog,
+  DialogContent,
+  DialogHeader,
+  DialogTitle,
+  DialogFooter,
+} from '@/components/ui/dialog';
+import { Button } from '@/components/ui/button';
+import { Input } from '@/components/ui/input';
+import { Label } from '@/components/ui/label';
+import { RadioGroup, RadioGroupItem } from '@/components/ui/radio-group';
+import type { AppSettings, TranscriptionProvider, TranslationProvider } from '@/hooks/useSettings';
+
+interface SettingsDialogProps {
+  isOpen: boolean;
+  onClose: () => void;
+  settings: AppSettings;
+  onUpdate: (updates: Partial<AppSettings>) => void;
+}
+
+// Displays a masked preview of a key: first 6 characters + dots + last 4.
+function maskKey(key: string): string {
+  if (key.length <= 10) return '•'.repeat(key.length);
+  return key.slice(0, 6) + '•'.repeat(key.length - 10) + key.slice(-4);
+}
+
+interface ApiKeyFieldProps {
+  label: string;
+  placeholder: string;
+  description: string;
+  value: string;
+  onChange: (value: string) => void;
+}
+
+function ApiKeyField({ label, placeholder, description, value, onChange }: ApiKeyFieldProps) {
+  const [isEditing, setIsEditing] = useState(false);
+  const [draft, setDraft] = useState('');
+
+  const isSet = value.length > 0;
+
+  function handleSave() {
+    const trimmed = draft.trim();
+    if (trimmed) {
+      onChange(trimmed);
+    }
+    setIsEditing(false);
+    setDraft('');
+  }
+
+  function handleClear() {
+    onChange('');
+    setIsEditing(false);
+    setDraft('');
+  }
+
+  function handleKeyDown(e: React.KeyboardEvent) {
+    if (e.key === 'Enter') handleSave();
+    if (e.key === 'Escape') {
+      setIsEditing(false);
+      setDraft('');
+    }
+  }
+
+  return (
+    <div className="space-y-1.5">
+      <div className="flex items-center gap-2">
+        <Label className="text-sm font-medium">{label}</Label>
+        {isSet ? (
+          <span className="text-xs text-green-600 dark:text-green-400 font-medium">✓ Saved</span>
+        ) : (
+          <span className="text-xs text-orange-500 font-medium">Not set</span>
+        )}
+      </div>
+
+      {!isEditing && isSet ? (
+        <div className="flex items-center gap-2">
+          <code className="flex-1 text-xs bg-muted rounded px-3 py-2 font-mono text-muted-foreground overflow-hidden text-ellipsis whitespace-nowrap">
+            {maskKey(value)}
+          </code>
+          <Button
+            variant="outline"
+            size="sm"
+            className="shrink-0"
+            onClick={() => { setDraft(''); setIsEditing(true); }}
+          >
+            Change
+          </Button>
+          <Button
+            variant="outline"
+            size="sm"
+            className="shrink-0 text-destructive hover:text-destructive"
+            onClick={handleClear}
+          >
+            Clear
+          </Button>
+        </div>
+      ) : (
+        <div className="flex items-center gap-2">
+          <Input
+            type="password"
+            placeholder={placeholder}
+            value={draft}
+            onChange={(e) => setDraft(e.target.value)}
+            onKeyDown={handleKeyDown}
+            autoComplete="off"
+            autoFocus={isEditing}
+            className="font-mono text-sm"
+          />
+          <Button size="sm" onClick={handleSave} disabled={!draft.trim()}>
+            Save
+          </Button>
+          {isSet && (
+            <Button
+              variant="outline"
+              size="sm"
+              className="shrink-0"
+              onClick={() => { setIsEditing(false); setDraft(''); }}
+            >
+              Cancel
+            </Button>
+          )}
+        </div>
+      )}
+
+      <p className="text-xs text-muted-foreground">{description}</p>
+    </div>
+  );
+}
+
+export default function SettingsDialog({ isOpen, onClose, settings, onUpdate }: SettingsDialogProps) {
+  return (
+    <Dialog open={isOpen} onOpenChange={onClose}>
+      <DialogContent className="sm:max-w-[500px] max-h-[90vh] overflow-y-auto" data-testid="dialog-settings">
+        <DialogHeader>
+          <DialogTitle>Settings</DialogTitle>
+        </DialogHeader>
+
+        <div className="space-y-6 py-2">
+
+          {/* ── API Keys ── */}
+          <section className="space-y-4">
+            <h3 className="text-sm font-semibold text-foreground border-b border-border pb-1">
+              API Keys
+            </h3>
+            <p className="text-xs text-muted-foreground">
+              Keys are stored only in your browser. They are sent directly to the respective service for each request.
+            </p>
+
+            <ApiKeyField
+              label="OpenAI API Key"
+              placeholder="sk-..."
+              description="Required for OpenAI Whisper transcription and GPT-4o-mini translation. Get one at platform.openai.com."
+              value={settings.openaiApiKey}
+              onChange={(v) => onUpdate({ openaiApiKey: v })}
+            />
+
+            <ApiKeyField
+              label="Anthropic API Key"
+              placeholder="sk-ant-..."
+              description="Required for Claude Haiku translation. Free tier available at console.anthropic.com."
+              value={settings.anthropicApiKey}
+              onChange={(v) => onUpdate({ anthropicApiKey: v })}
+            />
+          </section>
+
+          {/* ── Transcription ── */}
+          <section className="space-y-3">
+            <h3 className="text-sm font-semibold text-foreground border-b border-border pb-1">
+              Transcription
+            </h3>
+            <RadioGroup
+              value={settings.transcriptionProvider}
+              onValueChange={(v) => onUpdate({ transcriptionProvider: v as TranscriptionProvider })}
+            >
+              <div className="flex items-start gap-3 rounded-md border border-border p-3">
+                <RadioGroupItem value="whisper" id="t-whisper" className="mt-0.5" />
+                <div>
+                  <Label htmlFor="t-whisper" className="font-medium cursor-pointer">
+                    OpenAI Whisper
+                  </Label>
+                  <p className="text-xs text-muted-foreground mt-0.5">
+                    High accuracy across 50+ languages. Requires an OpenAI API key.
+                  </p>
+                </div>
+              </div>
+              <div className="flex items-start gap-3 rounded-md border border-border p-3">
+                <RadioGroupItem value="browser" id="t-browser" className="mt-0.5" />
+                <div>
+                  <Label htmlFor="t-browser" className="font-medium cursor-pointer">
+                    Browser Speech API{' '}
+                    <span className="text-xs font-normal text-green-600 dark:text-green-400">free</span>
+                  </Label>
+                  <p className="text-xs text-muted-foreground mt-0.5">
+                    No API key required. Best in Chrome or Edge. Lower accuracy and limited language support compared to Whisper.
+                  </p>
+                </div>
+              </div>
+            </RadioGroup>
+          </section>
+
+          {/* ── Translation & Correction ── */}
+          <section className="space-y-3">
+            <h3 className="text-sm font-semibold text-foreground border-b border-border pb-1">
+              Translation &amp; Correction
+            </h3>
+            <RadioGroup
+              value={settings.translationProvider}
+              onValueChange={(v) => onUpdate({ translationProvider: v as TranslationProvider })}
+            >
+              <div className="flex items-start gap-3 rounded-md border border-border p-3">
+                <RadioGroupItem value="openai" id="tr-openai" className="mt-0.5" />
+                <div>
+                  <Label htmlFor="tr-openai" className="font-medium cursor-pointer">
+                    OpenAI GPT-4o-mini
+                  </Label>
+                  <p className="text-xs text-muted-foreground mt-0.5">
+                    Fast correction and translation. Requires an OpenAI API key.
+                  </p>
+                </div>
+              </div>
+              <div className="flex items-start gap-3 rounded-md border border-border p-3">
+                <RadioGroupItem value="claude" id="tr-claude" className="mt-0.5" />
+                <div>
+                  <Label htmlFor="tr-claude" className="font-medium cursor-pointer">
+                    Claude Haiku (Anthropic)
+                  </Label>
+                  <p className="text-xs text-muted-foreground mt-0.5">
+                    Excellent translation quality. Requires an Anthropic API key. Anthropic offers a free tier.
+                  </p>
+                </div>
+              </div>
+              <div className="flex items-start gap-3 rounded-md border border-border p-3">
+                <RadioGroupItem value="none" id="tr-none" className="mt-0.5" />
+                <div>
+                  <Label htmlFor="tr-none" className="font-medium cursor-pointer">
+                    None — transcription only{' '}
+                    <span className="text-xs font-normal text-green-600 dark:text-green-400">free</span>
+                  </Label>
+                  <p className="text-xs text-muted-foreground mt-0.5">
+                    Shows raw transcription without cleanup or translation. No API key needed when combined with Browser Speech API.
+                  </p>
+                </div>
+              </div>
+            </RadioGroup>
+          </section>
+
+          {/* ── Free mode callout ── */}
+          {(settings.transcriptionProvider === 'browser' || settings.translationProvider === 'none') && (
+            <div className="rounded-md bg-muted p-3 text-xs text-muted-foreground space-y-1">
+              <p className="font-semibold text-foreground">Free mode active</p>
+              {settings.transcriptionProvider === 'browser' && (
+                <p>Browser Speech API is used for transcription — works best in Chrome or Edge on a desktop with a clear microphone.</p>
+              )}
+              {settings.translationProvider === 'none' && (
+                <p>Translation is disabled. Only the transcribed text will be shown.</p>
+              )}
+            </div>
+          )}
+        </div>
+
+        <DialogFooter>
+          <Button onClick={onClose} data-testid="button-settings-done">Done</Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  );
+}
