@@ -35,6 +35,13 @@ const activeSessions = new Map<WsWebSocket, ChunkSession>();
 // prevent unbounded memory growth in pendingResults.
 const MAX_CHUNK_QUEUE_DEPTH = 200;
 
+// When SIMULATE_LATENCY_MS is set, each chunk waits this many ms after the
+// audio is converted before sending to Whisper. Simulates the time a mobile
+// device needs to upload the audio blob over a real network connection.
+const SIM_LATENCY_MS = parseInt(process.env.SIMULATE_LATENCY_MS || '0', 10);
+const simulateLatency = (): Promise<void> =>
+  SIM_LATENCY_MS > 0 ? new Promise(r => setTimeout(r, SIM_LATENCY_MS)) : Promise.resolve();
+
 async function safeUnlink(path: string): Promise<void> {
   try {
     if (existsSync(path)) await unlink(path);
@@ -107,6 +114,7 @@ async function processChunk(
 
   try {
     mp3Path = await convertAudioToMp3(audioBuffer);
+    await simulateLatency(); // emulate mobile audio-upload delay when enabled
 
     const rawText = await transcribeAudio(mp3Path, session.sourceLanguage, session.openaiApiKey || undefined);
 
