@@ -23,6 +23,8 @@ export class ChunkBasedTranscription {
   private translationProvider: TranslationProvider;
   private openaiApiKey: string;
   private anthropicApiKey: string;
+  private glossary: string;
+  private sermonContext: string;
   // Resolver called from onstop when the last partial chunk has been sent,
   // so stop() can wait before closing the WebSocket.
   private lastChunkSentResolve: (() => void) | null = null;
@@ -36,6 +38,8 @@ export class ChunkBasedTranscription {
     this.translationProvider = 'openai';
     this.openaiApiKey = '';
     this.anthropicApiKey = '';
+    this.glossary = '';
+    this.sermonContext = '';
   }
 
   async start(
@@ -45,6 +49,8 @@ export class ChunkBasedTranscription {
     translationProvider: TranslationProvider = 'openai',
     openaiApiKey = '',
     anthropicApiKey = '',
+    glossary = '',
+    sermonContext = '',
   ): Promise<void> {
     this.sourceLanguage = sourceLanguage;
     this.targetLanguage = targetLanguage;
@@ -53,6 +59,8 @@ export class ChunkBasedTranscription {
     this.translationProvider = translationProvider;
     this.openaiApiKey = openaiApiKey;
     this.anthropicApiKey = anthropicApiKey;
+    this.glossary = glossary;
+    this.sermonContext = sermonContext;
 
     const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
     const wsUrl = `${protocol}//${window.location.host}/ws/transcribe`;
@@ -70,6 +78,8 @@ export class ChunkBasedTranscription {
           translationProvider: this.translationProvider,
           openaiApiKey: this.openaiApiKey,
           anthropicApiKey: this.anthropicApiKey,
+          glossary: this.glossary,
+          sermonContext: this.sermonContext,
         }));
       };
 
@@ -226,6 +236,8 @@ export class ChunkBasedTranscription {
     translationProvider?: TranslationProvider,
     openaiApiKey?: string,
     anthropicApiKey?: string,
+    glossary?: string,
+    sermonContext?: string,
   ): void {
     this.sourceLanguage = sourceLanguage;
     this.targetLanguage = targetLanguage;
@@ -233,6 +245,8 @@ export class ChunkBasedTranscription {
     if (translationProvider) this.translationProvider = translationProvider;
     if (openaiApiKey !== undefined) this.openaiApiKey = openaiApiKey;
     if (anthropicApiKey !== undefined) this.anthropicApiKey = anthropicApiKey;
+    if (glossary !== undefined) this.glossary = glossary;
+    if (sermonContext !== undefined) this.sermonContext = sermonContext;
 
     if (this.ws?.readyState === WebSocket.OPEN) {
       this.ws.send(JSON.stringify({
@@ -243,6 +257,8 @@ export class ChunkBasedTranscription {
         translationProvider: this.translationProvider,
         openaiApiKey: this.openaiApiKey,
         anthropicApiKey: this.anthropicApiKey,
+        glossary: this.glossary,
+        sermonContext: this.sermonContext,
       }));
     }
   }

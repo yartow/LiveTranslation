@@ -18,6 +18,8 @@ interface ChunkSession {
   translationProvider: TranslationProvider;
   openaiApiKey: string;
   anthropicApiKey: string;
+  glossary: string;
+  sermonContext: string;
   // Tracks which chunk index to send to the client next (ordered delivery)
   nextExpectedChunk: number;
   // Stores completed results waiting for earlier chunks to finish
@@ -123,7 +125,7 @@ async function processChunk(
     mp3Path = await convertAudioToMp3(audioBuffer);
     await simulateLatency(); // emulate mobile audio-upload delay when enabled
 
-    const rawText = await transcribeAudio(mp3Path, session.sourceLanguage, session.openaiApiKey || undefined);
+    const rawText = await transcribeAudio(mp3Path, session.sourceLanguage, session.openaiApiKey || undefined, session.glossary || undefined, session.sermonContext || undefined);
 
     if (!rawText.trim()) {
       // Silent chunk — register empty result so ordering can advance
@@ -154,6 +156,8 @@ async function processChunk(
         session.targetLanguage,
         session.detectSpeakers,
         session.anthropicApiKey,
+        session.glossary || undefined,
+        session.sermonContext || undefined,
       ));
     } else {
       // Default: OpenAI GPT-4o-mini
@@ -162,6 +166,8 @@ async function processChunk(
         session.targetLanguage,
         session.detectSpeakers,
         session.openaiApiKey || undefined,
+        session.glossary || undefined,
+        session.sermonContext || undefined,
       ));
     }
 
@@ -204,6 +210,8 @@ export function setupChunkTranscriptionWebSocket(wss: WebSocketServer): void {
               translationProvider: (message.translationProvider as TranslationProvider) || 'openai',
               openaiApiKey: message.openaiApiKey || '',
               anthropicApiKey: message.anthropicApiKey || '',
+              glossary: message.glossary || '',
+              sermonContext: message.sermonContext || '',
               nextExpectedChunk: 0,
               pendingResults: new Map(),
             };
@@ -218,6 +226,8 @@ export function setupChunkTranscriptionWebSocket(wss: WebSocketServer): void {
               if (message.translationProvider) session.translationProvider = message.translationProvider;
               if (message.openaiApiKey !== undefined) session.openaiApiKey = message.openaiApiKey;
               if (message.anthropicApiKey !== undefined) session.anthropicApiKey = message.anthropicApiKey;
+              if (message.glossary !== undefined) session.glossary = message.glossary;
+              if (message.sermonContext !== undefined) session.sermonContext = message.sermonContext;
             }
 
           } else if (message.type === 'stop') {

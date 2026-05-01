@@ -84,6 +84,9 @@ export default function Home() {
   const [subtitlePrevious, setSubtitlePrevious] = useState('');
   const subtitleCurrentRef = useRef('');
 
+  // Per-session sermon context (Bible ref + topic) — not persisted, user types each time
+  const [sermonContext, setSermonContext] = useState('');
+
   const { settings, updateSettings } = useSettings();
 
   // Derive detectSpeakers from speechMode so it's always consistent
@@ -167,6 +170,8 @@ export default function Home() {
             translationProvider: settings.translationProvider,
             openaiApiKey: settings.openaiApiKey,
             anthropicApiKey: settings.anthropicApiKey,
+            glossary: settings.theologicalGlossary || undefined,
+            sermonContext: sermonContext || undefined,
           }),
         });
 
@@ -213,6 +218,8 @@ export default function Home() {
           translationProvider: s.translationProvider,
           openaiApiKey: s.openaiApiKey,
           anthropicApiKey: s.anthropicApiKey,
+          glossary: s.theologicalGlossary || undefined,
+          sermonContext: sermonContext || undefined,
         }),
       });
 
@@ -302,6 +309,8 @@ export default function Home() {
         settings.translationProvider,
         settings.openaiApiKey,
         settings.anthropicApiKey,
+        settings.theologicalGlossary,
+        sermonContext,
       );
 
       setIsProcessing(false);
@@ -389,6 +398,22 @@ export default function Home() {
                   disabled={false}
                   label="Translate to"
                   testId="select-target-language"
+                />
+              </div>
+
+              {/* Sermon context — per-session, not persisted */}
+              <div className="space-y-1">
+                <Label htmlFor="sermon-context" className="text-sm font-medium">
+                  Today's sermon
+                </Label>
+                <input
+                  id="sermon-context"
+                  type="text"
+                  value={sermonContext}
+                  onChange={(e) => setSermonContext(e.target.value)}
+                  placeholder="e.g. Romans 8:1–11 — Life in the Spirit"
+                  disabled={isRecording}
+                  className="w-full text-sm border border-input rounded px-3 py-1.5 bg-background disabled:opacity-50"
                 />
               </div>
 

@@ -14,6 +14,7 @@ export interface AppSettings {
   speechMode: SpeechMode;
   displayContent: DisplayContent;
   textDisplay: TextDisplay;
+  theologicalGlossary: string;
 }
 
 const STORAGE_KEY = 'sermonscribe_settings';
@@ -26,6 +27,7 @@ const defaultSettings: AppSettings = {
   speechMode: 'monologue',
   displayContent: 'translation',
   textDisplay: 'subtitle',
+  theologicalGlossary: '',
 };
 
 function loadSettings(): AppSettings {
