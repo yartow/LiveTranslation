@@ -4,14 +4,15 @@ import LanguageSelector, { getLanguageRTL } from '@/components/LanguageSelector'
 import RecordButton from '@/components/RecordButton';
 import RecordingIndicator from '@/components/RecordingIndicator';
 import TranscriptionDisplay from '@/components/TranscriptionDisplay';
+import SubtitleView from '@/components/SubtitleView';
 import SettingsDialog from '@/components/SettingsDialog';
-import { Checkbox } from '@/components/ui/checkbox';
 import { Label } from '@/components/ui/label';
 import { Button } from '@/components/ui/button';
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/components/ui/collapsible';
 import { ChevronDown, ChevronUp, Download } from 'lucide-react';
 import { useToast } from '@/hooks/use-toast';
 import { useSettings } from '@/hooks/useSettings';
+import type { SpeechMode, DisplayContent, TextDisplay } from '@/hooks/useSettings';
 import ExportDialog from '@/components/ExportDialog';
 import { ChunkBasedTranscription } from '@/lib/chunk-based-transcription';
 import { BrowserSpeechTranscription } from '@/lib/browser-speech-transcription';
@@ -24,6 +25,45 @@ interface TranscriptionSegment {
   translated: string;
 }
 
+// ── Segmented control ───────────────────────────────────────────────────────
+
+interface SegOpt<T extends string> { value: T; label: string }
+
+function SegControl<T extends string>({
+  options, value, onChange, disabled,
+}: { options: SegOpt<T>[]; value: T; onChange: (v: T) => void; disabled?: boolean }) {
+  return (
+    <div className="inline-flex rounded-md border border-input overflow-hidden text-sm">
+      {options.map(opt => (
+        <button
+          key={opt.value}
+          type="button"
+          onClick={() => onChange(opt.value)}
+          disabled={disabled}
+          className={`px-3 py-1 transition-colors ${
+            value === opt.value
+              ? 'bg-primary text-primary-foreground'
+              : 'bg-background text-foreground hover:bg-muted'
+          } disabled:opacity-50 disabled:cursor-not-allowed`}
+        >
+          {opt.label}
+        </button>
+      ))}
+    </div>
+  );
+}
+
+// ── Helpers ─────────────────────────────────────────────────────────────────
+
+function splitLastTwo(text: string): [string, string] {
+  const parts = text.trim().split(/[.!?]+\s+/).filter(s => s.trim());
+  if (parts.length === 0) return ['', ''];
+  if (parts.length === 1) return [parts[0], ''];
+  return [parts[parts.length - 1], parts[parts.length - 2]];
+}
+
+// ── Component ────────────────────────────────────────────────────────────────
+
 export default function Home() {
   const [sourceLanguage, setSourceLanguage] = useState('en');
   const [targetLanguage, setTargetLanguage] = useState('nl');
@@ -31,17 +71,23 @@ export default function Home() {
   const [isProcessing, setIsProcessing] = useState(false);
   const [originalText, setOriginalText] = useState('');
   const [translatedText, setTranslatedText] = useState('');
-  // Raw Whisper / interim SpeechRecognition output shown as greyed-out preview
   const [previewText, setPreviewText] = useState('');
   const [isDark, setIsDark] = useState(false);
   const [isRetranslating, setIsRetranslating] = useState(false);
-  const [detectSpeakers, setDetectSpeakers] = useState(false);
   const [isConfigOpen, setIsConfigOpen] = useState(true);
   const [isExportDialogOpen, setIsExportDialogOpen] = useState(false);
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const [chunkDurationSecs, setChunkDurationSecs] = useState(5);
 
+  // Subtitle mode state — tracks the last two translation chunks
+  const [subtitleCurrent, setSubtitleCurrent] = useState('');
+  const [subtitlePrevious, setSubtitlePrevious] = useState('');
+  const subtitleCurrentRef = useRef('');
+
   const { settings, updateSettings } = useSettings();
+
+  // Derive detectSpeakers from speechMode so it's always consistent
+  const detectSpeakers = settings.speechMode === 'dialogue';
 
   const backendRef = useRef<AnyTranscriptionBackend | null>(null);
   const transcriptionSegmentsRef = useRef<TranscriptionSegment[]>([]);
@@ -51,8 +97,6 @@ export default function Home() {
   const lastRetroactiveSentenceCountRef = useRef(0);
   const { toast } = useToast();
 
-  // Keep refs in sync so async callbacks always read the latest values
-  // without causing stale-closure bugs when called from startRecording's events.
   const targetLanguageRef = useRef(targetLanguage);
   const detectSpeakersRef = useRef(detectSpeakers);
   const settingsRef = useRef(settings);
@@ -68,6 +112,13 @@ export default function Home() {
     setIsDark(shouldBeDark);
     if (shouldBeDark) document.documentElement.classList.add('dark');
   }, []);
+
+  const applySubtitlesFromText = (text: string) => {
+    const [current, previous] = splitLastTwo(text);
+    subtitleCurrentRef.current = current;
+    setSubtitleCurrent(current);
+    setSubtitlePrevious(previous);
+  };
 
   // Re-translate all accumulated text when target language or speaker detection changes
   useEffect(() => {
@@ -125,6 +176,7 @@ export default function Home() {
         transcriptionSegmentsRef.current = [{ original: allOriginalText, translated: data.translatedText }];
         setOriginalText(allOriginalText);
         setTranslatedText(data.translatedText);
+        applySubtitlesFromText(data.translatedText);
       } catch (error) {
         console.error('Re-translation error:', error);
         toast({ title: 'Re-translation failed', description: 'Could not translate to the new language.', variant: 'destructive' });
@@ -142,8 +194,6 @@ export default function Home() {
     localStorage.setItem('theme', !isDark ? 'dark' : 'light');
   };
 
-  // Uses refs so it always reads current targetLanguage/detectSpeakers/settings
-  // regardless of when it was captured in a callback closure.
   const performRetroactiveCorrection = useCallback(async () => {
     if (transcriptionSegmentsRef.current.length === 0) return;
 
@@ -172,6 +222,7 @@ export default function Home() {
       transcriptionSegmentsRef.current = [{ original: data.correctedText, translated: data.translatedText }];
       setOriginalText(data.correctedText);
       setTranslatedText(data.translatedText);
+      applySubtitlesFromText(data.translatedText);
     } catch (error) {
       console.error('Retroactive correction error:', error);
       toast({ title: 'Retroactive correction failed', description: 'Could not perform coherence check.', variant: 'destructive' });
@@ -183,6 +234,9 @@ export default function Home() {
       setOriginalText('');
       setTranslatedText('');
       setPreviewText('');
+      setSubtitleCurrent('');
+      setSubtitlePrevious('');
+      subtitleCurrentRef.current = '';
       transcriptionSegmentsRef.current = [];
       lastRetroactiveSentenceCountRef.current = 0;
 
@@ -201,6 +255,12 @@ export default function Home() {
           transcriptionSegmentsRef.current.push({ original, translated });
           setOriginalText(prev => prev + (prev ? ' ' : '') + original);
           setTranslatedText(prev => prev + (prev ? ' ' : '') + translated);
+          setPreviewText('');
+
+          // Update subtitle state
+          setSubtitlePrevious(subtitleCurrentRef.current);
+          subtitleCurrentRef.current = translated;
+          setSubtitleCurrent(translated);
 
           const allText = transcriptionSegmentsRef.current.map(s => s.original).join(' ');
           const totalSentences = countSentences(allText);
@@ -287,6 +347,9 @@ export default function Home() {
     return 'Translation';
   };
 
+  const showOriginal = settings.displayContent === 'original' || settings.displayContent === 'both';
+  const showTranslation = settings.displayContent === 'translation' || settings.displayContent === 'both';
+
   return (
     <div className="flex flex-col h-screen bg-background">
       <Header onThemeToggle={toggleTheme} onSettingsOpen={() => setIsSettingsOpen(true)} />
@@ -311,6 +374,7 @@ export default function Home() {
             </div>
 
             <CollapsibleContent className="space-y-4">
+              {/* Language selectors */}
               <div className="grid grid-cols-2 gap-4">
                 <LanguageSelector
                   value={sourceLanguage}
@@ -328,27 +392,52 @@ export default function Home() {
                 />
               </div>
 
-              <div className="flex flex-wrap items-center gap-6">
-                <div className="flex items-center space-x-2">
-                  <Checkbox
-                    id="speaker-detection"
-                    checked={detectSpeakers}
-                    onCheckedChange={(checked) => setDetectSpeakers(checked as boolean)}
+              {/* Mode, display, and style controls */}
+              <div className="flex flex-wrap items-center gap-4">
+                <div className="flex items-center gap-2">
+                  <Label className="text-sm font-medium whitespace-nowrap">Mode:</Label>
+                  <SegControl<SpeechMode>
+                    options={[
+                      { value: 'monologue', label: 'Monologue' },
+                      { value: 'dialogue', label: 'Dialogue' },
+                    ]}
+                    value={settings.speechMode}
+                    onChange={v => updateSettings({ speechMode: v })}
                     disabled={isRecording}
-                    data-testid="checkbox-speaker-detection"
                   />
-                  <Label
-                    htmlFor="speaker-detection"
-                    className="text-sm font-medium leading-none peer-disabled:cursor-not-allowed peer-disabled:opacity-70"
-                  >
-                    Detect different speakers
-                  </Label>
                 </div>
+
+                <div className="flex items-center gap-2">
+                  <Label className="text-sm font-medium whitespace-nowrap">Show:</Label>
+                  <SegControl<DisplayContent>
+                    options={[
+                      { value: 'original', label: 'Original' },
+                      { value: 'translation', label: 'Translation' },
+                      { value: 'both', label: 'Both' },
+                    ]}
+                    value={settings.displayContent}
+                    onChange={v => updateSettings({ displayContent: v })}
+                  />
+                </div>
+
+                {showTranslation && (
+                  <div className="flex items-center gap-2">
+                    <Label className="text-sm font-medium whitespace-nowrap">Style:</Label>
+                    <SegControl<TextDisplay>
+                      options={[
+                        { value: 'subtitle', label: 'Subtitle' },
+                        { value: 'stream', label: 'Stream' },
+                      ]}
+                      value={settings.textDisplay}
+                      onChange={v => updateSettings({ textDisplay: v })}
+                    />
+                  </div>
+                )}
 
                 {settings.transcriptionProvider === 'whisper' && (
                   <div className="flex items-center gap-2">
                     <Label htmlFor="chunk-duration" className="text-sm font-medium whitespace-nowrap">
-                      Listen interval:
+                      Interval:
                     </Label>
                     <select
                       id="chunk-duration"
@@ -400,25 +489,39 @@ export default function Home() {
           </div>
         </div>
 
+        {/* Text display area */}
         <div className="flex-1 flex flex-col gap-6 overflow-hidden pb-20">
-          <div className="flex-1 bg-card rounded-lg mx-4 mt-6 min-h-[200px] border border-card-border">
-            <TranscriptionDisplay
-              title="Original"
-              text={displayOriginalText}
-              testId="text-original"
-              isRTL={getLanguageRTL(sourceLanguage)}
-              isPartial={!!previewText}
-            />
-          </div>
+          {showOriginal && (
+            <div className={`${showTranslation ? 'flex-1' : 'flex-[2]'} bg-card rounded-lg mx-4 mt-6 min-h-[120px] border border-card-border`}>
+              <TranscriptionDisplay
+                title="Original"
+                text={displayOriginalText}
+                testId="text-original"
+                isRTL={getLanguageRTL(sourceLanguage)}
+                isPartial={!!previewText}
+              />
+            </div>
+          )}
 
-          <div className="flex-1 bg-card rounded-lg mx-4 mb-6 min-h-[200px] border border-card-border">
-            <TranscriptionDisplay
-              title={translationTitle()}
-              text={translatedText}
-              testId="text-translation"
-              isRTL={getLanguageRTL(targetLanguage)}
-            />
-          </div>
+          {showTranslation && (
+            <div className={`${showOriginal ? 'flex-1' : 'flex-[2]'} bg-card rounded-lg mx-4 ${showOriginal ? '' : 'mt-6'} mb-6 min-h-[120px] border border-card-border`}>
+              {settings.textDisplay === 'subtitle' ? (
+                <SubtitleView
+                  current={subtitleCurrent}
+                  previous={subtitlePrevious}
+                  isRTL={getLanguageRTL(targetLanguage)}
+                />
+              ) : (
+                <TranscriptionDisplay
+                  title={translationTitle()}
+                  text={translatedText}
+                  testId="text-translation"
+                  isRTL={getLanguageRTL(targetLanguage)}
+                  displayStyle="stream"
+                />
+              )}
+            </div>
+          )}
         </div>
       </div>
 
