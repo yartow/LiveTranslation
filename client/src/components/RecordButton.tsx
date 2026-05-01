@@ -1,5 +1,4 @@
-import { Button } from "@/components/ui/button";
-import { Loader2 } from "lucide-react";
+import { Loader2, Mic, Square } from 'lucide-react';
 
 interface RecordButtonProps {
   isRecording: boolean;
@@ -8,36 +7,33 @@ interface RecordButtonProps {
   disabled?: boolean;
 }
 
-export default function RecordButton({ 
-  isRecording, 
-  isProcessing, 
-  onClick, 
-  disabled 
-}: RecordButtonProps) {
+export default function RecordButton({ isRecording, isProcessing, onClick, disabled }: RecordButtonProps) {
   return (
-    <div className="flex justify-center">
-      <Button
-        size="icon"
-        variant={isRecording ? "default" : "outline"}
-        onClick={onClick}
-        disabled={disabled || isProcessing}
-        className={`h-16 w-16 rounded-full ${isRecording ? 'animate-pulse' : ''}`}
-        data-testid="button-record"
-        aria-label={isRecording ? "Stop recording" : "Start recording"}
-      >
-        {isProcessing ? (
-          <Loader2 className="h-6 w-6 animate-spin" />
-        ) : isRecording ? (
-          <svg className="w-6 h-6" fill="currentColor" viewBox="0 0 24 24">
-            <rect x="6" y="6" width="12" height="12" rx="2" />
-          </svg>
-        ) : (
-          <svg className="w-6 h-6" fill="currentColor" viewBox="0 0 24 24">
-            <path d="M12 14c1.66 0 3-1.34 3-3V5c0-1.66-1.34-3-3-3S9 3.34 9 5v6c0 1.66 1.34 3 3 3z"/>
-            <path d="M17 11c0 2.76-2.24 5-5 5s-5-2.24-5-5H5c0 3.53 2.61 6.43 6 6.92V21h2v-3.08c3.39-.49 6-3.39 6-6.92h-2z"/>
-          </svg>
-        )}
-      </Button>
-    </div>
+    <button
+      onClick={onClick}
+      disabled={disabled || isProcessing}
+      data-testid="button-record"
+      aria-label={isRecording ? 'Stop recording' : 'Start recording'}
+      className={[
+        'relative h-16 w-16 rounded-full flex items-center justify-center transition-all duration-200',
+        'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2',
+        'disabled:opacity-40 disabled:cursor-not-allowed',
+        isRecording
+          ? 'bg-red-600 text-white shadow-lg shadow-red-900/40'
+          : 'bg-primary text-primary-foreground hover:opacity-90',
+      ].join(' ')}
+    >
+      {/* Pulsing outer ring when recording */}
+      {isRecording && !isProcessing && (
+        <span className="absolute inset-0 rounded-full animate-ping bg-red-600 opacity-20" />
+      )}
+
+      {isProcessing
+        ? <Loader2 className="h-6 w-6 animate-spin" />
+        : isRecording
+          ? <Square className="h-5 w-5 fill-current" />
+          : <Mic className="h-6 w-6" />
+      }
+    </button>
   );
 }

@@ -31,6 +31,11 @@ export function getLanguageRTL(code: string): boolean {
   return lang?.rtl || false;
 }
 
+export function getLanguageName(code: string): string {
+  const lang = LANGUAGES.find(l => l.code === code);
+  return lang?.name ?? code;
+}
+
 export default function LanguageSelector({ 
   value, 
   onChange, 

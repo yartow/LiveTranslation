@@ -1,8 +1,7 @@
 import { useState, useRef, useEffect, useCallback } from 'react';
 import Header from '@/components/Header';
-import LanguageSelector, { getLanguageRTL } from '@/components/LanguageSelector';
+import LanguageSelector, { getLanguageRTL, getLanguageName } from '@/components/LanguageSelector';
 import RecordButton from '@/components/RecordButton';
-import RecordingIndicator from '@/components/RecordingIndicator';
 import TranscriptionDisplay from '@/components/TranscriptionDisplay';
 import SubtitleView from '@/components/SubtitleView';
 import SettingsDialog from '@/components/SettingsDialog';
@@ -25,7 +24,7 @@ interface TranscriptionSegment {
   translated: string;
 }
 
-// ── Segmented control ───────────────────────────────────────────────────────
+// ── Segmented control ────────────────────────────────────────────────────────
 
 interface SegOpt<T extends string> { value: T; label: string }
 
@@ -33,18 +32,18 @@ function SegControl<T extends string>({
   options, value, onChange, disabled,
 }: { options: SegOpt<T>[]; value: T; onChange: (v: T) => void; disabled?: boolean }) {
   return (
-    <div className="inline-flex rounded-md border border-input overflow-hidden text-sm">
+    <div className="inline-flex rounded-lg border border-border overflow-hidden text-sm">
       {options.map(opt => (
         <button
           key={opt.value}
           type="button"
           onClick={() => onChange(opt.value)}
           disabled={disabled}
-          className={`px-3 py-1 transition-colors ${
+          className={`px-3 py-1.5 transition-colors ${
             value === opt.value
               ? 'bg-primary text-primary-foreground'
-              : 'bg-background text-foreground hover:bg-muted'
-          } disabled:opacity-50 disabled:cursor-not-allowed`}
+              : 'bg-background text-muted-foreground hover:text-foreground hover:bg-muted/50'
+          } disabled:opacity-40 disabled:cursor-not-allowed`}
         >
           {opt.label}
         </button>
@@ -53,7 +52,7 @@ function SegControl<T extends string>({
   );
 }
 
-// ── Helpers ─────────────────────────────────────────────────────────────────
+// ── Helpers ──────────────────────────────────────────────────────────────────
 
 function splitLastTwo(text: string): [string, string] {
   const parts = text.trim().split(/[.!?]+\s+/).filter(s => s.trim());
@@ -62,7 +61,7 @@ function splitLastTwo(text: string): [string, string] {
   return [parts[parts.length - 1], parts[parts.length - 2]];
 }
 
-// ── Component ────────────────────────────────────────────────────────────────
+// ── Component ─────────────────────────────────────────────────────────────────
 
 export default function Home() {
   const [sourceLanguage, setSourceLanguage] = useState('en');
@@ -72,24 +71,23 @@ export default function Home() {
   const [originalText, setOriginalText] = useState('');
   const [translatedText, setTranslatedText] = useState('');
   const [previewText, setPreviewText] = useState('');
-  const [isDark, setIsDark] = useState(false);
+  // Default dark — matches the index.html inline script that adds 'dark' before paint
+  const [isDark, setIsDark] = useState(true);
   const [isRetranslating, setIsRetranslating] = useState(false);
-  const [isConfigOpen, setIsConfigOpen] = useState(true);
+  const [isConfigOpen, setIsConfigOpen] = useState(false);
   const [isExportDialogOpen, setIsExportDialogOpen] = useState(false);
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const [chunkDurationSecs, setChunkDurationSecs] = useState(5);
 
-  // Subtitle mode state — tracks the last two translation chunks
   const [subtitleCurrent, setSubtitleCurrent] = useState('');
   const [subtitlePrevious, setSubtitlePrevious] = useState('');
   const subtitleCurrentRef = useRef('');
 
-  // Per-session sermon context (Bible ref + topic) — not persisted, user types each time
   const [sermonContext, setSermonContext] = useState('');
+  const sermonContextRef = useRef('');
+  useEffect(() => { sermonContextRef.current = sermonContext; }, [sermonContext]);
 
   const { settings, updateSettings } = useSettings();
-
-  // Derive detectSpeakers from speechMode so it's always consistent
   const detectSpeakers = settings.speechMode === 'dialogue';
 
   const backendRef = useRef<AnyTranscriptionBackend | null>(null);
@@ -108,12 +106,12 @@ export default function Home() {
   useEffect(() => { detectSpeakersRef.current = detectSpeakers; }, [detectSpeakers]);
   useEffect(() => { settingsRef.current = settings; }, [settings]);
 
+  // Sync isDark state with the class already applied by index.html script
   useEffect(() => {
-    const prefersDark = window.matchMedia('(prefers-color-scheme: dark)').matches;
-    const savedTheme = localStorage.getItem('theme');
-    const shouldBeDark = savedTheme === 'dark' || (!savedTheme && prefersDark);
-    setIsDark(shouldBeDark);
-    if (shouldBeDark) document.documentElement.classList.add('dark');
+    const saved = localStorage.getItem('theme');
+    const dark = saved !== 'light'; // default dark unless explicitly saved as light
+    setIsDark(dark);
+    document.documentElement.classList.toggle('dark', dark);
   }, []);
 
   const applySubtitlesFromText = (text: string) => {
@@ -123,7 +121,6 @@ export default function Home() {
     setSubtitlePrevious(previous);
   };
 
-  // Re-translate all accumulated text when target language or speaker detection changes
   useEffect(() => {
     const retranslateAll = async () => {
       const languageChanged = targetLanguage !== previousTargetLanguageRef.current;
@@ -154,6 +151,8 @@ export default function Home() {
           settings.translationProvider,
           settings.openaiApiKey,
           settings.anthropicApiKey,
+          settings.theologicalGlossary,
+          sermonContextRef.current,
         );
       }
 
@@ -171,7 +170,7 @@ export default function Home() {
             openaiApiKey: settings.openaiApiKey,
             anthropicApiKey: settings.anthropicApiKey,
             glossary: settings.theologicalGlossary || undefined,
-            sermonContext: sermonContext || undefined,
+            sermonContext: sermonContextRef.current || undefined,
           }),
         });
 
@@ -194,9 +193,10 @@ export default function Home() {
   }, [targetLanguage, detectSpeakers, isProcessing, isRetranslating]);
 
   const toggleTheme = () => {
-    setIsDark(!isDark);
-    document.documentElement.classList.toggle('dark');
-    localStorage.setItem('theme', !isDark ? 'dark' : 'light');
+    const next = !isDark;
+    setIsDark(next);
+    document.documentElement.classList.toggle('dark', next);
+    localStorage.setItem('theme', next ? 'dark' : 'light');
   };
 
   const performRetroactiveCorrection = useCallback(async () => {
@@ -219,7 +219,7 @@ export default function Home() {
           openaiApiKey: s.openaiApiKey,
           anthropicApiKey: s.anthropicApiKey,
           glossary: s.theologicalGlossary || undefined,
-          sermonContext: sermonContext || undefined,
+          sermonContext: sermonContextRef.current || undefined,
         }),
       });
 
@@ -254,9 +254,7 @@ export default function Home() {
             : `Listening in ${chunkDurationSecs}s intervals. Speak naturally.`;
           toast({ title: 'Recording started', description: desc });
         },
-        onRawTranscript: (text: string) => {
-          setPreviewText(text);
-        },
+        onRawTranscript: (text: string) => { setPreviewText(text); },
         onTranslation: (original: string, translated: string) => {
           if (!original) return;
           transcriptionSegmentsRef.current.push({ original, translated });
@@ -264,7 +262,6 @@ export default function Home() {
           setTranslatedText(prev => prev + (prev ? ' ' : '') + translated);
           setPreviewText('');
 
-          // Update subtitle state
           setSubtitlePrevious(subtitleCurrentRef.current);
           subtitleCurrentRef.current = translated;
           setSubtitleCurrent(translated);
@@ -291,7 +288,6 @@ export default function Home() {
       };
 
       let backend: AnyTranscriptionBackend;
-
       if (settings.transcriptionProvider === 'browser') {
         backend = new BrowserSpeechTranscription(events);
       } else {
@@ -310,7 +306,7 @@ export default function Home() {
         settings.openaiApiKey,
         settings.anthropicApiKey,
         settings.theologicalGlossary,
-        sermonContext,
+        sermonContextRef.current,
       );
 
       setIsProcessing(false);
@@ -341,215 +337,237 @@ export default function Home() {
     toast({ title: 'Recording stopped', description: 'All audio has been processed.' });
   }, [isRecording, toast]);
 
-  const handleRecordClick = () => {
-    if (isRecording) stopRecording();
-    else startRecording();
-  };
-
   const displayOriginalText = previewText
     ? (originalText ? originalText + ' ' + previewText : previewText)
     : originalText;
 
-  const translationTitle = () => {
-    if (isRetranslating) return 'Translation (updating...)';
-    if (settings.translationProvider === 'none') return 'Translation (disabled)';
-    return 'Translation';
-  };
+  const translationTitle = isRetranslating
+    ? 'Translation (updating…)'
+    : settings.translationProvider === 'none'
+      ? 'Transcription only'
+      : 'Translation';
 
   const showOriginal = settings.displayContent === 'original' || settings.displayContent === 'both';
   const showTranslation = settings.displayContent === 'translation' || settings.displayContent === 'both';
 
+  // Config summary line shown when the panel is collapsed
+  const configSummary = [
+    `${getLanguageName(sourceLanguage)} → ${getLanguageName(targetLanguage)}`,
+    settings.speechMode === 'monologue' ? 'Monologue' : 'Dialogue',
+    settings.transcriptionProvider === 'browser' ? 'Browser' : 'Whisper',
+  ].join('  ·  ');
+
   return (
-    <div className="flex flex-col h-screen bg-background">
-      <Header onThemeToggle={toggleTheme} onSettingsOpen={() => setIsSettingsOpen(true)} />
+    <div className="flex flex-col h-screen bg-background text-foreground">
+      <Header
+        onThemeToggle={toggleTheme}
+        onSettingsOpen={() => setIsSettingsOpen(true)}
+        isDark={isDark}
+      />
 
-      <div className="relative flex-1 flex flex-col overflow-hidden">
-        <RecordingIndicator isRecording={isRecording} />
+      {/* ── Config strip ─────────────────────────────────────────────────── */}
+      <Collapsible open={isConfigOpen} onOpenChange={setIsConfigOpen}>
+        <CollapsibleTrigger asChild>
+          <button
+            className="w-full flex items-center gap-2 px-4 py-2.5 border-b border-border bg-background hover:bg-muted/30 transition-colors text-left"
+            data-testid="button-configure-toggle"
+          >
+            {isRecording && (
+              <span className="flex h-2 w-2 shrink-0">
+                <span className="animate-ping absolute inline-flex h-2 w-2 rounded-full bg-red-500 opacity-75" />
+                <span className="relative inline-flex h-2 w-2 rounded-full bg-red-500" />
+              </span>
+            )}
+            <span className="text-sm text-muted-foreground truncate">{configSummary}</span>
+            {sermonContext && (
+              <>
+                <span className="text-muted-foreground/40 shrink-0">·</span>
+                <span className="text-sm text-muted-foreground/70 truncate italic">{sermonContext}</span>
+              </>
+            )}
+            {isConfigOpen
+              ? <ChevronUp className="ml-auto shrink-0 h-4 w-4 text-muted-foreground/60" />
+              : <ChevronDown className="ml-auto shrink-0 h-4 w-4 text-muted-foreground/60" />
+            }
+          </button>
+        </CollapsibleTrigger>
 
-        <div className="p-4 space-y-4 bg-background border-b border-border">
-          <Collapsible open={isConfigOpen} onOpenChange={setIsConfigOpen}>
-            <div className="flex items-center justify-between mb-3">
-              <CollapsibleTrigger asChild>
-                <Button
-                  variant="ghost"
-                  size="sm"
-                  className="flex items-center gap-2 px-0"
-                  data-testid="button-configure-toggle"
-                >
-                  {isConfigOpen ? <ChevronUp className="h-4 w-4" /> : <ChevronDown className="h-4 w-4" />}
-                  <span className="text-sm font-medium">Configure</span>
-                </Button>
-              </CollapsibleTrigger>
+        <CollapsibleContent>
+          <div className="px-4 pt-4 pb-5 space-y-4 border-b border-border bg-background">
+            {/* Language selectors */}
+            <div className="grid grid-cols-2 gap-3">
+              <LanguageSelector
+                value={sourceLanguage}
+                onChange={setSourceLanguage}
+                disabled={isRecording}
+                label="Speaking in"
+                testId="select-source-language"
+              />
+              <LanguageSelector
+                value={targetLanguage}
+                onChange={setTargetLanguage}
+                disabled={false}
+                label="Translate to"
+                testId="select-target-language"
+              />
             </div>
 
-            <CollapsibleContent className="space-y-4">
-              {/* Language selectors */}
-              <div className="grid grid-cols-2 gap-4">
-                <LanguageSelector
-                  value={sourceLanguage}
-                  onChange={setSourceLanguage}
+            {/* Sermon context */}
+            <div className="space-y-1.5">
+              <Label htmlFor="sermon-context" className="text-sm text-muted-foreground">
+                Today's sermon
+              </Label>
+              <input
+                id="sermon-context"
+                type="text"
+                value={sermonContext}
+                onChange={(e) => setSermonContext(e.target.value)}
+                placeholder="e.g. Romans 8:1–11 — Life in the Spirit"
+                disabled={isRecording}
+                className="w-full text-sm border border-input rounded-lg px-3 py-2 bg-background text-foreground placeholder:text-muted-foreground/60 disabled:opacity-50 focus:outline-none focus:ring-1 focus:ring-ring"
+              />
+            </div>
+
+            {/* Mode · Show · Style controls */}
+            <div className="flex flex-wrap gap-x-6 gap-y-3">
+              <div className="flex items-center gap-2">
+                <span className="text-sm text-muted-foreground">Mode</span>
+                <SegControl<SpeechMode>
+                  options={[
+                    { value: 'monologue', label: 'Monologue' },
+                    { value: 'dialogue', label: 'Dialogue' },
+                  ]}
+                  value={settings.speechMode}
+                  onChange={v => updateSettings({ speechMode: v })}
                   disabled={isRecording}
-                  label="Speaking in"
-                  testId="select-source-language"
-                />
-                <LanguageSelector
-                  value={targetLanguage}
-                  onChange={setTargetLanguage}
-                  disabled={false}
-                  label="Translate to"
-                  testId="select-target-language"
                 />
               </div>
 
-              {/* Sermon context — per-session, not persisted */}
-              <div className="space-y-1">
-                <Label htmlFor="sermon-context" className="text-sm font-medium">
-                  Today's sermon
-                </Label>
-                <input
-                  id="sermon-context"
-                  type="text"
-                  value={sermonContext}
-                  onChange={(e) => setSermonContext(e.target.value)}
-                  placeholder="e.g. Romans 8:1–11 — Life in the Spirit"
-                  disabled={isRecording}
-                  className="w-full text-sm border border-input rounded px-3 py-1.5 bg-background disabled:opacity-50"
+              <div className="flex items-center gap-2">
+                <span className="text-sm text-muted-foreground">Show</span>
+                <SegControl<DisplayContent>
+                  options={[
+                    { value: 'original', label: 'Original' },
+                    { value: 'translation', label: 'Translation' },
+                    { value: 'both', label: 'Both' },
+                  ]}
+                  value={settings.displayContent}
+                  onChange={v => updateSettings({ displayContent: v })}
                 />
               </div>
 
-              {/* Mode, display, and style controls */}
-              <div className="flex flex-wrap items-center gap-4">
+              {showTranslation && (
                 <div className="flex items-center gap-2">
-                  <Label className="text-sm font-medium whitespace-nowrap">Mode:</Label>
-                  <SegControl<SpeechMode>
+                  <span className="text-sm text-muted-foreground">Style</span>
+                  <SegControl<TextDisplay>
                     options={[
-                      { value: 'monologue', label: 'Monologue' },
-                      { value: 'dialogue', label: 'Dialogue' },
+                      { value: 'subtitle', label: 'Subtitle' },
+                      { value: 'stream', label: 'Stream' },
                     ]}
-                    value={settings.speechMode}
-                    onChange={v => updateSettings({ speechMode: v })}
+                    value={settings.textDisplay}
+                    onChange={v => updateSettings({ textDisplay: v })}
+                  />
+                </div>
+              )}
+
+              {settings.transcriptionProvider === 'whisper' && (
+                <div className="flex items-center gap-2">
+                  <span className="text-sm text-muted-foreground">Interval</span>
+                  <select
+                    value={chunkDurationSecs}
+                    onChange={(e) => setChunkDurationSecs(Number(e.target.value))}
                     disabled={isRecording}
-                  />
+                    className="text-sm border border-input rounded-lg px-2 py-1.5 bg-background text-foreground disabled:opacity-50"
+                    data-testid="select-chunk-duration"
+                  >
+                    <option value={3}>3s</option>
+                    <option value={5}>5s</option>
+                    <option value={8}>8s</option>
+                    <option value={10}>10s</option>
+                    <option value={15}>15s</option>
+                  </select>
                 </div>
+              )}
+            </div>
 
-                <div className="flex items-center gap-2">
-                  <Label className="text-sm font-medium whitespace-nowrap">Show:</Label>
-                  <SegControl<DisplayContent>
-                    options={[
-                      { value: 'original', label: 'Original' },
-                      { value: 'translation', label: 'Translation' },
-                      { value: 'both', label: 'Both' },
-                    ]}
-                    value={settings.displayContent}
-                    onChange={v => updateSettings({ displayContent: v })}
-                  />
-                </div>
+            {/* Provider info */}
+            <p className="text-xs text-muted-foreground/60">
+              {settings.transcriptionProvider === 'browser' ? 'Browser speech' : 'Whisper'}
+              {' · '}
+              {settings.translationProvider === 'none'
+                ? 'No translation'
+                : settings.translationProvider === 'claude'
+                  ? 'Claude Haiku'
+                  : 'GPT-4o-mini'}
+              {settings.theologicalGlossary && ' · Glossary active'}
+            </p>
+          </div>
+        </CollapsibleContent>
+      </Collapsible>
 
-                {showTranslation && (
-                  <div className="flex items-center gap-2">
-                    <Label className="text-sm font-medium whitespace-nowrap">Style:</Label>
-                    <SegControl<TextDisplay>
-                      options={[
-                        { value: 'subtitle', label: 'Subtitle' },
-                        { value: 'stream', label: 'Stream' },
-                      ]}
-                      value={settings.textDisplay}
-                      onChange={v => updateSettings({ textDisplay: v })}
-                    />
-                  </div>
-                )}
-
-                {settings.transcriptionProvider === 'whisper' && (
-                  <div className="flex items-center gap-2">
-                    <Label htmlFor="chunk-duration" className="text-sm font-medium whitespace-nowrap">
-                      Interval:
-                    </Label>
-                    <select
-                      id="chunk-duration"
-                      value={chunkDurationSecs}
-                      onChange={(e) => setChunkDurationSecs(Number(e.target.value))}
-                      disabled={isRecording}
-                      className="text-sm border border-input rounded px-2 py-1 bg-background"
-                      data-testid="select-chunk-duration"
-                    >
-                      <option value={3}>3s</option>
-                      <option value={5}>5s</option>
-                      <option value={8}>8s</option>
-                      <option value={10}>10s</option>
-                      <option value={15}>15s</option>
-                    </select>
-                  </div>
-                )}
-
-                {/* Provider badges */}
-                <div className="flex items-center gap-2 ml-auto">
-                  <span className="text-xs text-muted-foreground">
-                    {settings.transcriptionProvider === 'browser' ? '🎤 Browser' : '🎙 Whisper'}
-                    {' · '}
-                    {settings.translationProvider === 'none' ? 'No translation' :
-                      settings.translationProvider === 'claude' ? '🤖 Claude' : '⚡ GPT-4o-mini'}
-                  </span>
-                </div>
-              </div>
-            </CollapsibleContent>
-          </Collapsible>
-
-          <div className="flex items-center gap-3">
-            <RecordButton
-              isRecording={isRecording}
-              isProcessing={isProcessing}
-              onClick={handleRecordClick}
+      {/* ── Text display ──────────────────────────────────────────────────── */}
+      <div className="flex-1 overflow-hidden flex flex-col pb-24">
+        {showOriginal && (
+          <div className={`${showTranslation ? 'flex-1' : 'flex-[1]'} overflow-hidden ${showTranslation ? 'border-b border-border' : ''}`}>
+            <TranscriptionDisplay
+              title="Original"
+              text={displayOriginalText}
+              testId="text-original"
+              isRTL={getLanguageRTL(sourceLanguage)}
+              isPartial={!!previewText}
             />
+          </div>
+        )}
+
+        {showTranslation && (
+          <div className={`${showOriginal ? 'flex-1' : 'flex-[1]'} overflow-hidden`}>
+            {settings.textDisplay === 'subtitle' ? (
+              <SubtitleView
+                current={subtitleCurrent}
+                previous={subtitlePrevious}
+                isRTL={getLanguageRTL(targetLanguage)}
+              />
+            ) : (
+              <TranscriptionDisplay
+                title={translationTitle}
+                text={translatedText}
+                testId="text-translation"
+                isRTL={getLanguageRTL(targetLanguage)}
+                displayStyle="stream"
+              />
+            )}
+          </div>
+        )}
+      </div>
+
+      {/* ── Fixed bottom action bar ───────────────────────────────────────── */}
+      <div className="fixed bottom-0 left-0 right-0 border-t border-border bg-background/95 backdrop-blur-sm px-6 py-4">
+        <div className="flex items-center justify-between max-w-sm mx-auto">
+          <div className="w-20" />
+
+          <RecordButton
+            isRecording={isRecording}
+            isProcessing={isProcessing}
+            onClick={isRecording ? stopRecording : startRecording}
+          />
+
+          <div className="w-20 flex justify-end">
             <Button
-              variant="outline"
-              size="default"
+              variant="ghost"
+              size="sm"
               onClick={() => setIsExportDialogOpen(true)}
               disabled={!originalText && !translatedText}
-              className="flex items-center gap-2"
               data-testid="button-export"
+              className="text-muted-foreground hover:text-foreground gap-1.5"
             >
               <Download className="h-4 w-4" />
               Export
             </Button>
           </div>
         </div>
-
-        {/* Text display area */}
-        <div className="flex-1 flex flex-col gap-6 overflow-hidden pb-20">
-          {showOriginal && (
-            <div className={`${showTranslation ? 'flex-1' : 'flex-[2]'} bg-card rounded-lg mx-4 mt-6 min-h-[120px] border border-card-border`}>
-              <TranscriptionDisplay
-                title="Original"
-                text={displayOriginalText}
-                testId="text-original"
-                isRTL={getLanguageRTL(sourceLanguage)}
-                isPartial={!!previewText}
-              />
-            </div>
-          )}
-
-          {showTranslation && (
-            <div className={`${showOriginal ? 'flex-1' : 'flex-[2]'} bg-card rounded-lg mx-4 ${showOriginal ? '' : 'mt-6'} mb-6 min-h-[120px] border border-card-border`}>
-              {settings.textDisplay === 'subtitle' ? (
-                <SubtitleView
-                  current={subtitleCurrent}
-                  previous={subtitlePrevious}
-                  isRTL={getLanguageRTL(targetLanguage)}
-                />
-              ) : (
-                <TranscriptionDisplay
-                  title={translationTitle()}
-                  text={translatedText}
-                  testId="text-translation"
-                  isRTL={getLanguageRTL(targetLanguage)}
-                  displayStyle="stream"
-                />
-              )}
-            </div>
-          )}
-        </div>
       </div>
 
+      {/* ── Dialogs ──────────────────────────────────────────────────────── */}
       <ExportDialog
         isOpen={isExportDialogOpen}
         onClose={() => setIsExportDialogOpen(false)}
