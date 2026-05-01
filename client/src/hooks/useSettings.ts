@@ -1,13 +1,15 @@
 import { useState, useCallback } from 'react';
 
-export type TranscriptionProvider = 'whisper' | 'browser';
+export type TranscriptionProvider = 'whisper' | 'browser' | 'transformers';
 export type TranslationProvider = 'openai' | 'claude' | 'none';
+export type LocalWhisperModel = 'tiny' | 'small' | 'medium';
 
 export interface AppSettings {
   openaiApiKey: string;
   anthropicApiKey: string;
   transcriptionProvider: TranscriptionProvider;
   translationProvider: TranslationProvider;
+  localWhisperModel: LocalWhisperModel;
 }
 
 const PREFS_KEY = 'sermonscribe_prefs';
@@ -17,10 +19,12 @@ const defaultSettings: AppSettings = {
   anthropicApiKey: '',
   transcriptionProvider: 'whisper',
   translationProvider: 'openai',
+  localWhisperModel: 'tiny',
 };
 
-const VALID_TRANSCRIPTION: TranscriptionProvider[] = ['whisper', 'browser'];
+const VALID_TRANSCRIPTION: TranscriptionProvider[] = ['whisper', 'browser', 'transformers'];
 const VALID_TRANSLATION: TranslationProvider[] = ['openai', 'claude', 'none'];
+const VALID_LOCAL_MODEL: LocalWhisperModel[] = ['tiny', 'small', 'medium'];
 
 function loadSettings(): AppSettings {
   let prefs: Partial<AppSettings> = {};
@@ -45,6 +49,9 @@ function loadSettings(): AppSettings {
   if (!VALID_TRANSLATION.includes(merged.translationProvider)) {
     merged.translationProvider = defaultSettings.translationProvider;
   }
+  if (!VALID_LOCAL_MODEL.includes(merged.localWhisperModel)) {
+    merged.localWhisperModel = defaultSettings.localWhisperModel;
+  }
 
   return merged;
 }
@@ -61,6 +68,7 @@ export function useSettings() {
         localStorage.setItem(PREFS_KEY, JSON.stringify({
           transcriptionProvider: next.transcriptionProvider,
           translationProvider: next.translationProvider,
+          localWhisperModel: next.localWhisperModel,
         }));
       } catch {}
 

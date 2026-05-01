@@ -9,15 +9,18 @@ import { Checkbox } from '@/components/ui/checkbox';
 import { Label } from '@/components/ui/label';
 import { Button } from '@/components/ui/button';
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/components/ui/collapsible';
-import { ChevronDown, ChevronUp, Download } from 'lucide-react';
+import { ChevronDown, ChevronUp, Download, History } from 'lucide-react';
 import { useToast } from '@/hooks/use-toast';
 import { useSettings } from '@/hooks/useSettings';
 import ExportDialog from '@/components/ExportDialog';
+import SessionHistoryDialog from '@/components/SessionHistoryDialog';
 import { ChunkBasedTranscription } from '@/lib/chunk-based-transcription';
 import { BrowserSpeechTranscription } from '@/lib/browser-speech-transcription';
+import { LocalWhisperTranscription } from '@/lib/local-whisper-transcription';
 import { useAudioQuality } from '@/hooks/useAudioQuality';
+import { saveSession } from '@/lib/session-db';
 
-type AnyTranscriptionBackend = ChunkBasedTranscription | BrowserSpeechTranscription;
+type AnyTranscriptionBackend = ChunkBasedTranscription | BrowserSpeechTranscription | LocalWhisperTranscription;
 
 interface TranscriptionSegment {
   original: string;
@@ -39,6 +42,8 @@ export default function Home() {
   const [isConfigOpen, setIsConfigOpen] = useState(true);
   const [isExportDialogOpen, setIsExportDialogOpen] = useState(false);
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
+  const [isHistoryOpen, setIsHistoryOpen] = useState(false);
+  const [modelLoadProgress, setModelLoadProgress] = useState(0);
   const [chunkDurationSecs, setChunkDurationSecs] = useState(5);
 
   const { settings, updateSettings } = useSettings();
@@ -206,10 +211,16 @@ export default function Home() {
 
       const events = {
         onReady: () => {
+          setModelLoadProgress(0);
           const desc = settings.transcriptionProvider === 'browser'
             ? 'Browser speech recognition is active. Speak clearly.'
-            : `Listening in ${chunkDurSecs}s intervals. Speak naturally.`;
+            : settings.transcriptionProvider === 'transformers'
+              ? 'Local Whisper is active. Speak naturally.'
+              : `Listening in ${chunkDurSecs}s intervals. Speak naturally.`;
           toast({ title: 'Recording started', description: desc });
+        },
+        onModelProgress: (loaded: number, total: number) => {
+          if (total > 0) setModelLoadProgress(loaded / total);
         },
         onRawTranscript: (text: string) => {
           setPreviewText(text);
@@ -248,9 +259,27 @@ export default function Home() {
           setIsRecording(false);
           setIsProcessing(false);
           setPreviewText('');
+          setModelLoadProgress(0);
           stopMonitoring();
           wakeLockRef.current?.release().catch(() => {});
           wakeLockRef.current = null;
+          // Auto-save completed session to IndexedDB
+          const segments = transcriptionSegmentsRef.current;
+          if (segments.length > 0) {
+            const orig = segments.map(s => s.original).join(' ');
+            const trans = segments.map(s => s.translated).join(' ');
+            saveSession({
+              id: crypto.randomUUID(),
+              createdAt: Date.now(),
+              sourceLanguage,
+              targetLanguage,
+              originalText: orig,
+              translatedText: trans,
+              sessionCost: sessionCostRef.current,
+              transcriptionProvider: settings.transcriptionProvider,
+              translationProvider: settings.translationProvider,
+            }).catch(() => {});
+          }
         },
         onStreamReady: (stream: MediaStream) => {
           startMonitoring(stream);
@@ -259,24 +288,39 @@ export default function Home() {
 
       let backend: AnyTranscriptionBackend;
 
-      if (settings.transcriptionProvider === 'browser') {
-        backend = new BrowserSpeechTranscription(events);
-      } else {
-        backend = new ChunkBasedTranscription(events, chunkDurationSecs * 1000);
-      }
-
-      backendRef.current = backend;
+      backendRef.current = null;
       setIsRecording(true);
       setIsProcessing(true);
 
-      await backend.start(
-        sourceLanguage,
-        targetLanguage,
-        detectSpeakers,
-        settings.translationProvider,
-        settings.openaiApiKey,
-        settings.anthropicApiKey,
-      );
+      if (settings.transcriptionProvider === 'transformers') {
+        const localBackend = new LocalWhisperTranscription(events, chunkDurationSecs * 1000);
+        backend = localBackend;
+        backendRef.current = backend;
+        await localBackend.start(
+          sourceLanguage,
+          targetLanguage,
+          detectSpeakers,
+          settings.translationProvider,
+          settings.openaiApiKey,
+          settings.anthropicApiKey,
+          settings.localWhisperModel,
+        );
+      } else {
+        if (settings.transcriptionProvider === 'browser') {
+          backend = new BrowserSpeechTranscription(events);
+        } else {
+          backend = new ChunkBasedTranscription(events, chunkDurationSecs * 1000);
+        }
+        backendRef.current = backend;
+        await backend.start(
+          sourceLanguage,
+          targetLanguage,
+          detectSpeakers,
+          settings.translationProvider,
+          settings.openaiApiKey,
+          settings.anthropicApiKey,
+        );
+      }
 
       // Prevent screen from sleeping during a 45-min sermon
       if ('wakeLock' in navigator) {
@@ -415,7 +459,9 @@ export default function Home() {
                 {/* Provider badges */}
                 <div className="flex items-center gap-2 ml-auto">
                   <span className="text-xs text-muted-foreground">
-                    {settings.transcriptionProvider === 'browser' ? '🎤 Browser' : '🎙 Whisper'}
+                    {settings.transcriptionProvider === 'browser' ? '🎤 Browser'
+                      : settings.transcriptionProvider === 'transformers' ? '🧠 Local Whisper'
+                      : '🎙 Whisper'}
                     {' · '}
                     {settings.translationProvider === 'none' ? 'No translation' :
                       settings.translationProvider === 'claude' ? '🤖 Claude' : '⚡ GPT-4o-mini'}
@@ -425,6 +471,18 @@ export default function Home() {
             </CollapsibleContent>
           </Collapsible>
 
+          {modelLoadProgress > 0 && modelLoadProgress < 1 && (
+            <div className="w-full space-y-1 pb-1">
+              <p className="text-xs text-muted-foreground">Downloading model… {Math.round(modelLoadProgress * 100)}%</p>
+              <div className="h-1.5 w-full rounded-full bg-muted overflow-hidden">
+                <div
+                  className="h-full bg-primary transition-all duration-300 rounded-full"
+                  style={{ width: `${modelLoadProgress * 100}%` }}
+                />
+              </div>
+            </div>
+          )}
+
           <div className="flex items-center gap-3">
             <RecordButton
               isRecording={isRecording}
@@ -432,17 +490,29 @@ export default function Home() {
               onClick={handleRecordClick}
             />
             <div className="flex flex-col gap-1">
-              <Button
-                variant="outline"
-                size="default"
-                onClick={() => setIsExportDialogOpen(true)}
-                disabled={!originalText && !translatedText}
-                className="flex items-center gap-2"
-                data-testid="button-export"
-              >
-                <Download className="h-4 w-4" />
-                Export
-              </Button>
+              <div className="flex items-center gap-2">
+                <Button
+                  variant="outline"
+                  size="default"
+                  onClick={() => setIsExportDialogOpen(true)}
+                  disabled={!originalText && !translatedText}
+                  className="flex items-center gap-2"
+                  data-testid="button-export"
+                >
+                  <Download className="h-4 w-4" />
+                  Export
+                </Button>
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  onClick={() => setIsHistoryOpen(true)}
+                  className="h-10 w-10"
+                  aria-label="Session history"
+                  data-testid="button-history"
+                >
+                  <History className="h-4 w-4" />
+                </Button>
+              </div>
               {sessionCost >= 0.001 && (
                 <span className="text-xs text-muted-foreground/50 text-center">~${sessionCost.toFixed(3)}</span>
               )}
@@ -512,6 +582,11 @@ export default function Home() {
         onClose={() => setIsSettingsOpen(false)}
         settings={settings}
         onUpdate={updateSettings}
+      />
+
+      <SessionHistoryDialog
+        isOpen={isHistoryOpen}
+        onClose={() => setIsHistoryOpen(false)}
       />
     </div>
   );
