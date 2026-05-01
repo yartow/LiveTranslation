@@ -15,6 +15,7 @@ import { useSettings } from '@/hooks/useSettings';
 import ExportDialog from '@/components/ExportDialog';
 import { ChunkBasedTranscription } from '@/lib/chunk-based-transcription';
 import { BrowserSpeechTranscription } from '@/lib/browser-speech-transcription';
+import { countSentences } from '@/lib/text-utils';
 
 type AnyTranscriptionBackend = ChunkBasedTranscription | BrowserSpeechTranscription;
 
@@ -139,11 +140,6 @@ export default function Home() {
     setIsDark(!isDark);
     document.documentElement.classList.toggle('dark');
     localStorage.setItem('theme', !isDark ? 'dark' : 'light');
-  };
-
-  const countSentences = (text: string): number => {
-    if (!text.trim()) return 0;
-    return (text.match(/[.!?]+/g) || []).length;
   };
 
   // Uses refs so it always reads current targetLanguage/detectSpeakers/settings

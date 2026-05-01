@@ -24,9 +24,15 @@ interface ChunkSession {
   pendingResults: Map<number, ChunkResult>;
 }
 
-interface ChunkResult {
+export interface ChunkResult {
   correctedText: string;
   translatedText: string;
+}
+
+export interface ChunkSessionForTest {
+  clientWs: { readyState: number; send: (msg: string) => void };
+  nextExpectedChunk: number;
+  pendingResults: Map<number, ChunkResult>;
 }
 
 const activeSessions = new Map<WsWebSocket, ChunkSession>();
@@ -84,12 +90,13 @@ async function convertAudioToMp3(inputBuffer: Buffer): Promise<string> {
 
 // Flush completed results to the client in strict recording order.
 // A chunk is only delivered after all lower-indexed chunks have been sent.
-function flushInOrder(session: ChunkSession): void {
+// Exported for unit testing; not part of the public API.
+export function flushInOrder(session: ChunkSessionForTest): void {
   while (session.pendingResults.has(session.nextExpectedChunk)) {
     const result = session.pendingResults.get(session.nextExpectedChunk)!;
     session.pendingResults.delete(session.nextExpectedChunk);
 
-    if (result.correctedText && session.clientWs.readyState === WsWebSocket.OPEN) {
+    if (result.correctedText && session.clientWs.readyState === 1 /* WS OPEN */) {
       session.clientWs.send(JSON.stringify({
         type: 'translation',
         original: result.correctedText,

@@ -11,18 +11,13 @@ import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { RadioGroup, RadioGroupItem } from '@/components/ui/radio-group';
 import type { AppSettings, TranscriptionProvider, TranslationProvider } from '@/hooks/useSettings';
+import { maskKey } from '@/lib/mask-key';
 
 interface SettingsDialogProps {
   isOpen: boolean;
   onClose: () => void;
   settings: AppSettings;
   onUpdate: (updates: Partial<AppSettings>) => void;
-}
-
-// Displays a masked preview of a key: first 6 characters + dots + last 4.
-function maskKey(key: string): string {
-  if (key.length <= 10) return '•'.repeat(key.length);
-  return key.slice(0, 6) + '•'.repeat(key.length - 10) + key.slice(-4);
 }
 
 interface ApiKeyFieldProps {
