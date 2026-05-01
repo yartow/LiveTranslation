@@ -40,6 +40,21 @@ const MAX_CHUNK_QUEUE_DEPTH = 200;
 // Reject individual audio chunks larger than 10 MB.
 const MAX_CHUNK_SIZE = 10 * 1024 * 1024;
 
+class Semaphore {
+  private slots: number;
+  private queue: Array<() => void> = [];
+  constructor(max: number) { this.slots = max; }
+  acquire(): Promise<void> {
+    if (this.slots > 0) { this.slots--; return Promise.resolve(); }
+    return new Promise(resolve => this.queue.push(resolve));
+  }
+  release(): void {
+    const next = this.queue.shift();
+    if (next) next(); else this.slots++;
+  }
+}
+const whisperSemaphore = new Semaphore(3);
+
 async function safeUnlink(path: string): Promise<void> {
   try {
     if (existsSync(path)) await unlink(path);
@@ -115,6 +130,7 @@ async function processChunk(
   const { signal } = session.abortController;
   let mp3Path: string | null = null;
 
+  await whisperSemaphore.acquire();
   try {
     mp3Path = await convertAudioToMp3(audioBuffer);
 
@@ -196,6 +212,7 @@ async function processChunk(
     session.pendingResults.set(chunkIndex, { correctedText: '', translatedText: '' });
     flushInOrder(session);
   } finally {
+    whisperSemaphore.release();
     if (mp3Path) await safeUnlink(mp3Path);
   }
 }
@@ -247,7 +264,7 @@ export function setupChunkTranscriptionWebSocket(wss: WebSocketServer): void {
 
           // Binary protocol: first 4 bytes = chunk index (big-endian uint32),
           // remaining bytes = raw audio (webm/opus from MediaRecorder)
-          const buf = Buffer.isBuffer(data) ? data : Buffer.from(data as ArrayBuffer);
+          const buf = Buffer.isBuffer(data) ? data : Buffer.from(data as unknown as ArrayBuffer);
           if (buf.length < 5) return;
 
           const audioBuffer = buf.subarray(4);

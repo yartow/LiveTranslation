@@ -51,6 +51,8 @@ export async function transcribeAudio(
   apiKey?: string,
   signal?: AbortSignal,
 ): Promise<string> {
+  const timeout = AbortSignal.timeout(60_000);
+  const combinedSignal = signal ? AbortSignal.any([timeout, signal]) : timeout;
   const audioReadStream = fs.createReadStream(audioFilePath);
   try {
     const transcription = await client(apiKey).audio.transcriptions.create(
@@ -59,7 +61,7 @@ export async function transcribeAudio(
         model: 'whisper-1',
         language: language.split('-')[0],
       },
-      { signal },
+      { signal: combinedSignal },
     );
     return transcription.text;
   } finally {
@@ -82,6 +84,9 @@ export async function correctAndTranslateText(
 6. Label each speaker's dialogue with "Speaker 1:", "Speaker 2:", etc.
 7. Maintain speaker consistency throughout the text`
     : '';
+
+  const timeout = AbortSignal.timeout(30_000);
+  const combinedSignal = signal ? AbortSignal.any([timeout, signal]) : timeout;
 
   const response = await client(apiKey).chat.completions.create(
     {
@@ -106,7 +111,7 @@ Your tasks:
       ],
       response_format: { type: 'json_object' },
     },
-    { signal },
+    { signal: combinedSignal },
   );
 
   const result = JSON.parse(response.choices[0].message.content || '{}');
@@ -131,6 +136,9 @@ export async function retroactiveCorrection(
 5. Maintain speaker labels ("Speaker 1:", "Speaker 2:", etc.) if present
 6. Ensure speaker consistency throughout the text`
     : '';
+
+  const timeout = AbortSignal.timeout(30_000);
+  const combinedSignal = signal ? AbortSignal.any([timeout, signal]) : timeout;
 
   const response = await client(apiKey).chat.completions.create(
     {
@@ -157,7 +165,7 @@ Your tasks:
       ],
       response_format: { type: 'json_object' },
     },
-    { signal },
+    { signal: combinedSignal },
   );
 
   const result = JSON.parse(response.choices[0].message.content || '{}');

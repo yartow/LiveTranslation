@@ -31,19 +31,25 @@ interface ApiKeyFieldProps {
   description: string;
   value: string;
   onChange: (value: string) => void;
+  keyPrefix?: string;
 }
 
-function ApiKeyField({ label, placeholder, description, value, onChange }: ApiKeyFieldProps) {
+function ApiKeyField({ label, placeholder, description, value, onChange, keyPrefix }: ApiKeyFieldProps) {
   const [isEditing, setIsEditing] = useState(false);
   const [draft, setDraft] = useState('');
+  const [validationError, setValidationError] = useState('');
 
   const isSet = value.length > 0;
 
   function handleSave() {
     const trimmed = draft.trim();
-    if (trimmed) {
-      onChange(trimmed);
+    if (!trimmed) return;
+    if (keyPrefix && !trimmed.startsWith(keyPrefix)) {
+      setValidationError(`Key must start with "${keyPrefix}"`);
+      return;
     }
+    setValidationError('');
+    onChange(trimmed);
     setIsEditing(false);
     setDraft('');
   }
@@ -59,6 +65,7 @@ function ApiKeyField({ label, placeholder, description, value, onChange }: ApiKe
     if (e.key === 'Escape') {
       setIsEditing(false);
       setDraft('');
+      setValidationError('');
     }
   }
 
@@ -96,26 +103,31 @@ function ApiKeyField({ label, placeholder, description, value, onChange }: ApiKe
           </Button>
         </div>
       ) : (
-        <div className="flex items-center gap-2">
-          <Input
-            type="password"
-            placeholder={placeholder}
-            value={draft}
-            onChange={(e) => setDraft(e.target.value)}
-            onKeyDown={handleKeyDown}
-            autoComplete="off"
-            autoFocus={!isSet || isEditing}
-            className="font-mono text-sm"
-          />
-          <Button size="sm" onClick={handleSave} disabled={!draft.trim()}>
-            Save
-          </Button>
+        <div className="flex flex-col gap-1.5">
+          <div className="flex items-center gap-2">
+            <Input
+              type="password"
+              placeholder={placeholder}
+              value={draft}
+              onChange={(e) => { setDraft(e.target.value); setValidationError(''); }}
+              onKeyDown={handleKeyDown}
+              autoComplete="off"
+              autoFocus={!isSet || isEditing}
+              className={`font-mono text-sm ${validationError ? 'border-destructive' : ''}`}
+            />
+            <Button size="sm" onClick={handleSave} disabled={!draft.trim()}>
+              Save
+            </Button>
+          </div>
+          {validationError && (
+            <p className="text-xs text-destructive">{validationError}</p>
+          )}
           {isSet && (
             <Button
               variant="outline"
               size="sm"
               className="shrink-0"
-              onClick={() => { setIsEditing(false); setDraft(''); }}
+              onClick={() => { setIsEditing(false); setDraft(''); setValidationError(''); }}
             >
               Cancel
             </Button>
@@ -153,6 +165,7 @@ export default function SettingsDialog({ isOpen, onClose, settings, onUpdate }: 
               description="Required for OpenAI Whisper transcription and GPT-4o-mini translation. Get one at platform.openai.com."
               value={settings.openaiApiKey}
               onChange={(v) => onUpdate({ openaiApiKey: v })}
+              keyPrefix="sk-"
             />
 
             <ApiKeyField
@@ -161,6 +174,7 @@ export default function SettingsDialog({ isOpen, onClose, settings, onUpdate }: 
               description="Required for Claude Haiku translation. Free tier available at console.anthropic.com."
               value={settings.anthropicApiKey}
               onChange={(v) => onUpdate({ anthropicApiKey: v })}
+              keyPrefix="sk-ant-"
             />
           </section>
 

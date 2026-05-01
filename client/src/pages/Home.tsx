@@ -15,6 +15,7 @@ import { useSettings } from '@/hooks/useSettings';
 import ExportDialog from '@/components/ExportDialog';
 import { ChunkBasedTranscription } from '@/lib/chunk-based-transcription';
 import { BrowserSpeechTranscription } from '@/lib/browser-speech-transcription';
+import { useAudioQuality } from '@/hooks/useAudioQuality';
 
 type AnyTranscriptionBackend = ChunkBasedTranscription | BrowserSpeechTranscription;
 
@@ -48,7 +49,12 @@ export default function Home() {
   const previousTargetLanguageRef = useRef(targetLanguage);
   const previousDetectSpeakersRef = useRef(detectSpeakers);
   const lastRetroactiveSentenceCountRef = useRef(0);
+  const wakeLockRef = useRef<WakeLockSentinel | null>(null);
   const { toast } = useToast();
+
+  const { quality, startMonitoring, stopMonitoring } = useAudioQuality();
+  const [sessionCost, setSessionCost] = useState(0);
+  const sessionCostRef = useRef(0);
 
   // Keep refs in sync so async callbacks always read the latest values
   // without causing stale-closure bugs when called from startRecording's events.
@@ -193,12 +199,16 @@ export default function Home() {
       setPreviewText('');
       transcriptionSegmentsRef.current = [];
       lastRetroactiveSentenceCountRef.current = 0;
+      sessionCostRef.current = 0;
+      setSessionCost(0);
+
+      const chunkDurSecs = chunkDurationSecs;
 
       const events = {
         onReady: () => {
           const desc = settings.transcriptionProvider === 'browser'
             ? 'Browser speech recognition is active. Speak clearly.'
-            : `Listening in ${chunkDurationSecs}s intervals. Speak naturally.`;
+            : `Listening in ${chunkDurSecs}s intervals. Speak naturally.`;
           toast({ title: 'Recording started', description: desc });
         },
         onRawTranscript: (text: string) => {
@@ -210,6 +220,15 @@ export default function Home() {
           transcriptionSegmentsRef.current.push({ original, translated });
           setOriginalText(prev => prev + (prev ? ' ' : '') + original);
           setTranslatedText(prev => prev + (prev ? ' ' : '') + translated);
+
+          // Rough cost estimate based on chars processed
+          const s = settingsRef.current;
+          const chars = original.length + translated.length;
+          const llmRate = s.translationProvider === 'claude' ? 1.5e-7
+            : s.translationProvider === 'openai' ? 7.5e-8 : 0;
+          const whisperCost = s.transcriptionProvider === 'whisper' ? 0.006 * (chunkDurSecs / 60) : 0;
+          sessionCostRef.current += chars * llmRate + whisperCost;
+          setSessionCost(sessionCostRef.current);
 
           const allText = transcriptionSegmentsRef.current.map(s => s.original).join(' ');
           const totalSentences = countSentences(allText);
@@ -229,6 +248,12 @@ export default function Home() {
           setIsRecording(false);
           setIsProcessing(false);
           setPreviewText('');
+          stopMonitoring();
+          wakeLockRef.current?.release().catch(() => {});
+          wakeLockRef.current = null;
+        },
+        onStreamReady: (stream: MediaStream) => {
+          startMonitoring(stream);
         },
       };
 
@@ -253,6 +278,13 @@ export default function Home() {
         settings.anthropicApiKey,
       );
 
+      // Prevent screen from sleeping during a 45-min sermon
+      if ('wakeLock' in navigator) {
+        try {
+          wakeLockRef.current = await (navigator as Navigator & { wakeLock: { request(type: string): Promise<WakeLockSentinel> } }).wakeLock.request('screen');
+        } catch { /* not critical */ }
+      }
+
       setIsProcessing(false);
     } catch (error) {
       console.error('Error starting recording:', error);
@@ -270,6 +302,10 @@ export default function Home() {
     if (!isRecording) return;
     setIsProcessing(true);
 
+    stopMonitoring();
+    await wakeLockRef.current?.release().catch(() => {});
+    wakeLockRef.current = null;
+
     if (backendRef.current) {
       await backendRef.current.stop();
       backendRef.current = null;
@@ -279,7 +315,7 @@ export default function Home() {
     setIsProcessing(false);
     setPreviewText('');
     toast({ title: 'Recording stopped', description: 'All audio has been processed.' });
-  }, [isRecording, toast]);
+  }, [isRecording, toast, stopMonitoring]);
 
   const handleRecordClick = () => {
     if (isRecording) stopRecording();
@@ -395,17 +431,48 @@ export default function Home() {
               isProcessing={isProcessing}
               onClick={handleRecordClick}
             />
-            <Button
-              variant="outline"
-              size="default"
-              onClick={() => setIsExportDialogOpen(true)}
-              disabled={!originalText && !translatedText}
-              className="flex items-center gap-2"
-              data-testid="button-export"
-            >
-              <Download className="h-4 w-4" />
-              Export
-            </Button>
+            <div className="flex flex-col gap-1">
+              <Button
+                variant="outline"
+                size="default"
+                onClick={() => setIsExportDialogOpen(true)}
+                disabled={!originalText && !translatedText}
+                className="flex items-center gap-2"
+                data-testid="button-export"
+              >
+                <Download className="h-4 w-4" />
+                Export
+              </Button>
+              {sessionCost >= 0.001 && (
+                <span className="text-xs text-muted-foreground/50 text-center">~${sessionCost.toFixed(3)}</span>
+              )}
+            </div>
+
+            {/* VU meter — appears when mic audio is flowing */}
+            {quality.level > 0 && (
+              <div className="flex flex-col gap-1">
+                <div className="flex items-end gap-0.5 h-5">
+                  {Array.from({ length: 10 }, (_, i) => (
+                    <div
+                      key={i}
+                      className={`w-1.5 rounded-sm transition-all duration-100 ${
+                        i / 10 < quality.level
+                          ? quality.isClipping ? 'bg-red-500' : i / 10 > 0.7 ? 'bg-yellow-400' : 'bg-green-500'
+                          : 'bg-muted'
+                      }`}
+                      style={{ height: `${((i + 1) / 10) * 100}%` }}
+                    />
+                  ))}
+                </div>
+                {quality.warning && (
+                  <span className="text-xs text-muted-foreground/70">
+                    {quality.warning === 'low' ? 'Too quiet'
+                      : quality.warning === 'clipping' ? 'Too loud'
+                      : 'Noisy'}
+                  </span>
+                )}
+              </div>
+            )}
           </div>
         </div>
 
@@ -437,6 +504,7 @@ export default function Home() {
         originalText={originalText}
         translatedText={translatedText}
         targetLanguage={targetLanguage}
+        sourceLanguage={sourceLanguage}
       />
 
       <SettingsDialog
