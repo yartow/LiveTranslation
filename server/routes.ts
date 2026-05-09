@@ -56,14 +56,16 @@ async function runCorrectAndTranslate(
   provider: TranslationProvider,
   openaiApiKey?: string,
   anthropicApiKey?: string,
+  glossary?: string,
+  sermonContext?: string,
 ): Promise<{ correctedText: string; translatedText: string }> {
   if (provider === 'claude') {
-    return correctAndTranslateWithClaude(text, targetLanguage, detectSpeakers, anthropicApiKey || '');
+    return correctAndTranslateWithClaude(text, targetLanguage, detectSpeakers, anthropicApiKey || '', glossary, sermonContext);
   }
   if (provider === 'none') {
     return { correctedText: text, translatedText: '' };
   }
-  return correctAndTranslateText(text, targetLanguage, detectSpeakers, openaiApiKey);
+  return correctAndTranslateText(text, targetLanguage, detectSpeakers, openaiApiKey, glossary, sermonContext);
 }
 
 async function runRetroactiveCorrection(
@@ -73,14 +75,16 @@ async function runRetroactiveCorrection(
   provider: TranslationProvider,
   openaiApiKey?: string,
   anthropicApiKey?: string,
+  glossary?: string,
+  sermonContext?: string,
 ): Promise<{ correctedText: string; translatedText: string }> {
   if (provider === 'claude') {
-    return retroactiveCorrectionWithClaude(accumulatedText, targetLanguage, detectSpeakers, anthropicApiKey || '');
+    return retroactiveCorrectionWithClaude(accumulatedText, targetLanguage, detectSpeakers, anthropicApiKey || '', glossary, sermonContext);
   }
   if (provider === 'none') {
     return { correctedText: accumulatedText, translatedText: '' };
   }
-  return retroactiveCorrection(accumulatedText, targetLanguage, detectSpeakers, openaiApiKey);
+  return retroactiveCorrection(accumulatedText, targetLanguage, detectSpeakers, openaiApiKey, glossary, sermonContext);
 }
 
 function parseProvider(value: unknown): TranslationProvider | null {
@@ -165,7 +169,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
   // Text-only translation — used by browser SpeechRecognition mode and re-translation
   app.post('/api/translate', rateLimiter, async (req, res) => {
     try {
-      const { text, targetLanguage, detectSpeakers, translationProvider, openaiApiKey, anthropicApiKey } = req.body;
+      const { text, targetLanguage, detectSpeakers, translationProvider, openaiApiKey, anthropicApiKey, glossary, sermonContext } = req.body;
 
       if (!text) return res.status(400).json({ error: 'No text provided' });
 
@@ -179,6 +183,8 @@ export async function registerRoutes(app: Express): Promise<Server> {
         provider,
         openaiApiKey || undefined,
         anthropicApiKey || undefined,
+        glossary || undefined,
+        sermonContext || undefined,
       );
 
       res.json({ correctedText, translatedText });
@@ -193,7 +199,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
   app.post('/api/retranslate', rateLimiter, async (req, res) => {
     try {
-      const { originalText, targetLanguage, detectSpeakers, translationProvider, openaiApiKey, anthropicApiKey } = req.body;
+      const { originalText, targetLanguage, detectSpeakers, translationProvider, openaiApiKey, anthropicApiKey, glossary, sermonContext } = req.body;
 
       if (!originalText) return res.status(400).json({ error: 'No text provided' });
 
@@ -207,6 +213,8 @@ export async function registerRoutes(app: Express): Promise<Server> {
         provider,
         openaiApiKey || undefined,
         anthropicApiKey || undefined,
+        glossary || undefined,
+        sermonContext || undefined,
       );
 
       res.json({ correctedText, translatedText });
@@ -221,7 +229,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
   app.post('/api/retroactive-correct', rateLimiter, async (req, res) => {
     try {
-      const { accumulatedText, targetLanguage, detectSpeakers, translationProvider, openaiApiKey, anthropicApiKey } = req.body;
+      const { accumulatedText, targetLanguage, detectSpeakers, translationProvider, openaiApiKey, anthropicApiKey, glossary, sermonContext } = req.body;
 
       if (!accumulatedText) return res.status(400).json({ error: 'No text provided' });
 
@@ -235,6 +243,8 @@ export async function registerRoutes(app: Express): Promise<Server> {
         provider,
         openaiApiKey || undefined,
         anthropicApiKey || undefined,
+        glossary || undefined,
+        sermonContext || undefined,
       );
 
       res.json({ correctedText, translatedText });

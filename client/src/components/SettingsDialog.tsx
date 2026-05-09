@@ -10,6 +10,7 @@ import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { RadioGroup, RadioGroupItem } from '@/components/ui/radio-group';
+import { Textarea } from '@/components/ui/textarea';
 import {
   Select,
   SelectContent,
@@ -18,18 +19,13 @@ import {
   SelectValue,
 } from '@/components/ui/select';
 import type { AppSettings, TranscriptionProvider, TranslationProvider, LocalWhisperModel } from '@/hooks/useSettings';
+import { maskKey } from '@/lib/mask-key';
 
 interface SettingsDialogProps {
   isOpen: boolean;
   onClose: () => void;
   settings: AppSettings;
   onUpdate: (updates: Partial<AppSettings>) => void;
-}
-
-// Displays a masked preview of a key: first 6 characters + dots + last 4.
-function maskKey(key: string): string {
-  if (key.length <= 10) return '•'.repeat(key.length);
-  return key.slice(0, 6) + '•'.repeat(key.length - 10) + key.slice(-4);
 }
 
 interface ApiKeyFieldProps {
@@ -293,6 +289,26 @@ export default function SettingsDialog({ isOpen, onClose, settings, onUpdate }: 
                 </div>
               </div>
             </RadioGroup>
+          </section>
+
+          {/* ── Theological Glossary ── */}
+          <section className="space-y-3">
+            <h3 className="text-sm font-semibold text-foreground border-b border-border pb-1">
+              Theological Glossary
+            </h3>
+            <p className="text-xs text-muted-foreground">
+              Terms that should be recognised and translated consistently. One entry per line.
+              Optionally include a translation after <code>=</code> (e.g.{' '}
+              <code>sanctification = heiliging</code>). Terms are also passed to Whisper to improve
+              speech recognition of theological vocabulary.
+            </p>
+            <Textarea
+              value={settings.theologicalGlossary}
+              onChange={(e) => onUpdate({ theologicalGlossary: e.target.value })}
+              placeholder={`sanctification = heiliging\natonement = verzoening\ncovenant = verbond\neschatology\nsoteriology\npneumatology`}
+              rows={6}
+              className="font-mono text-sm resize-y"
+            />
           </section>
 
           {/* ── Free mode callout ── */}

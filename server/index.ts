@@ -22,6 +22,15 @@ app.use(express.json({
 }));
 app.use(express.urlencoded({ extended: false }));
 
+// Inject artificial latency on all /api routes when SIMULATE_LATENCY_MS is set.
+// Simulates mobile upload delay + slower network round-trips during local dev.
+// Example: set SIMULATE_LATENCY_MS=1500 in .env to emulate slow 4G conditions.
+const _simDelay = parseInt(process.env.SIMULATE_LATENCY_MS || '0', 10);
+if (_simDelay > 0) {
+  log(`Latency simulation enabled: +${_simDelay}ms on all /api routes`);
+  app.use('/api', (_req, _res, next) => setTimeout(next, _simDelay));
+}
+
 app.use((req, res, next) => {
   const start = Date.now();
   const path = req.path;

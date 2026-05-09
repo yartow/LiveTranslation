@@ -69,11 +69,22 @@ function parseJsonResponse(
   }
 }
 
+function buildContextSection(glossary?: string, sermonContext?: string): string {
+  const parts: string[] = [];
+  if (sermonContext?.trim()) parts.push(`\nSermon context: ${sermonContext.trim()}`);
+  if (glossary?.trim()) {
+    parts.push(`\nTheological glossary — preserve these terms exactly:\n${glossary.trim()}`);
+  }
+  return parts.join('\n');
+}
+
 export async function correctAndTranslateWithClaude(
   originalText: string,
   targetLanguage: string,
   detectSpeakers: boolean,
   apiKey: string,
+  glossary?: string,
+  sermonContext?: string,
   signal?: AbortSignal,
 ): Promise<{ correctedText: string; translatedText: string }> {
   const langName = LANGUAGE_NAMES[targetLanguage] ?? 'English';
@@ -82,7 +93,9 @@ export async function correctAndTranslateWithClaude(
     ? `\n5. Detect speaker changes and label each as "Speaker 1:", "Speaker 2:", etc.`
     : '';
 
-  const system = `You are a helpful assistant that corrects speech transcription errors and translates text.
+  const contextSection = buildContextSection(glossary, sermonContext);
+
+  const system = `You are a helpful assistant that corrects speech transcription errors and translates text.${contextSection}
 
 Tasks:
 1. Remove stutters, filler words (um, uh, like), and verbal mistakes
@@ -104,6 +117,8 @@ export async function retroactiveCorrectionWithClaude(
   targetLanguage: string,
   detectSpeakers: boolean,
   apiKey: string,
+  glossary?: string,
+  sermonContext?: string,
   signal?: AbortSignal,
 ): Promise<{ correctedText: string; translatedText: string }> {
   const langName = LANGUAGE_NAMES[targetLanguage] ?? 'English';
@@ -112,7 +127,9 @@ export async function retroactiveCorrectionWithClaude(
     ? `\n5. Maintain speaker labels and ensure speaker consistency throughout`
     : '';
 
-  const system = `You are a helpful assistant performing retroactive coherence checking on accumulated transcription.
+  const contextSection = buildContextSection(glossary, sermonContext);
+
+  const system = `You are a helpful assistant performing retroactive coherence checking on accumulated transcription.${contextSection}
 
 Tasks:
 1. Review for overall coherence and flow

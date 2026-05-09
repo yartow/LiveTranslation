@@ -2,6 +2,9 @@ import { useState, useCallback } from 'react';
 
 export type TranscriptionProvider = 'whisper' | 'browser' | 'transformers';
 export type TranslationProvider = 'openai' | 'claude' | 'none';
+export type SpeechMode = 'monologue' | 'dialogue';
+export type DisplayContent = 'original' | 'translation' | 'both';
+export type TextDisplay = 'subtitle' | 'stream';
 export type LocalWhisperModel = 'tiny' | 'small' | 'medium';
 
 export interface AppSettings {
@@ -9,6 +12,10 @@ export interface AppSettings {
   anthropicApiKey: string;
   transcriptionProvider: TranscriptionProvider;
   translationProvider: TranslationProvider;
+  speechMode: SpeechMode;
+  displayContent: DisplayContent;
+  textDisplay: TextDisplay;
+  theologicalGlossary: string;
   localWhisperModel: LocalWhisperModel;
 }
 
@@ -19,6 +26,10 @@ const defaultSettings: AppSettings = {
   anthropicApiKey: '',
   transcriptionProvider: 'whisper',
   translationProvider: 'openai',
+  speechMode: 'monologue',
+  displayContent: 'translation',
+  textDisplay: 'subtitle',
+  theologicalGlossary: '',
   localWhisperModel: 'tiny',
 };
 
@@ -69,6 +80,10 @@ export function useSettings() {
           transcriptionProvider: next.transcriptionProvider,
           translationProvider: next.translationProvider,
           localWhisperModel: next.localWhisperModel,
+          speechMode: next.speechMode,
+          displayContent: next.displayContent,
+          textDisplay: next.textDisplay,
+          theologicalGlossary: next.theologicalGlossary,
         }));
       } catch {}
 

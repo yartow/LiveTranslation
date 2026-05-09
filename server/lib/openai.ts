@@ -45,21 +45,51 @@ const LANGUAGE_NAMES: Record<string, string> = {
   ko: 'Korean',
 };
 
+// Build a short Whisper prompt from glossary + sermon context.
+// Whisper uses this as "previous context" to prime the decoder toward domain vocabulary.
+function buildWhisperPrompt(glossary?: string, sermonContext?: string): string | undefined {
+  const parts: string[] = [];
+  if (sermonContext?.trim()) parts.push(`Sermon: ${sermonContext.trim()}.`);
+  if (glossary?.trim()) {
+    const terms = glossary.split('\n')
+      .map(line => line.split('=')[0].trim())
+      .filter(Boolean)
+      .slice(0, 25)
+      .join(', ');
+    if (terms) parts.push(`Terms: ${terms}.`);
+  }
+  return parts.length ? parts.join(' ') : undefined;
+}
+
+// Build the context block injected into LLM system messages.
+function buildContextSection(glossary?: string, sermonContext?: string): string {
+  const parts: string[] = [];
+  if (sermonContext?.trim()) parts.push(`\nSermon context: ${sermonContext.trim()}`);
+  if (glossary?.trim()) {
+    parts.push(`\nTheological glossary — preserve these terms exactly:\n${glossary.trim()}`);
+  }
+  return parts.join('\n');
+}
+
 export async function transcribeAudio(
   audioFilePath: string,
   language: string = 'en',
   apiKey?: string,
+  glossary?: string,
+  sermonContext?: string,
   signal?: AbortSignal,
 ): Promise<string> {
   const timeout = AbortSignal.timeout(60_000);
   const combinedSignal = signal ? AbortSignal.any([timeout, signal]) : timeout;
   const audioReadStream = fs.createReadStream(audioFilePath);
+  const whisperPrompt = buildWhisperPrompt(glossary, sermonContext);
   try {
     const transcription = await client(apiKey).audio.transcriptions.create(
       {
         file: audioReadStream,
         model: 'whisper-1',
         language: language.split('-')[0],
+        ...(whisperPrompt ? { prompt: whisperPrompt } : {}),
       },
       { signal: combinedSignal },
     );
@@ -74,6 +104,8 @@ export async function correctAndTranslateText(
   targetLanguage: string,
   detectSpeakers = false,
   apiKey?: string,
+  glossary?: string,
+  sermonContext?: string,
   signal?: AbortSignal,
 ): Promise<{ correctedText: string; translatedText: string }> {
   const targetLanguageName = LANGUAGE_NAMES[targetLanguage] ?? 'English';
@@ -85,6 +117,7 @@ export async function correctAndTranslateText(
 7. Maintain speaker consistency throughout the text`
     : '';
 
+  const contextSection = buildContextSection(glossary, sermonContext);
   const timeout = AbortSignal.timeout(30_000);
   const combinedSignal = signal ? AbortSignal.any([timeout, signal]) : timeout;
 
@@ -94,7 +127,7 @@ export async function correctAndTranslateText(
       messages: [
         {
           role: 'system',
-          content: `You are a helpful assistant that corrects speech transcription errors (stutters, filler words, repetitions) and translates text.
+          content: `You are a helpful assistant that corrects speech transcription errors (stutters, filler words, repetitions) and translates text.${contextSection}
 
 Your tasks:
 1. Clean up the transcribed text by removing stutters, filler words (um, uh, like), and verbal mistakes while preserving the core meaning
@@ -127,6 +160,8 @@ export async function retroactiveCorrection(
   targetLanguage: string,
   detectSpeakers = false,
   apiKey?: string,
+  glossary?: string,
+  sermonContext?: string,
   signal?: AbortSignal,
 ): Promise<{ correctedText: string; translatedText: string }> {
   const targetLanguageName = LANGUAGE_NAMES[targetLanguage] ?? 'English';
@@ -137,6 +172,7 @@ export async function retroactiveCorrection(
 6. Ensure speaker consistency throughout the text`
     : '';
 
+  const contextSection = buildContextSection(glossary, sermonContext);
   const timeout = AbortSignal.timeout(30_000);
   const combinedSignal = signal ? AbortSignal.any([timeout, signal]) : timeout;
 
@@ -146,7 +182,7 @@ export async function retroactiveCorrection(
       messages: [
         {
           role: 'system',
-          content: `You are a helpful assistant that performs retroactive coherence checking and grammar correction on accumulated transcribed text.
+          content: `You are a helpful assistant that performs retroactive coherence checking and grammar correction on accumulated transcribed text.${contextSection}
 
 Your tasks:
 1. Review the accumulated text for overall coherence and flow
