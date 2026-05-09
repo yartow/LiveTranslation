@@ -17,6 +17,9 @@ export interface AppSettings {
   textDisplay: TextDisplay;
   theologicalGlossary: string;
   localWhisperModel: LocalWhisperModel;
+  defaultSourceLanguage: string;
+  defaultTargetLanguage: string;
+  debugMode: boolean;
 }
 
 const PREFS_KEY = 'sermonscribe_prefs';
@@ -31,6 +34,9 @@ const defaultSettings: AppSettings = {
   textDisplay: 'subtitle',
   theologicalGlossary: '',
   localWhisperModel: 'tiny',
+  defaultSourceLanguage: 'en',
+  defaultTargetLanguage: 'nl',
+  debugMode: false,
 };
 
 const VALID_TRANSCRIPTION: TranscriptionProvider[] = ['whisper', 'browser', 'transformers'];
@@ -84,6 +90,9 @@ export function useSettings() {
           displayContent: next.displayContent,
           textDisplay: next.textDisplay,
           theologicalGlossary: next.theologicalGlossary,
+          defaultSourceLanguage: next.defaultSourceLanguage,
+          defaultTargetLanguage: next.defaultTargetLanguage,
+          debugMode: next.debugMode,
         }));
       } catch {}
 

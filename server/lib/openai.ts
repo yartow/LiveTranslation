@@ -87,7 +87,7 @@ export async function transcribeAudio(
     const transcription = await client(apiKey).audio.transcriptions.create(
       {
         file: audioReadStream,
-        model: 'whisper-1',
+        model: 'gpt-4o-transcribe',
         language: language.split('-')[0],
         ...(whisperPrompt ? { prompt: whisperPrompt } : {}),
       },

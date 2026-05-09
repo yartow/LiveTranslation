@@ -1,4 +1,5 @@
 import { useState } from 'react';
+import LanguageSelector from '@/components/LanguageSelector';
 import {
   Dialog,
   DialogContent,
@@ -11,6 +12,7 @@ import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { RadioGroup, RadioGroupItem } from '@/components/ui/radio-group';
 import { Textarea } from '@/components/ui/textarea';
+import { Switch } from '@/components/ui/switch';
 import {
   Select,
   SelectContent,
@@ -291,6 +293,30 @@ export default function SettingsDialog({ isOpen, onClose, settings, onUpdate }: 
             </RadioGroup>
           </section>
 
+          {/* ── Default Languages ── */}
+          <section className="space-y-3">
+            <h3 className="text-sm font-semibold text-foreground border-b border-border pb-1">
+              Default Languages
+            </h3>
+            <p className="text-xs text-muted-foreground">
+              These languages are pre-selected when you open the app. You can always change them per session.
+            </p>
+            <div className="grid grid-cols-2 gap-3">
+              <LanguageSelector
+                value={settings.defaultSourceLanguage}
+                onChange={(v) => onUpdate({ defaultSourceLanguage: v })}
+                label="Speaking in"
+                testId="select-default-source-language"
+              />
+              <LanguageSelector
+                value={settings.defaultTargetLanguage}
+                onChange={(v) => onUpdate({ defaultTargetLanguage: v })}
+                label="Translate to"
+                testId="select-default-target-language"
+              />
+            </div>
+          </section>
+
           {/* ── Theological Glossary ── */}
           <section className="space-y-3">
             <h3 className="text-sm font-semibold text-foreground border-b border-border pb-1">
@@ -309,6 +335,28 @@ export default function SettingsDialog({ isOpen, onClose, settings, onUpdate }: 
               rows={6}
               className="font-mono text-sm resize-y"
             />
+          </section>
+
+          {/* ── Debug Mode ── */}
+          <section className="space-y-3">
+            <h3 className="text-sm font-semibold text-foreground border-b border-border pb-1">
+              Debug Mode
+            </h3>
+            <div className="flex items-center justify-between">
+              <div>
+                <Label htmlFor="debug-mode" className="font-medium cursor-pointer">
+                  Show live status messages
+                </Label>
+                <p className="text-xs text-muted-foreground mt-0.5">
+                  Displays a real-time log of what the app is doing — recording, sending to Whisper, API key errors, etc.
+                </p>
+              </div>
+              <Switch
+                id="debug-mode"
+                checked={settings.debugMode}
+                onCheckedChange={(checked) => onUpdate({ debugMode: checked })}
+              />
+            </div>
           </section>
 
           {/* ── Free mode callout ── */}

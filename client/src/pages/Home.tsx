@@ -8,7 +8,7 @@ import SettingsDialog from '@/components/SettingsDialog';
 import { Label } from '@/components/ui/label';
 import { Button } from '@/components/ui/button';
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/components/ui/collapsible';
-import { ChevronDown, ChevronUp, Download, History } from 'lucide-react';
+import { ArrowLeftRight, ChevronDown, ChevronUp, Download, History, Loader2, Wand2 } from 'lucide-react';
 import { useToast } from '@/hooks/use-toast';
 import { useSettings } from '@/hooks/useSettings';
 import type { SpeechMode, DisplayContent, TextDisplay } from '@/hooks/useSettings';
@@ -68,8 +68,9 @@ function splitLastTwo(text: string): [string, string] {
 // ── Component ─────────────────────────────────────────────────────────────────
 
 export default function Home() {
-  const [sourceLanguage, setSourceLanguage] = useState('en');
-  const [targetLanguage, setTargetLanguage] = useState('nl');
+  const { settings, updateSettings } = useSettings();
+  const [sourceLanguage, setSourceLanguage] = useState(() => settings.defaultSourceLanguage || 'en');
+  const [targetLanguage, setTargetLanguage] = useState(() => settings.defaultTargetLanguage || 'nl');
   const [isRecording, setIsRecording] = useState(false);
   const [isProcessing, setIsProcessing] = useState(false);
   const [originalText, setOriginalText] = useState('');
@@ -84,6 +85,11 @@ export default function Home() {
   const [isHistoryOpen, setIsHistoryOpen] = useState(false);
   const [modelLoadProgress, setModelLoadProgress] = useState(0);
   const [chunkDurationSecs, setChunkDurationSecs] = useState(5);
+  const [debugLogs, setDebugLogs] = useState<string[]>([]);
+  const [isImproving, setIsImproving] = useState(false);
+  const [lookbackChars, setLookbackChars] = useState(() => {
+    try { return parseInt(localStorage.getItem('lookbackChars') || '1000', 10) || 1000; } catch { return 1000; }
+  });
 
   const [subtitleCurrent, setSubtitleCurrent] = useState('');
   const [subtitlePrevious, setSubtitlePrevious] = useState('');
@@ -93,7 +99,6 @@ export default function Home() {
   const sermonContextRef = useRef('');
   useEffect(() => { sermonContextRef.current = sermonContext; }, [sermonContext]);
 
-  const { settings, updateSettings } = useSettings();
   const detectSpeakers = settings.speechMode === 'dialogue';
 
   const backendRef = useRef<AnyTranscriptionBackend | null>(null);
@@ -207,6 +212,77 @@ export default function Home() {
     retranslateAll();
   }, [targetLanguage, detectSpeakers, isProcessing, isRetranslating]);
 
+  const swapLanguages = useCallback(() => {
+    setSourceLanguage(prev => { setTargetLanguage(prev); return targetLanguage; });
+  }, [targetLanguage]);
+
+  const addDebugLog = useCallback((message: string) => {
+    const timestamp = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+    setDebugLogs(prev => [...prev.slice(-49), `[${timestamp}] ${message}`]);
+  }, []);
+
+  const improveTranscript = useCallback(async () => {
+    const fullOriginal = originalText;
+    if (!fullOriginal || isImproving) return;
+
+    setIsImproving(true);
+    const chars = Math.max(1, lookbackChars);
+    const cutPoint = Math.max(0, fullOriginal.length - chars);
+    const prefixOriginal = fullOriginal.slice(0, cutPoint);
+    const tailOriginal = fullOriginal.slice(cutPoint);
+
+    // Find which segments belong to the prefix (by accumulated char count)
+    const segs = transcriptionSegmentsRef.current;
+    let accumulated = 0;
+    let prefixSegCount = 0;
+    for (const seg of segs) {
+      const segLen = (accumulated > 0 ? 1 : 0) + seg.original.length;
+      if (accumulated + segLen > cutPoint) break;
+      accumulated += segLen;
+      prefixSegCount++;
+    }
+    const prefixSegs = segs.slice(0, prefixSegCount);
+    const prefixTranslated = prefixSegs.map(s => s.translated).filter(Boolean).join(' ');
+
+    try {
+      const s = settingsRef.current;
+      const response = await fetch('/api/retroactive-correct', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          accumulatedText: tailOriginal,
+          targetLanguage: targetLanguageRef.current,
+          detectSpeakers: detectSpeakersRef.current,
+          translationProvider: s.translationProvider,
+          openaiApiKey: s.openaiApiKey,
+          anthropicApiKey: s.anthropicApiKey,
+          glossary: s.theologicalGlossary || undefined,
+          sermonContext: sermonContextRef.current || undefined,
+        }),
+      });
+
+      if (!response.ok) throw new Error('Improvement failed');
+      const data = await response.json() as { correctedText: string; translatedText: string };
+
+      const join = (a: string, b: string) => a && b ? `${a} ${b}` : a || b;
+      const newOriginal = join(prefixOriginal, data.correctedText);
+      const newTranslated = join(prefixTranslated, data.translatedText);
+
+      transcriptionSegmentsRef.current = [
+        ...prefixSegs,
+        { original: data.correctedText, translated: data.translatedText },
+      ];
+      setOriginalText(newOriginal);
+      setTranslatedText(newTranslated);
+      applySubtitlesFromText(newTranslated);
+      toast({ title: 'Transcript improved' });
+    } catch (error) {
+      toast({ title: 'Improvement failed', description: error instanceof Error ? error.message : 'Unknown error', variant: 'destructive' });
+    } finally {
+      setIsImproving(false);
+    }
+  }, [originalText, lookbackChars, isImproving, toast]);
+
   const toggleTheme = () => {
     const next = !isDark;
     setIsDark(next);
@@ -263,6 +339,7 @@ export default function Home() {
       lastRetroactiveSentenceCountRef.current = 0;
       sessionCostRef.current = 0;
       setSessionCost(0);
+      setDebugLogs([]);
 
       const chunkDurSecs = chunkDurationSecs;
 
@@ -275,6 +352,7 @@ export default function Home() {
               ? 'Local Whisper is active. Speak naturally.'
               : `Listening in ${chunkDurSecs}s intervals. Speak naturally.`;
           toast({ title: 'Recording started', description: desc });
+          if (settings.debugMode) addDebugLog('Microphone ready — recording started');
         },
         onModelProgress: (loaded: number, total: number) => {
           if (total > 0) setModelLoadProgress(loaded / total);
@@ -311,8 +389,10 @@ export default function Home() {
             performRetroactiveCorrection();
           }
         },
+        onDebug: (message: string) => { addDebugLog(message); },
         onError: (message: string) => {
           console.error('Transcription error:', message);
+          if (settings.debugMode) addDebugLog(`Error: ${message}`);
           toast({ title: 'Transcription error', description: message, variant: 'destructive' });
         },
         onClose: () => {
@@ -365,12 +445,8 @@ export default function Home() {
           settings.anthropicApiKey,
           settings.localWhisperModel,
         );
-      } else {
-        if (settings.transcriptionProvider === 'browser') {
-          backend = new BrowserSpeechTranscription(events);
-        } else {
-          backend = new ChunkBasedTranscription(events, chunkDurationSecs * 1000);
-        }
+      } else if (settings.transcriptionProvider === 'browser') {
+        backend = new BrowserSpeechTranscription(events);
         backendRef.current = backend;
         await backend.start(
           sourceLanguage,
@@ -381,6 +457,22 @@ export default function Home() {
           settings.anthropicApiKey,
           settings.theologicalGlossary,
           sermonContextRef.current,
+        );
+      } else {
+        const chunkBackend = new ChunkBasedTranscription(events, chunkDurationSecs * 1000);
+        backend = chunkBackend;
+        backendRef.current = backend;
+        if (settings.debugMode) addDebugLog('Connecting to transcription server…');
+        await chunkBackend.start(
+          sourceLanguage,
+          targetLanguage,
+          detectSpeakers,
+          settings.translationProvider,
+          settings.openaiApiKey,
+          settings.anthropicApiKey,
+          settings.theologicalGlossary,
+          sermonContextRef.current,
+          settings.debugMode,
         );
       }
 
@@ -402,11 +494,12 @@ export default function Home() {
         variant: 'destructive',
       });
     }
-  }, [sourceLanguage, targetLanguage, detectSpeakers, settings, chunkDurationSecs, toast, performRetroactiveCorrection]);
+  }, [sourceLanguage, targetLanguage, detectSpeakers, settings, chunkDurationSecs, toast, performRetroactiveCorrection, addDebugLog]);
 
   const stopRecording = useCallback(async () => {
     if (!isRecording) return;
     setIsProcessing(true);
+    if (settings.debugMode) addDebugLog('Stop requested — flushing final chunk…');
 
     stopMonitoring();
     await wakeLockRef.current?.release().catch(() => {});
@@ -421,7 +514,7 @@ export default function Home() {
     setIsProcessing(false);
     setPreviewText('');
     toast({ title: 'Recording stopped', description: 'All audio has been processed.' });
-  }, [isRecording, toast, stopMonitoring]);
+  }, [isRecording, toast, stopMonitoring, settings.debugMode, addDebugLog]);
 
   const displayOriginalText = previewText
     ? (originalText ? originalText + ' ' + previewText : previewText)
@@ -480,21 +573,34 @@ export default function Home() {
         <CollapsibleContent>
           <div className="px-4 pt-4 pb-5 space-y-4 border-b border-border bg-background">
             {/* Language selectors */}
-            <div className="grid grid-cols-2 gap-3">
-              <LanguageSelector
-                value={sourceLanguage}
-                onChange={setSourceLanguage}
+            <div className="flex items-end gap-2">
+              <div className="flex-1">
+                <LanguageSelector
+                  value={sourceLanguage}
+                  onChange={setSourceLanguage}
+                  disabled={isRecording}
+                  label="Speaking in"
+                  testId="select-source-language"
+                />
+              </div>
+              <button
+                type="button"
+                onClick={swapLanguages}
                 disabled={isRecording}
-                label="Speaking in"
-                testId="select-source-language"
-              />
-              <LanguageSelector
-                value={targetLanguage}
-                onChange={setTargetLanguage}
-                disabled={false}
-                label="Translate to"
-                testId="select-target-language"
-              />
+                aria-label="Swap languages"
+                className="h-12 px-2 flex items-center text-muted-foreground hover:text-foreground disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+              >
+                <ArrowLeftRight className="h-4 w-4" />
+              </button>
+              <div className="flex-1">
+                <LanguageSelector
+                  value={targetLanguage}
+                  onChange={setTargetLanguage}
+                  disabled={false}
+                  label="Translate to"
+                  testId="select-target-language"
+                />
+              </div>
             </div>
 
             {/* Sermon context */}
@@ -560,8 +666,13 @@ export default function Home() {
                   <span className="text-sm text-muted-foreground">Interval</span>
                   <select
                     value={chunkDurationSecs}
-                    onChange={(e) => setChunkDurationSecs(Number(e.target.value))}
-                    disabled={isRecording}
+                    onChange={(e) => {
+                      const secs = Number(e.target.value);
+                      setChunkDurationSecs(secs);
+                      if (backendRef.current instanceof ChunkBasedTranscription) {
+                        backendRef.current.setChunkDuration(secs * 1000);
+                      }
+                    }}
                     className="text-sm border border-input rounded-lg px-2 py-1.5 bg-background text-foreground disabled:opacity-50"
                     data-testid="select-chunk-duration"
                   >
@@ -604,6 +715,40 @@ export default function Home() {
         </div>
       )}
 
+      {/* ── Improve transcript bar ───────────────────────────────────────── */}
+      {originalText && (
+        <div className="flex items-center gap-2 px-4 py-2 border-b border-border bg-background">
+          <button
+            type="button"
+            onClick={improveTranscript}
+            disabled={isImproving || isRecording}
+            className="flex items-center gap-1.5 text-xs font-medium px-2.5 py-1.5 rounded-md border border-border bg-background hover:bg-muted/50 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+          >
+            {isImproving
+              ? <Loader2 className="h-3 w-3 animate-spin" />
+              : <Wand2 className="h-3 w-3" />}
+            {isImproving ? 'Improving…' : 'Improve'}
+          </button>
+          <span className="text-xs text-muted-foreground">last</span>
+          <input
+            type="number"
+            min={100}
+            max={9999}
+            step={100}
+            value={lookbackChars}
+            onChange={(e) => {
+              const v = parseInt(e.target.value, 10);
+              if (!isNaN(v) && v > 0) {
+                setLookbackChars(v);
+                try { localStorage.setItem('lookbackChars', String(v)); } catch {}
+              }
+            }}
+            className="w-16 text-xs border border-input rounded-md px-2 py-1 bg-background text-foreground text-center [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none"
+          />
+          <span className="text-xs text-muted-foreground">chars</span>
+        </div>
+      )}
+
       {/* ── Text display ──────────────────────────────────────────────────── */}
       <div className="flex-1 overflow-hidden flex flex-col pb-24">
         {showOriginal && (
@@ -638,6 +783,29 @@ export default function Home() {
           </div>
         )}
       </div>
+
+      {/* ── Debug overlay ────────────────────────────────────────────────── */}
+      {settings.debugMode && debugLogs.length > 0 && (
+        <div className="fixed bottom-[88px] left-0 right-0 mx-4 z-10">
+          <div className="rounded-lg border border-border bg-background/95 backdrop-blur-sm shadow-lg overflow-hidden">
+            <div className="px-3 py-1.5 border-b border-border flex items-center justify-between">
+              <span className="text-xs font-semibold text-muted-foreground">Debug log</span>
+              <button
+                type="button"
+                onClick={() => setDebugLogs([])}
+                className="text-xs text-muted-foreground hover:text-foreground"
+              >
+                Clear
+              </button>
+            </div>
+            <div className="max-h-32 overflow-y-auto px-3 py-2 space-y-0.5">
+              {debugLogs.map((log, i) => (
+                <p key={i} className="text-xs font-mono text-muted-foreground leading-relaxed">{log}</p>
+              ))}
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* ── Fixed bottom action bar ───────────────────────────────────────── */}
       <div className="fixed bottom-0 left-0 right-0 border-t border-border bg-background/95 backdrop-blur-sm px-6 py-4">
