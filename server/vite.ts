@@ -33,7 +33,12 @@ export async function setupVite(app: Express, server: Server) {
       ...viteLogger,
       error: (msg, options) => {
         viteLogger.error(msg, options);
-        process.exit(1);
+        // Only exit for errors that carry an actual Error object (build failures,
+        // unresolvable imports). Plain error-level log messages from plugins
+        // (e.g. TypeScript hints, HMR warnings) should not kill the server.
+        if (options?.error) {
+          process.exit(1);
+        }
       },
     },
     server: serverOptions,
