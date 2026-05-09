@@ -8,7 +8,7 @@ import SettingsDialog from '@/components/SettingsDialog';
 import { Label } from '@/components/ui/label';
 import { Button } from '@/components/ui/button';
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/components/ui/collapsible';
-import { ChevronDown, ChevronUp, Download, History } from 'lucide-react';
+import { ArrowLeftRight, ChevronDown, ChevronUp, Download, History } from 'lucide-react';
 import { useToast } from '@/hooks/use-toast';
 import { useSettings } from '@/hooks/useSettings';
 import type { SpeechMode, DisplayContent, TextDisplay } from '@/hooks/useSettings';
@@ -68,8 +68,9 @@ function splitLastTwo(text: string): [string, string] {
 // ── Component ─────────────────────────────────────────────────────────────────
 
 export default function Home() {
-  const [sourceLanguage, setSourceLanguage] = useState('en');
-  const [targetLanguage, setTargetLanguage] = useState('nl');
+  const { settings, updateSettings } = useSettings();
+  const [sourceLanguage, setSourceLanguage] = useState(() => settings.defaultSourceLanguage || 'en');
+  const [targetLanguage, setTargetLanguage] = useState(() => settings.defaultTargetLanguage || 'nl');
   const [isRecording, setIsRecording] = useState(false);
   const [isProcessing, setIsProcessing] = useState(false);
   const [originalText, setOriginalText] = useState('');
@@ -93,7 +94,6 @@ export default function Home() {
   const sermonContextRef = useRef('');
   useEffect(() => { sermonContextRef.current = sermonContext; }, [sermonContext]);
 
-  const { settings, updateSettings } = useSettings();
   const detectSpeakers = settings.speechMode === 'dialogue';
 
   const backendRef = useRef<AnyTranscriptionBackend | null>(null);
@@ -206,6 +206,10 @@ export default function Home() {
 
     retranslateAll();
   }, [targetLanguage, detectSpeakers, isProcessing, isRetranslating]);
+
+  const swapLanguages = useCallback(() => {
+    setSourceLanguage(prev => { setTargetLanguage(prev); return targetLanguage; });
+  }, [targetLanguage]);
 
   const toggleTheme = () => {
     const next = !isDark;
@@ -480,21 +484,34 @@ export default function Home() {
         <CollapsibleContent>
           <div className="px-4 pt-4 pb-5 space-y-4 border-b border-border bg-background">
             {/* Language selectors */}
-            <div className="grid grid-cols-2 gap-3">
-              <LanguageSelector
-                value={sourceLanguage}
-                onChange={setSourceLanguage}
+            <div className="flex items-end gap-2">
+              <div className="flex-1">
+                <LanguageSelector
+                  value={sourceLanguage}
+                  onChange={setSourceLanguage}
+                  disabled={isRecording}
+                  label="Speaking in"
+                  testId="select-source-language"
+                />
+              </div>
+              <button
+                type="button"
+                onClick={swapLanguages}
                 disabled={isRecording}
-                label="Speaking in"
-                testId="select-source-language"
-              />
-              <LanguageSelector
-                value={targetLanguage}
-                onChange={setTargetLanguage}
-                disabled={false}
-                label="Translate to"
-                testId="select-target-language"
-              />
+                aria-label="Swap languages"
+                className="h-12 px-2 flex items-center text-muted-foreground hover:text-foreground disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+              >
+                <ArrowLeftRight className="h-4 w-4" />
+              </button>
+              <div className="flex-1">
+                <LanguageSelector
+                  value={targetLanguage}
+                  onChange={setTargetLanguage}
+                  disabled={false}
+                  label="Translate to"
+                  testId="select-target-language"
+                />
+              </div>
             </div>
 
             {/* Sermon context */}

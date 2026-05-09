@@ -1,4 +1,5 @@
 import { useState } from 'react';
+import LanguageSelector from '@/components/LanguageSelector';
 import {
   Dialog,
   DialogContent,
@@ -289,6 +290,30 @@ export default function SettingsDialog({ isOpen, onClose, settings, onUpdate }: 
                 </div>
               </div>
             </RadioGroup>
+          </section>
+
+          {/* ── Default Languages ── */}
+          <section className="space-y-3">
+            <h3 className="text-sm font-semibold text-foreground border-b border-border pb-1">
+              Default Languages
+            </h3>
+            <p className="text-xs text-muted-foreground">
+              These languages are pre-selected when you open the app. You can always change them per session.
+            </p>
+            <div className="grid grid-cols-2 gap-3">
+              <LanguageSelector
+                value={settings.defaultSourceLanguage}
+                onChange={(v) => onUpdate({ defaultSourceLanguage: v })}
+                label="Speaking in"
+                testId="select-default-source-language"
+              />
+              <LanguageSelector
+                value={settings.defaultTargetLanguage}
+                onChange={(v) => onUpdate({ defaultTargetLanguage: v })}
+                label="Translate to"
+                testId="select-default-target-language"
+              />
+            </div>
           </section>
 
           {/* ── Theological Glossary ── */}
