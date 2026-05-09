@@ -1,10 +1,30 @@
 import OpenAI from 'openai';
 import fs from 'fs';
+import { createHash } from 'crypto';
 
 const sharedClient = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 
+// LRU cache for per-user OpenAI clients. Keyed by SHA-256 of the API key so
+// raw keys are never stored as Map keys. Max 50 entries; oldest evicted first.
+const MAX_CLIENTS = 50;
+const clientCache = new Map<string, OpenAI>();
+
 function client(apiKey?: string): OpenAI {
-  return apiKey ? new OpenAI({ apiKey }) : sharedClient;
+  if (!apiKey) return sharedClient;
+  const hash = createHash('sha256').update(apiKey).digest('hex');
+  if (clientCache.has(hash)) {
+    const c = clientCache.get(hash)!;
+    // Move to end (most-recently-used)
+    clientCache.delete(hash);
+    clientCache.set(hash, c);
+    return c;
+  }
+  if (clientCache.size >= MAX_CLIENTS) {
+    clientCache.delete(clientCache.keys().next().value!);
+  }
+  const c = new OpenAI({ apiKey });
+  clientCache.set(hash, c);
+  return c;
 }
 
 const LANGUAGE_NAMES: Record<string, string> = {
@@ -57,19 +77,26 @@ export async function transcribeAudio(
   apiKey?: string,
   glossary?: string,
   sermonContext?: string,
+  signal?: AbortSignal,
 ): Promise<string> {
+  const timeout = AbortSignal.timeout(60_000);
+  const combinedSignal = signal ? AbortSignal.any([timeout, signal]) : timeout;
   const audioReadStream = fs.createReadStream(audioFilePath);
-
   const whisperPrompt = buildWhisperPrompt(glossary, sermonContext);
-
-  const transcription = await client(apiKey).audio.transcriptions.create({
-    file: audioReadStream,
-    model: 'whisper-1',
-    language: language.split('-')[0], // Whisper uses simple language codes
-    ...(whisperPrompt ? { prompt: whisperPrompt } : {}),
-  });
-
-  return transcription.text;
+  try {
+    const transcription = await client(apiKey).audio.transcriptions.create(
+      {
+        file: audioReadStream,
+        model: 'whisper-1',
+        language: language.split('-')[0],
+        ...(whisperPrompt ? { prompt: whisperPrompt } : {}),
+      },
+      { signal: combinedSignal },
+    );
+    return transcription.text;
+  } finally {
+    audioReadStream.destroy();
+  }
 }
 
 export async function correctAndTranslateText(
@@ -79,6 +106,7 @@ export async function correctAndTranslateText(
   apiKey?: string,
   glossary?: string,
   sermonContext?: string,
+  signal?: AbortSignal,
 ): Promise<{ correctedText: string; translatedText: string }> {
   const targetLanguageName = LANGUAGE_NAMES[targetLanguage] ?? 'English';
 
@@ -90,13 +118,16 @@ export async function correctAndTranslateText(
     : '';
 
   const contextSection = buildContextSection(glossary, sermonContext);
+  const timeout = AbortSignal.timeout(30_000);
+  const combinedSignal = signal ? AbortSignal.any([timeout, signal]) : timeout;
 
-  const response = await client(apiKey).chat.completions.create({
-    model: 'gpt-4o-mini',
-    messages: [
-      {
-        role: 'system',
-        content: `You are a helpful assistant that corrects speech transcription errors (stutters, filler words, repetitions) and translates text.${contextSection}
+  const response = await client(apiKey).chat.completions.create(
+    {
+      model: 'gpt-4o-mini',
+      messages: [
+        {
+          role: 'system',
+          content: `You are a helpful assistant that corrects speech transcription errors (stutters, filler words, repetitions) and translates text.${contextSection}
 
 Your tasks:
 1. Clean up the transcribed text by removing stutters, filler words (um, uh, like), and verbal mistakes while preserving the core meaning
@@ -105,20 +136,22 @@ Your tasks:
 4. Do NOT add line breaks between sentences unless a new topic begins
 5. Translate the corrected text to ${targetLanguageName} following the same formatting rules
 6. Return JSON with this exact format: { "correctedText": "cleaned up original text", "translatedText": "translation in ${targetLanguageName}" }${speakerInstructions}`,
-      },
-      {
-        role: 'user',
-        content: `Original transcription: "${originalText}"`,
-      },
-    ],
-    response_format: { type: 'json_object' },
-  });
+        },
+        {
+          role: 'user',
+          content: `Original transcription: "${originalText}"`,
+        },
+      ],
+      response_format: { type: 'json_object' },
+    },
+    { signal: combinedSignal },
+  );
 
   const result = JSON.parse(response.choices[0].message.content || '{}');
 
   return {
     correctedText: result.correctedText || originalText,
-    translatedText: result.translatedText || originalText,
+    translatedText: result.translatedText || '',
   };
 }
 
@@ -129,6 +162,7 @@ export async function retroactiveCorrection(
   apiKey?: string,
   glossary?: string,
   sermonContext?: string,
+  signal?: AbortSignal,
 ): Promise<{ correctedText: string; translatedText: string }> {
   const targetLanguageName = LANGUAGE_NAMES[targetLanguage] ?? 'English';
 
@@ -139,13 +173,16 @@ export async function retroactiveCorrection(
     : '';
 
   const contextSection = buildContextSection(glossary, sermonContext);
+  const timeout = AbortSignal.timeout(30_000);
+  const combinedSignal = signal ? AbortSignal.any([timeout, signal]) : timeout;
 
-  const response = await client(apiKey).chat.completions.create({
-    model: 'gpt-4o-mini',
-    messages: [
-      {
-        role: 'system',
-        content: `You are a helpful assistant that performs retroactive coherence checking and grammar correction on accumulated transcribed text.${contextSection}
+  const response = await client(apiKey).chat.completions.create(
+    {
+      model: 'gpt-4o-mini',
+      messages: [
+        {
+          role: 'system',
+          content: `You are a helpful assistant that performs retroactive coherence checking and grammar correction on accumulated transcribed text.${contextSection}
 
 Your tasks:
 1. Review the accumulated text for overall coherence and flow
@@ -156,20 +193,22 @@ Your tasks:
 6. ONLY add a new paragraph (line break) when the speaker changes topics
 7. Translate the corrected text to ${targetLanguageName} following the same formatting rules
 8. Return JSON with this exact format: { "correctedText": "corrected original text", "translatedText": "translation in ${targetLanguageName}" }${speakerInstructions}`,
-      },
-      {
-        role: 'user',
-        content: `Accumulated transcription to review and correct: "${accumulatedText}"`,
-      },
-    ],
-    response_format: { type: 'json_object' },
-  });
+        },
+        {
+          role: 'user',
+          content: `Accumulated transcription to review and correct: "${accumulatedText}"`,
+        },
+      ],
+      response_format: { type: 'json_object' },
+    },
+    { signal: combinedSignal },
+  );
 
   const result = JSON.parse(response.choices[0].message.content || '{}');
 
   return {
     correctedText: result.correctedText || accumulatedText,
-    translatedText: result.translatedText || accumulatedText,
+    translatedText: result.translatedText || '',
   };
 }
 

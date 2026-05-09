@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect, useCallback } from 'react';
+import { useState, useRef, useEffect, useCallback, useMemo } from 'react';
 import Header from '@/components/Header';
 import LanguageSelector, { getLanguageRTL, getLanguageName } from '@/components/LanguageSelector';
 import RecordButton from '@/components/RecordButton';
@@ -8,16 +8,20 @@ import SettingsDialog from '@/components/SettingsDialog';
 import { Label } from '@/components/ui/label';
 import { Button } from '@/components/ui/button';
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/components/ui/collapsible';
-import { ChevronDown, ChevronUp, Download } from 'lucide-react';
+import { ChevronDown, ChevronUp, Download, History } from 'lucide-react';
 import { useToast } from '@/hooks/use-toast';
 import { useSettings } from '@/hooks/useSettings';
 import type { SpeechMode, DisplayContent, TextDisplay } from '@/hooks/useSettings';
 import ExportDialog from '@/components/ExportDialog';
+import SessionHistoryDialog from '@/components/SessionHistoryDialog';
 import { ChunkBasedTranscription } from '@/lib/chunk-based-transcription';
 import { BrowserSpeechTranscription } from '@/lib/browser-speech-transcription';
 import { countSentences } from '@/lib/text-utils';
+import { LocalWhisperTranscription } from '@/lib/local-whisper-transcription';
+import { useAudioQuality } from '@/hooks/useAudioQuality';
+import { saveSession } from '@/lib/session-db';
 
-type AnyTranscriptionBackend = ChunkBasedTranscription | BrowserSpeechTranscription;
+type AnyTranscriptionBackend = ChunkBasedTranscription | BrowserSpeechTranscription | LocalWhisperTranscription;
 
 interface TranscriptionSegment {
   original: string;
@@ -77,6 +81,8 @@ export default function Home() {
   const [isConfigOpen, setIsConfigOpen] = useState(false);
   const [isExportDialogOpen, setIsExportDialogOpen] = useState(false);
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
+  const [isHistoryOpen, setIsHistoryOpen] = useState(false);
+  const [modelLoadProgress, setModelLoadProgress] = useState(0);
   const [chunkDurationSecs, setChunkDurationSecs] = useState(5);
 
   const [subtitleCurrent, setSubtitleCurrent] = useState('');
@@ -96,12 +102,19 @@ export default function Home() {
   const previousTargetLanguageRef = useRef(targetLanguage);
   const previousDetectSpeakersRef = useRef(detectSpeakers);
   const lastRetroactiveSentenceCountRef = useRef(0);
+  const wakeLockRef = useRef<WakeLockSentinel | null>(null);
   const { toast } = useToast();
 
+  const { quality, startMonitoring, stopMonitoring } = useAudioQuality();
+  const [sessionCost, setSessionCost] = useState(0);
+  const sessionCostRef = useRef(0);
+
+  const sourceLanguageRef = useRef(sourceLanguage);
   const targetLanguageRef = useRef(targetLanguage);
   const detectSpeakersRef = useRef(detectSpeakers);
   const settingsRef = useRef(settings);
 
+  useEffect(() => { sourceLanguageRef.current = sourceLanguage; }, [sourceLanguage]);
   useEffect(() => { targetLanguageRef.current = targetLanguage; }, [targetLanguage]);
   useEffect(() => { detectSpeakersRef.current = detectSpeakers; }, [detectSpeakers]);
   useEffect(() => { settingsRef.current = settings; }, [settings]);
@@ -145,19 +158,21 @@ export default function Home() {
       previousDetectSpeakersRef.current = detectSpeakers;
       setIsRetranslating(true);
 
+      const s = settingsRef.current;
+
       if (backendRef.current) {
         backendRef.current.updateConfig(
-          sourceLanguage, targetLanguage, detectSpeakers,
-          settings.translationProvider,
-          settings.openaiApiKey,
-          settings.anthropicApiKey,
-          settings.theologicalGlossary,
+          sourceLanguageRef.current, targetLanguage, detectSpeakers,
+          s.translationProvider,
+          s.openaiApiKey,
+          s.anthropicApiKey,
+          s.theologicalGlossary,
           sermonContextRef.current,
         );
       }
 
       try {
-        const allOriginalText = transcriptionSegmentsRef.current.map(s => s.original).join(' ');
+        const allOriginalText = transcriptionSegmentsRef.current.map(seg => seg.original).join(' ');
 
         const response = await fetch('/api/retranslate', {
           method: 'POST',
@@ -166,10 +181,10 @@ export default function Home() {
             originalText: allOriginalText,
             targetLanguage,
             detectSpeakers,
-            translationProvider: settings.translationProvider,
-            openaiApiKey: settings.openaiApiKey,
-            anthropicApiKey: settings.anthropicApiKey,
-            glossary: settings.theologicalGlossary || undefined,
+            translationProvider: s.translationProvider,
+            openaiApiKey: s.openaiApiKey,
+            anthropicApiKey: s.anthropicApiKey,
+            glossary: s.theologicalGlossary || undefined,
             sermonContext: sermonContextRef.current || undefined,
           }),
         });
@@ -246,17 +261,28 @@ export default function Home() {
       subtitleCurrentRef.current = '';
       transcriptionSegmentsRef.current = [];
       lastRetroactiveSentenceCountRef.current = 0;
+      sessionCostRef.current = 0;
+      setSessionCost(0);
+
+      const chunkDurSecs = chunkDurationSecs;
 
       const events = {
         onReady: () => {
+          setModelLoadProgress(0);
           const desc = settings.transcriptionProvider === 'browser'
             ? 'Browser speech recognition is active. Speak clearly.'
-            : `Listening in ${chunkDurationSecs}s intervals. Speak naturally.`;
+            : settings.transcriptionProvider === 'transformers'
+              ? 'Local Whisper is active. Speak naturally.'
+              : `Listening in ${chunkDurSecs}s intervals. Speak naturally.`;
           toast({ title: 'Recording started', description: desc });
+        },
+        onModelProgress: (loaded: number, total: number) => {
+          if (total > 0) setModelLoadProgress(loaded / total);
         },
         onRawTranscript: (text: string) => { setPreviewText(text); },
         onTranslation: (original: string, translated: string) => {
           if (!original) return;
+          setPreviewText('');
           transcriptionSegmentsRef.current.push({ original, translated });
           setOriginalText(prev => prev + (prev ? ' ' : '') + original);
           setTranslatedText(prev => prev + (prev ? ' ' : '') + translated);
@@ -265,6 +291,15 @@ export default function Home() {
           setSubtitlePrevious(subtitleCurrentRef.current);
           subtitleCurrentRef.current = translated;
           setSubtitleCurrent(translated);
+
+          // Rough cost estimate based on chars processed
+          const s = settingsRef.current;
+          const chars = original.length + translated.length;
+          const llmRate = s.translationProvider === 'claude' ? 1.5e-7
+            : s.translationProvider === 'openai' ? 7.5e-8 : 0;
+          const whisperCost = s.transcriptionProvider === 'whisper' ? 0.006 * (chunkDurSecs / 60) : 0;
+          sessionCostRef.current += chars * llmRate + whisperCost;
+          setSessionCost(sessionCostRef.current);
 
           const allText = transcriptionSegmentsRef.current.map(s => s.original).join(' ');
           const totalSentences = countSentences(allText);
@@ -284,30 +319,77 @@ export default function Home() {
           setIsRecording(false);
           setIsProcessing(false);
           setPreviewText('');
+          setModelLoadProgress(0);
+          stopMonitoring();
+          wakeLockRef.current?.release().catch(() => {});
+          wakeLockRef.current = null;
+          // Auto-save completed session to IndexedDB
+          const segments = transcriptionSegmentsRef.current;
+          if (segments.length > 0) {
+            const orig = segments.map(s => s.original).join(' ');
+            const trans = segments.map(s => s.translated).join(' ');
+            saveSession({
+              id: crypto.randomUUID(),
+              createdAt: Date.now(),
+              sourceLanguage,
+              targetLanguage,
+              originalText: orig,
+              translatedText: trans,
+              sessionCost: sessionCostRef.current,
+              transcriptionProvider: settings.transcriptionProvider,
+              translationProvider: settings.translationProvider,
+            }).catch(() => {});
+          }
+        },
+        onStreamReady: (stream: MediaStream) => {
+          startMonitoring(stream);
         },
       };
 
       let backend: AnyTranscriptionBackend;
-      if (settings.transcriptionProvider === 'browser') {
-        backend = new BrowserSpeechTranscription(events);
-      } else {
-        backend = new ChunkBasedTranscription(events, chunkDurationSecs * 1000);
-      }
 
-      backendRef.current = backend;
+      backendRef.current = null;
       setIsRecording(true);
       setIsProcessing(true);
 
-      await backend.start(
-        sourceLanguage,
-        targetLanguage,
-        detectSpeakers,
-        settings.translationProvider,
-        settings.openaiApiKey,
-        settings.anthropicApiKey,
-        settings.theologicalGlossary,
-        sermonContextRef.current,
-      );
+      if (settings.transcriptionProvider === 'transformers') {
+        const localBackend = new LocalWhisperTranscription(events, chunkDurationSecs * 1000);
+        backend = localBackend;
+        backendRef.current = backend;
+        await localBackend.start(
+          sourceLanguage,
+          targetLanguage,
+          detectSpeakers,
+          settings.translationProvider,
+          settings.openaiApiKey,
+          settings.anthropicApiKey,
+          settings.localWhisperModel,
+        );
+      } else {
+        if (settings.transcriptionProvider === 'browser') {
+          backend = new BrowserSpeechTranscription(events);
+        } else {
+          backend = new ChunkBasedTranscription(events, chunkDurationSecs * 1000);
+        }
+        backendRef.current = backend;
+        await backend.start(
+          sourceLanguage,
+          targetLanguage,
+          detectSpeakers,
+          settings.translationProvider,
+          settings.openaiApiKey,
+          settings.anthropicApiKey,
+          settings.theologicalGlossary,
+          sermonContextRef.current,
+        );
+      }
+
+      // Prevent screen from sleeping during a 45-min sermon
+      if ('wakeLock' in navigator) {
+        try {
+          wakeLockRef.current = await (navigator as Navigator & { wakeLock: { request(type: string): Promise<WakeLockSentinel> } }).wakeLock.request('screen');
+        } catch { /* not critical */ }
+      }
 
       setIsProcessing(false);
     } catch (error) {
@@ -326,6 +408,10 @@ export default function Home() {
     if (!isRecording) return;
     setIsProcessing(true);
 
+    stopMonitoring();
+    await wakeLockRef.current?.release().catch(() => {});
+    wakeLockRef.current = null;
+
     if (backendRef.current) {
       await backendRef.current.stop();
       backendRef.current = null;
@@ -335,7 +421,7 @@ export default function Home() {
     setIsProcessing(false);
     setPreviewText('');
     toast({ title: 'Recording stopped', description: 'All audio has been processed.' });
-  }, [isRecording, toast]);
+  }, [isRecording, toast, stopMonitoring]);
 
   const displayOriginalText = previewText
     ? (originalText ? originalText + ' ' + previewText : previewText)
@@ -350,7 +436,6 @@ export default function Home() {
   const showOriginal = settings.displayContent === 'original' || settings.displayContent === 'both';
   const showTranslation = settings.displayContent === 'translation' || settings.displayContent === 'both';
 
-  // Config summary line shown when the panel is collapsed
   const configSummary = [
     `${getLanguageName(sourceLanguage)} → ${getLanguageName(targetLanguage)}`,
     settings.speechMode === 'monologue' ? 'Monologue' : 'Dialogue',
@@ -492,7 +577,9 @@ export default function Home() {
 
             {/* Provider info */}
             <p className="text-xs text-muted-foreground/60">
-              {settings.transcriptionProvider === 'browser' ? 'Browser speech' : 'Whisper'}
+              {settings.transcriptionProvider === 'browser' ? 'Browser speech'
+                : settings.transcriptionProvider === 'transformers' ? 'Local Whisper'
+                : 'Whisper'}
               {' · '}
               {settings.translationProvider === 'none'
                 ? 'No translation'
@@ -504,6 +591,18 @@ export default function Home() {
           </div>
         </CollapsibleContent>
       </Collapsible>
+
+      {modelLoadProgress > 0 && modelLoadProgress < 1 && (
+        <div className="px-4 py-1 space-y-1">
+          <p className="text-xs text-muted-foreground">Downloading model… {Math.round(modelLoadProgress * 100)}%</p>
+          <div className="h-1.5 w-full rounded-full bg-muted overflow-hidden">
+            <div
+              className="h-full bg-primary transition-all duration-300 rounded-full"
+              style={{ width: `${modelLoadProgress * 100}%` }}
+            />
+          </div>
+        </div>
+      )}
 
       {/* ── Text display ──────────────────────────────────────────────────── */}
       <div className="flex-1 overflow-hidden flex flex-col pb-24">
@@ -543,7 +642,23 @@ export default function Home() {
       {/* ── Fixed bottom action bar ───────────────────────────────────────── */}
       <div className="fixed bottom-0 left-0 right-0 border-t border-border bg-background/95 backdrop-blur-sm px-6 py-4">
         <div className="flex items-center justify-between max-w-sm mx-auto">
-          <div className="w-20" />
+          <div className="w-20">
+            {quality.level > 0 && (
+              <div className="flex items-end gap-0.5 h-5">
+                {Array.from({ length: 8 }, (_, i) => (
+                  <div
+                    key={i}
+                    className={`w-1.5 rounded-sm transition-all duration-100 ${
+                      i / 8 < quality.level
+                        ? quality.isClipping ? 'bg-red-500' : i / 8 > 0.7 ? 'bg-yellow-400' : 'bg-green-500'
+                        : 'bg-muted'
+                    }`}
+                    style={{ height: `${((i + 1) / 8) * 100}%` }}
+                  />
+                ))}
+              </div>
+            )}
+          </div>
 
           <RecordButton
             isRecording={isRecording}
@@ -551,18 +666,33 @@ export default function Home() {
             onClick={isRecording ? stopRecording : startRecording}
           />
 
-          <div className="w-20 flex justify-end">
-            <Button
-              variant="ghost"
-              size="sm"
-              onClick={() => setIsExportDialogOpen(true)}
-              disabled={!originalText && !translatedText}
-              data-testid="button-export"
-              className="text-muted-foreground hover:text-foreground gap-1.5"
-            >
-              <Download className="h-4 w-4" />
-              Export
-            </Button>
+          <div className="w-20 flex flex-col items-end gap-1">
+            <div className="flex items-center gap-1">
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={() => setIsExportDialogOpen(true)}
+                disabled={!originalText && !translatedText}
+                data-testid="button-export"
+                className="text-muted-foreground hover:text-foreground gap-1.5"
+              >
+                <Download className="h-4 w-4" />
+                Export
+              </Button>
+              <Button
+                variant="ghost"
+                size="icon"
+                onClick={() => setIsHistoryOpen(true)}
+                className="h-8 w-8"
+                aria-label="Session history"
+                data-testid="button-history"
+              >
+                <History className="h-4 w-4" />
+              </Button>
+            </div>
+            {sessionCost >= 0.001 && (
+              <span className="text-xs text-muted-foreground/50">~${sessionCost.toFixed(3)}</span>
+            )}
           </div>
         </div>
       </div>
@@ -574,6 +704,7 @@ export default function Home() {
         originalText={originalText}
         translatedText={translatedText}
         targetLanguage={targetLanguage}
+        sourceLanguage={sourceLanguage}
       />
 
       <SettingsDialog
@@ -581,6 +712,11 @@ export default function Home() {
         onClose={() => setIsSettingsOpen(false)}
         settings={settings}
         onUpdate={updateSettings}
+      />
+
+      <SessionHistoryDialog
+        isOpen={isHistoryOpen}
+        onClose={() => setIsHistoryOpen(false)}
       />
     </div>
   );

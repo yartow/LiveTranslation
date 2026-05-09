@@ -21,11 +21,15 @@ async function callClaude(
   userContent: string,
   apiKey: string,
   maxTokens = 1024,
+  signal?: AbortSignal,
 ): Promise<string> {
   const effectiveKey = apiKey || process.env.ANTHROPIC_API_KEY || '';
   if (!effectiveKey) {
     throw new Error('No Anthropic API key provided. Add one in Settings.');
   }
+
+  const timeout = AbortSignal.timeout(30_000);
+  const combinedSignal = signal ? AbortSignal.any([timeout, signal]) : timeout;
 
   const response = await fetch('https://api.anthropic.com/v1/messages', {
     method: 'POST',
@@ -40,6 +44,7 @@ async function callClaude(
       system: systemPrompt,
       messages: [{ role: 'user', content: userContent }],
     }),
+    signal: combinedSignal,
   });
 
   if (!response.ok) {
@@ -80,6 +85,7 @@ export async function correctAndTranslateWithClaude(
   apiKey: string,
   glossary?: string,
   sermonContext?: string,
+  signal?: AbortSignal,
 ): Promise<{ correctedText: string; translatedText: string }> {
   const langName = LANGUAGE_NAMES[targetLanguage] ?? 'English';
 
@@ -97,12 +103,12 @@ Tasks:
 3. Translate to ${langName} following the same formatting rules
 4. Return ONLY valid JSON: {"correctedText":"...","translatedText":"..."}${speakerNote}`;
 
-  const raw = await callClaude(system, `Original transcription: "${originalText}"`, apiKey, 1024);
-  const result = parseJsonResponse(raw, { correctedText: originalText, translatedText: originalText });
+  const raw = await callClaude(system, `Original transcription: "${originalText}"`, apiKey, 1024, signal);
+  const result = parseJsonResponse(raw, { correctedText: originalText, translatedText: '' });
 
   return {
     correctedText: result.correctedText || originalText,
-    translatedText: result.translatedText || originalText,
+    translatedText: result.translatedText ?? '',
   };
 }
 
@@ -113,6 +119,7 @@ export async function retroactiveCorrectionWithClaude(
   apiKey: string,
   glossary?: string,
   sermonContext?: string,
+  signal?: AbortSignal,
 ): Promise<{ correctedText: string; translatedText: string }> {
   const langName = LANGUAGE_NAMES[targetLanguage] ?? 'English';
 
@@ -137,11 +144,12 @@ Tasks:
     `Accumulated transcription: "${accumulatedText}"`,
     apiKey,
     2048,
+    signal,
   );
-  const result = parseJsonResponse(raw, { correctedText: accumulatedText, translatedText: accumulatedText });
+  const result = parseJsonResponse(raw, { correctedText: accumulatedText, translatedText: '' });
 
   return {
     correctedText: result.correctedText || accumulatedText,
-    translatedText: result.translatedText || accumulatedText,
+    translatedText: result.translatedText ?? '',
   };
 }
