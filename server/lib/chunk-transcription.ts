@@ -84,7 +84,7 @@ async function convertAudioToMp3(inputBuffer: Buffer): Promise<string> {
         .audioChannels(1)
         .audioFrequency(16000)
         .outputOptions(['-write_xing', '0', '-id3v2_version', '0'])
-        .on('end', resolve)
+        .on('end', () => resolve())
         .on('error', (err, _stdout, stderr) => {
           console.error('FFmpeg error:', err.message, stderr);
           reject(new Error(`Audio conversion failed: ${err.message}`));
