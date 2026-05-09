@@ -19,6 +19,7 @@ export interface AppSettings {
   localWhisperModel: LocalWhisperModel;
   defaultSourceLanguage: string;
   defaultTargetLanguage: string;
+  debugMode: boolean;
 }
 
 const PREFS_KEY = 'sermonscribe_prefs';
@@ -35,6 +36,7 @@ const defaultSettings: AppSettings = {
   localWhisperModel: 'tiny',
   defaultSourceLanguage: 'en',
   defaultTargetLanguage: 'nl',
+  debugMode: false,
 };
 
 const VALID_TRANSCRIPTION: TranscriptionProvider[] = ['whisper', 'browser', 'transformers'];
@@ -90,6 +92,7 @@ export function useSettings() {
           theologicalGlossary: next.theologicalGlossary,
           defaultSourceLanguage: next.defaultSourceLanguage,
           defaultTargetLanguage: next.defaultTargetLanguage,
+          debugMode: next.debugMode,
         }));
       } catch {}
 

@@ -20,6 +20,7 @@ interface ChunkSession {
   anthropicApiKey: string;
   glossary: string;
   sermonContext: string;
+  debugMode: boolean;
   // Tracks which chunk index to send to the client next (ordered delivery)
   nextExpectedChunk: number;
   // Stores completed results waiting for earlier chunks to finish
@@ -136,6 +137,27 @@ export function flushInOrder(session: ChunkSessionForTest): void {
   }
 }
 
+function sendDebug(session: ChunkSession, message: string): void {
+  if (!session.debugMode || session.clientWs.readyState !== WsWebSocket.OPEN) return;
+  session.clientWs.send(JSON.stringify({ type: 'debug', message }));
+}
+
+function classifyError(error: unknown): string {
+  if (!(error instanceof Error)) return 'Unknown error';
+  const msg = error.message;
+  const anyErr = error as any;
+  if (anyErr.status === 401 || msg.toLowerCase().includes('api key') || msg.toLowerCase().includes('authentication')) {
+    return 'API key invalid or missing';
+  }
+  if (anyErr.status === 429 || msg.toLowerCase().includes('rate limit')) {
+    return 'Rate limit exceeded — try again shortly';
+  }
+  if (msg.toLowerCase().includes('audio conversion failed')) {
+    return `Audio conversion failed (ffmpeg error)`;
+  }
+  return msg;
+}
+
 // Pipeline per chunk: ffmpeg convert → Whisper → GPT/Claude correct+translate.
 // Chunks are processed concurrently; results are buffered and delivered in order.
 async function processChunk(
@@ -146,10 +168,12 @@ async function processChunk(
   const { signal } = session.abortController;
   let mp3Path: string | null = null;
 
+  sendDebug(session, `Chunk #${chunkIndex}: received (${audioBuffer.length} bytes) — waiting for slot`);
   await whisperSemaphore.acquire();
   try {
+    sendDebug(session, `Chunk #${chunkIndex}: converting audio to MP3…`);
     mp3Path = await convertAudioToMp3(audioBuffer);
-    await simulateLatency(); // emulate mobile audio-upload delay when enabled
+    await simulateLatency();
 
     if (signal.aborted) {
       session.pendingResults.set(chunkIndex, { correctedText: '', translatedText: '' });
@@ -157,14 +181,23 @@ async function processChunk(
       return;
     }
 
+    const hasOpenAIKey = !!(session.openaiApiKey || process.env.OPENAI_API_KEY);
+    if (!hasOpenAIKey) {
+      sendDebug(session, `Chunk #${chunkIndex}: ✗ No OpenAI API key — transcription will fail`);
+    } else {
+      sendDebug(session, `Chunk #${chunkIndex}: sending to Whisper (${session.sourceLanguage})…`);
+    }
+
     const rawText = await transcribeAudio(mp3Path, session.sourceLanguage, session.openaiApiKey || undefined, session.glossary || undefined, session.sermonContext || undefined, signal);
 
     if (!rawText.trim()) {
-      // Silent chunk — register empty result so ordering can advance
+      sendDebug(session, `Chunk #${chunkIndex}: silent — no speech detected`);
       session.pendingResults.set(chunkIndex, { correctedText: '', translatedText: '' });
       flushInOrder(session);
       return;
     }
+
+    sendDebug(session, `Chunk #${chunkIndex}: Whisper → "${rawText.slice(0, 60)}${rawText.length > 60 ? '…' : ''}"`);
 
     // Send raw Whisper output immediately as a preview while correction runs
     if (session.clientWs.readyState === WsWebSocket.OPEN) {
@@ -185,10 +218,13 @@ async function processChunk(
     let translatedText: string;
 
     if (session.translationProvider === 'none') {
-      // Skip LLM call entirely — return raw Whisper text as-is
+      sendDebug(session, `Chunk #${chunkIndex}: translation disabled — using raw text`);
       correctedText = rawText;
       translatedText = '';
     } else if (session.translationProvider === 'claude') {
+      const hasAnthropicKey = !!(session.anthropicApiKey || process.env.ANTHROPIC_API_KEY);
+      if (!hasAnthropicKey) sendDebug(session, `Chunk #${chunkIndex}: ✗ No Anthropic API key`);
+      else sendDebug(session, `Chunk #${chunkIndex}: sending to Claude Haiku (→ ${session.targetLanguage})…`);
       ({ correctedText, translatedText } = await correctAndTranslateWithClaude(
         rawText,
         session.targetLanguage,
@@ -199,7 +235,7 @@ async function processChunk(
         signal,
       ));
     } else {
-      // Default: OpenAI GPT-4o-mini
+      sendDebug(session, `Chunk #${chunkIndex}: sending to GPT-4o-mini (→ ${session.targetLanguage})…`);
       ({ correctedText, translatedText } = await correctAndTranslateText(
         rawText,
         session.targetLanguage,
@@ -211,25 +247,26 @@ async function processChunk(
       ));
     }
 
+    sendDebug(session, `Chunk #${chunkIndex}: ✓ done`);
     session.pendingResults.set(chunkIndex, { correctedText, translatedText });
     flushInOrder(session);
 
   } catch (error) {
-    // Don't log or surface errors from intentional aborts
     if (error instanceof Error && error.name === 'AbortError') {
       session.pendingResults.set(chunkIndex, { correctedText: '', translatedText: '' });
       flushInOrder(session);
       return;
     }
+    const label = classifyError(error);
     console.error(`Chunk ${chunkIndex} error:`, error);
+    sendDebug(session, `Chunk #${chunkIndex}: ✗ ${label}`);
     if (session.clientWs.readyState === WsWebSocket.OPEN) {
       session.clientWs.send(JSON.stringify({
         type: 'chunk_error',
-        message: error instanceof Error ? error.message : 'Unknown error',
+        message: label,
         chunkIndex,
       }));
     }
-    // Register empty so ordering is not permanently blocked
     session.pendingResults.set(chunkIndex, { correctedText: '', translatedText: '' });
     flushInOrder(session);
   } finally {
@@ -245,8 +282,9 @@ export function setupChunkTranscriptionWebSocket(wss: WebSocketServer): void {
 
     clientWs.on('message', (data: Buffer | string, isBinary: boolean) => {
       try {
-        if (!isBinary && typeof data === 'string') {
-          const message = JSON.parse(data);
+        if (!isBinary) {
+          const text = Buffer.isBuffer(data) ? (data as Buffer).toString('utf8') : (data as string);
+          const message = JSON.parse(text);
 
           if (message.type === 'start') {
             session = {
@@ -259,6 +297,7 @@ export function setupChunkTranscriptionWebSocket(wss: WebSocketServer): void {
               anthropicApiKey: message.anthropicApiKey || '',
               glossary: message.glossary || '',
               sermonContext: message.sermonContext || '',
+              debugMode: message.debugMode ?? false,
               nextExpectedChunk: 0,
               pendingResults: new Map(),
               abortController: new AbortController(),

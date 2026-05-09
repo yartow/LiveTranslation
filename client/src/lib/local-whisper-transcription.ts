@@ -71,11 +71,21 @@ export class LocalWhisperTranscription {
           const { loaded, total, name } = e.data as { loaded: number; total: number; name: string };
           this.events.onModelProgress?.(loaded ?? 0, total ?? 0, name ?? '');
         } else if (type === 'error') {
-          reject(new Error(e.data.message));
+          const msg: string = e.data.message ?? '';
+          const isGpuCrash = msg.includes('ERROR_CODE') || msg.includes('session') || msg.includes('WebGPU') || msg.includes('MatMul');
+          reject(new Error(isGpuCrash
+            ? 'This model size requires WebGPU support that your browser or GPU driver doesn\'t provide. Try the "Tiny" model, or switch to OpenAI Whisper in Settings.'
+            : msg));
         }
       };
 
-      worker.onerror = (err) => reject(err);
+      worker.onerror = (err) => {
+        const msg = err.message ?? '';
+        const isGpuCrash = msg.includes('ERROR_CODE') || msg.includes('session') || msg.includes('MatMul');
+        reject(new Error(isGpuCrash
+          ? 'WebGPU session failed — try the "Tiny" model or switch to OpenAI Whisper in Settings.'
+          : msg));
+      };
       worker.postMessage({ type: 'load', modelSize });
     });
   }

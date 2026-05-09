@@ -5,6 +5,7 @@ export interface ChunkTranscriptionEvents {
   onError: (message: string) => void;
   onClose: () => void;
   onStreamReady?: (stream: MediaStream) => void;
+  onDebug?: (message: string) => void;
 }
 
 export type TranslationProvider = 'openai' | 'claude' | 'none';
@@ -26,6 +27,7 @@ export class ChunkBasedTranscription {
   private anthropicApiKey: string;
   private glossary: string;
   private sermonContext: string;
+  private debugMode: boolean;
   // Resolver called from onstop when the last partial chunk has been sent,
   // so stop() can wait before closing the WebSocket.
   private lastChunkSentResolve: (() => void) | null = null;
@@ -47,6 +49,7 @@ export class ChunkBasedTranscription {
     this.anthropicApiKey = '';
     this.glossary = '';
     this.sermonContext = '';
+    this.debugMode = false;
   }
 
   async start(
@@ -58,6 +61,7 @@ export class ChunkBasedTranscription {
     anthropicApiKey = '',
     glossary = '',
     sermonContext = '',
+    debugMode = false,
   ): Promise<void> {
     this.sourceLanguage = sourceLanguage;
     this.targetLanguage = targetLanguage;
@@ -68,6 +72,7 @@ export class ChunkBasedTranscription {
     this.anthropicApiKey = anthropicApiKey;
     this.glossary = glossary;
     this.sermonContext = sermonContext;
+    this.debugMode = debugMode;
     this.intentionalClose = false;
     this.reconnecting = false;
     this.reconnectAttempts = 0;
@@ -81,6 +86,7 @@ export class ChunkBasedTranscription {
       ws.binaryType = 'arraybuffer';
 
       ws.onopen = () => {
+        this.events.onDebug?.('WebSocket open — sending start message');
         ws.send(JSON.stringify({
           type: 'start',
           sourceLanguage: this.sourceLanguage,
@@ -91,6 +97,7 @@ export class ChunkBasedTranscription {
           anthropicApiKey: this.anthropicApiKey,
           glossary: this.glossary,
           sermonContext: this.sermonContext,
+          debugMode: this.debugMode,
         }));
       };
 
@@ -98,6 +105,7 @@ export class ChunkBasedTranscription {
         try {
           const message = JSON.parse(event.data as string);
           if (message.type === 'ready') {
+            this.events.onDebug?.('Server acknowledged — requesting microphone…');
             this.ws = ws;
             this.attachWsHandlers(ws);
             this.startAudioCapture()
@@ -105,7 +113,10 @@ export class ChunkBasedTranscription {
                 this.events.onReady();
                 resolve();
               })
-              .catch(reject);
+              .catch((err: Error) => {
+                this.events.onDebug?.(`Microphone error: ${err.message}`);
+                reject(err);
+              });
           }
         } catch (e) {
           console.warn('Unparseable WebSocket message:', e);
@@ -113,11 +124,13 @@ export class ChunkBasedTranscription {
       };
 
       ws.onerror = () => {
+        this.events.onDebug?.('WebSocket connection failed');
         this.events.onError('WebSocket connection error');
         reject(new Error('WebSocket connection error'));
       };
 
       ws.onclose = () => {
+        this.events.onDebug?.('WebSocket closed during initialisation');
         reject(new Error('WebSocket closed during initialization'));
       };
     });
@@ -138,6 +151,9 @@ export class ChunkBasedTranscription {
           case 'chunk_error':
           case 'error':
             this.events.onError(message.message ?? 'Processing error');
+            break;
+          case 'debug':
+            this.events.onDebug?.(message.message as string);
             break;
         }
       } catch (e) {
@@ -185,6 +201,9 @@ export class ChunkBasedTranscription {
         translationProvider: this.translationProvider,
         openaiApiKey: this.openaiApiKey,
         anthropicApiKey: this.anthropicApiKey,
+        glossary: this.glossary,
+        sermonContext: this.sermonContext,
+        debugMode: this.debugMode,
       }));
     };
 
@@ -318,6 +337,10 @@ export class ChunkBasedTranscription {
     } else if (this.reconnecting) {
       this.audioQueue.push(combined);
     }
+  }
+
+  setChunkDuration(ms: number): void {
+    this.chunkDurationMs = ms;
   }
 
   updateConfig(
