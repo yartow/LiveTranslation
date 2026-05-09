@@ -1,4 +1,5 @@
-import { useEffect, useRef } from 'react';
+import { useEffect, useRef, useState } from 'react';
+import { Check, Copy } from 'lucide-react';
 
 interface TranscriptionDisplayProps {
   title: string;
@@ -10,6 +11,15 @@ interface TranscriptionDisplayProps {
 
 export default function TranscriptionDisplay({ title, text, testId, isRTL = false, isPartial = false }: TranscriptionDisplayProps) {
   const scrollRef = useRef<HTMLDivElement>(null);
+  const [copied, setCopied] = useState(false);
+
+  const handleCopy = () => {
+    if (!text) return;
+    navigator.clipboard.writeText(text).then(() => {
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    });
+  };
 
   useEffect(() => {
     if (scrollRef.current) {
@@ -19,8 +29,17 @@ export default function TranscriptionDisplay({ title, text, testId, isRTL = fals
 
   return (
     <div className="flex flex-col h-full">
-      <div className="text-xs font-medium text-muted-foreground mb-2 px-6 pt-4">
-        {title}
+      <div className="text-xs font-medium text-muted-foreground mb-2 px-6 pt-4 flex items-center justify-between">
+        <span>{title}</span>
+        {text && (
+          <button
+            onClick={handleCopy}
+            className="p-1 rounded text-muted-foreground/50 hover:text-muted-foreground transition-colors"
+            aria-label="Copy to clipboard"
+          >
+            {copied ? <Check className="h-3.5 w-3.5 text-green-500" /> : <Copy className="h-3.5 w-3.5" />}
+          </button>
+        )}
       </div>
       <div 
         ref={scrollRef}

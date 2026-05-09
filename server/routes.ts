@@ -1,4 +1,4 @@
-import type { Express } from 'express';
+import type { Express, Request, Response, NextFunction } from 'express';
 import { createServer, type Server } from 'http';
 import { storage } from './storage';
 import multer from 'multer';
@@ -18,7 +18,34 @@ const upload = multer({
   limits: { fileSize: 25 * 1024 * 1024 },
 });
 
+const VALID_TRANSLATION_PROVIDERS = new Set(['openai', 'claude', 'none']);
 type TranslationProvider = 'openai' | 'claude' | 'none';
+
+// Simple per-IP rate limiter: 60 requests per minute on translation endpoints.
+interface RateBucket { count: number; resetAt: number }
+const rateBuckets = new Map<string, RateBucket>();
+const RATE_LIMIT = 60;
+const RATE_WINDOW_MS = 60_000;
+
+function rateLimiter(req: Request, res: Response, next: NextFunction): void {
+  const ip = (req.headers['x-forwarded-for'] as string | undefined)?.split(',')[0].trim()
+    ?? req.socket.remoteAddress
+    ?? 'unknown';
+  const now = Date.now();
+  const bucket = rateBuckets.get(ip);
+
+  if (!bucket || now >= bucket.resetAt) {
+    rateBuckets.set(ip, { count: 1, resetAt: now + RATE_WINDOW_MS });
+    return next();
+  }
+
+  bucket.count++;
+  if (bucket.count > RATE_LIMIT) {
+    res.status(429).json({ error: 'Rate limit exceeded. Please slow down.' });
+    return;
+  }
+  next();
+}
 
 // Route translation/correction to the appropriate provider.
 // Falls back to OpenAI if no provider is specified.
@@ -56,6 +83,13 @@ async function runRetroactiveCorrection(
   return retroactiveCorrection(accumulatedText, targetLanguage, detectSpeakers, openaiApiKey);
 }
 
+function parseProvider(value: unknown): TranslationProvider | null {
+  if (typeof value === 'string' && VALID_TRANSLATION_PROVIDERS.has(value)) {
+    return value as TranslationProvider;
+  }
+  return null;
+}
+
 export async function registerRoutes(app: Express): Promise<Server> {
 
   // Legacy file-upload transcription endpoint (used by tests / direct API consumers)
@@ -71,7 +105,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
       const sourceLanguage = req.body.sourceLanguage || 'en';
       const targetLanguage = req.body.targetLanguage || 'en';
       const detectSpeakers = req.body.detectSpeakers === 'true';
-      const provider: TranslationProvider = req.body.translationProvider || 'openai';
+      const provider = parseProvider(req.body.translationProvider) ?? 'openai';
       const openaiApiKey = req.body.openaiApiKey || undefined;
       const anthropicApiKey = req.body.anthropicApiKey || undefined;
 
@@ -129,17 +163,20 @@ export async function registerRoutes(app: Express): Promise<Server> {
   });
 
   // Text-only translation — used by browser SpeechRecognition mode and re-translation
-  app.post('/api/translate', async (req, res) => {
+  app.post('/api/translate', rateLimiter, async (req, res) => {
     try {
       const { text, targetLanguage, detectSpeakers, translationProvider, openaiApiKey, anthropicApiKey } = req.body;
 
       if (!text) return res.status(400).json({ error: 'No text provided' });
 
+      const provider = parseProvider(translationProvider);
+      if (!provider) return res.status(400).json({ error: 'Invalid translationProvider' });
+
       const { correctedText, translatedText } = await runCorrectAndTranslate(
         text,
         targetLanguage || 'nl',
         detectSpeakers ?? false,
-        (translationProvider as TranslationProvider) || 'openai',
+        provider,
         openaiApiKey || undefined,
         anthropicApiKey || undefined,
       );
@@ -154,17 +191,20 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
-  app.post('/api/retranslate', async (req, res) => {
+  app.post('/api/retranslate', rateLimiter, async (req, res) => {
     try {
       const { originalText, targetLanguage, detectSpeakers, translationProvider, openaiApiKey, anthropicApiKey } = req.body;
 
       if (!originalText) return res.status(400).json({ error: 'No text provided' });
 
+      const provider = parseProvider(translationProvider);
+      if (!provider) return res.status(400).json({ error: 'Invalid translationProvider' });
+
       const { correctedText, translatedText } = await runCorrectAndTranslate(
         originalText,
         targetLanguage || 'nl',
         detectSpeakers ?? false,
-        (translationProvider as TranslationProvider) || 'openai',
+        provider,
         openaiApiKey || undefined,
         anthropicApiKey || undefined,
       );
@@ -179,17 +219,20 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
-  app.post('/api/retroactive-correct', async (req, res) => {
+  app.post('/api/retroactive-correct', rateLimiter, async (req, res) => {
     try {
       const { accumulatedText, targetLanguage, detectSpeakers, translationProvider, openaiApiKey, anthropicApiKey } = req.body;
 
       if (!accumulatedText) return res.status(400).json({ error: 'No text provided' });
 
+      const provider = parseProvider(translationProvider);
+      if (!provider) return res.status(400).json({ error: 'Invalid translationProvider' });
+
       const { correctedText, translatedText } = await runRetroactiveCorrection(
         accumulatedText,
         targetLanguage || 'nl',
         detectSpeakers ?? false,
-        (translationProvider as TranslationProvider) || 'openai',
+        provider,
         openaiApiKey || undefined,
         anthropicApiKey || undefined,
       );

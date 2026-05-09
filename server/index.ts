@@ -26,6 +26,17 @@ app.use(express.json({
 }));
 app.use(express.urlencoded({ extended: false }));
 
+// HSTS: redirect HTTP→HTTPS and add Strict-Transport-Security in production
+app.use((req, res, next) => {
+  if (app.get('env') !== 'development') {
+    if (req.headers['x-forwarded-proto'] === 'http') {
+      return res.redirect(301, `https://${req.headers.host}${req.url}`);
+    }
+    res.setHeader('Strict-Transport-Security', 'max-age=31536000; includeSubDomains');
+  }
+  next();
+});
+
 app.use((req, res, next) => {
   const start = Date.now();
   const path = req.path;
@@ -76,10 +87,11 @@ app.use((req, res, next) => {
     serveStatic(app);
   }
 
-  // Set up WebSocket server for AssemblyAI real-time streaming transcription
-  const wss = new WebSocketServer({ server, path: '/ws/transcribe' });
-  setupStreamingWebSocket(wss);
-  log('WebSocket server set up for AssemblyAI real-time streaming transcription');
+
+  // Set up WebSocket server for streaming transcription
+  const wss = new WebSocketServer({ server, path: '/ws/transcribe', maxPayload: 10 * 1024 * 1024 });
+  setupChunkTranscriptionWebSocket(wss);
+  log('WebSocket server set up for chunk-based transcription');
 
   // Prevent unhandled WSS errors (e.g. client dropping mid-handshake) from
   // crashing the process. Individual connection errors are handled per-socket.

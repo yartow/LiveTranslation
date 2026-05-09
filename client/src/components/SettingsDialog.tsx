@@ -10,7 +10,14 @@ import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { RadioGroup, RadioGroupItem } from '@/components/ui/radio-group';
-import type { AppSettings, TranscriptionProvider, TranslationProvider } from '@/hooks/useSettings';
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '@/components/ui/select';
+import type { AppSettings, TranscriptionProvider, TranslationProvider, LocalWhisperModel } from '@/hooks/useSettings';
 
 interface SettingsDialogProps {
   isOpen: boolean;
@@ -31,19 +38,25 @@ interface ApiKeyFieldProps {
   description: string;
   value: string;
   onChange: (value: string) => void;
+  keyPrefix?: string;
 }
 
-function ApiKeyField({ label, placeholder, description, value, onChange }: ApiKeyFieldProps) {
+function ApiKeyField({ label, placeholder, description, value, onChange, keyPrefix }: ApiKeyFieldProps) {
   const [isEditing, setIsEditing] = useState(false);
   const [draft, setDraft] = useState('');
+  const [validationError, setValidationError] = useState('');
 
   const isSet = value.length > 0;
 
   function handleSave() {
     const trimmed = draft.trim();
-    if (trimmed) {
-      onChange(trimmed);
+    if (!trimmed) return;
+    if (keyPrefix && !trimmed.startsWith(keyPrefix)) {
+      setValidationError(`Key must start with "${keyPrefix}"`);
+      return;
     }
+    setValidationError('');
+    onChange(trimmed);
     setIsEditing(false);
     setDraft('');
   }
@@ -59,6 +72,7 @@ function ApiKeyField({ label, placeholder, description, value, onChange }: ApiKe
     if (e.key === 'Escape') {
       setIsEditing(false);
       setDraft('');
+      setValidationError('');
     }
   }
 
@@ -96,26 +110,31 @@ function ApiKeyField({ label, placeholder, description, value, onChange }: ApiKe
           </Button>
         </div>
       ) : (
-        <div className="flex items-center gap-2">
-          <Input
-            type="password"
-            placeholder={placeholder}
-            value={draft}
-            onChange={(e) => setDraft(e.target.value)}
-            onKeyDown={handleKeyDown}
-            autoComplete="off"
-            autoFocus={isEditing}
-            className="font-mono text-sm"
-          />
-          <Button size="sm" onClick={handleSave} disabled={!draft.trim()}>
-            Save
-          </Button>
+        <div className="flex flex-col gap-1.5">
+          <div className="flex items-center gap-2">
+            <Input
+              type="password"
+              placeholder={placeholder}
+              value={draft}
+              onChange={(e) => { setDraft(e.target.value); setValidationError(''); }}
+              onKeyDown={handleKeyDown}
+              autoComplete="off"
+              autoFocus={!isSet || isEditing}
+              className={`font-mono text-sm ${validationError ? 'border-destructive' : ''}`}
+            />
+            <Button size="sm" onClick={handleSave} disabled={!draft.trim()}>
+              Save
+            </Button>
+          </div>
+          {validationError && (
+            <p className="text-xs text-destructive">{validationError}</p>
+          )}
           {isSet && (
             <Button
               variant="outline"
               size="sm"
               className="shrink-0"
-              onClick={() => { setIsEditing(false); setDraft(''); }}
+              onClick={() => { setIsEditing(false); setDraft(''); setValidationError(''); }}
             >
               Cancel
             </Button>
@@ -153,6 +172,7 @@ export default function SettingsDialog({ isOpen, onClose, settings, onUpdate }: 
               description="Required for OpenAI Whisper transcription and GPT-4o-mini translation. Get one at platform.openai.com."
               value={settings.openaiApiKey}
               onChange={(v) => onUpdate({ openaiApiKey: v })}
+              keyPrefix="sk-"
             />
 
             <ApiKeyField
@@ -161,6 +181,7 @@ export default function SettingsDialog({ isOpen, onClose, settings, onUpdate }: 
               description="Required for Claude Haiku translation. Free tier available at console.anthropic.com."
               value={settings.anthropicApiKey}
               onChange={(v) => onUpdate({ anthropicApiKey: v })}
+              keyPrefix="sk-ant-"
             />
           </section>
 
@@ -194,6 +215,35 @@ export default function SettingsDialog({ isOpen, onClose, settings, onUpdate }: 
                   <p className="text-xs text-muted-foreground mt-0.5">
                     No API key required. Best in Chrome or Edge. Lower accuracy and limited language support compared to Whisper.
                   </p>
+                </div>
+              </div>
+              <div className="flex items-start gap-3 rounded-md border border-border p-3">
+                <RadioGroupItem value="transformers" id="t-transformers" className="mt-0.5" />
+                <div className="flex-1">
+                  <Label htmlFor="t-transformers" className="font-medium cursor-pointer">
+                    Local Whisper (Transformers.js){' '}
+                    <span className="text-xs font-normal text-green-600 dark:text-green-400">free · offline</span>
+                  </Label>
+                  <p className="text-xs text-muted-foreground mt-0.5">
+                    Runs Whisper in your browser. No API key needed. First use downloads the model once and caches it.
+                  </p>
+                  {settings.transcriptionProvider === 'transformers' && (
+                    <div className="mt-2">
+                      <Select
+                        value={settings.localWhisperModel}
+                        onValueChange={(v) => onUpdate({ localWhisperModel: v as LocalWhisperModel })}
+                      >
+                        <SelectTrigger className="h-8 text-xs">
+                          <SelectValue />
+                        </SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value="tiny">Tiny (~40 MB) — fastest, lower accuracy</SelectItem>
+                          <SelectItem value="small">Small (~244 MB) — recommended</SelectItem>
+                          <SelectItem value="medium">Medium (~769 MB) — near-OpenAI quality, slow on mobile</SelectItem>
+                        </SelectContent>
+                      </Select>
+                    </div>
+                  )}
                 </div>
               </div>
             </RadioGroup>

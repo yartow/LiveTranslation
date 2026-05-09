@@ -22,6 +22,8 @@ interface ChunkSession {
   nextExpectedChunk: number;
   // Stores completed results waiting for earlier chunks to finish
   pendingResults: Map<number, ChunkResult>;
+  // Aborted when the session ends so in-flight LLM calls are cancelled
+  abortController: AbortController;
 }
 
 interface ChunkResult {
@@ -34,6 +36,24 @@ const activeSessions = new Map<WsWebSocket, ChunkSession>();
 // Safety limit: reject chunk indexes that are unreasonably far ahead to
 // prevent unbounded memory growth in pendingResults.
 const MAX_CHUNK_QUEUE_DEPTH = 200;
+
+// Reject individual audio chunks larger than 10 MB.
+const MAX_CHUNK_SIZE = 10 * 1024 * 1024;
+
+class Semaphore {
+  private slots: number;
+  private queue: Array<() => void> = [];
+  constructor(max: number) { this.slots = max; }
+  acquire(): Promise<void> {
+    if (this.slots > 0) { this.slots--; return Promise.resolve(); }
+    return new Promise(resolve => this.queue.push(resolve));
+  }
+  release(): void {
+    const next = this.queue.shift();
+    if (next) next(); else this.slots++;
+  }
+}
+const whisperSemaphore = new Semaphore(3);
 
 async function safeUnlink(path: string): Promise<void> {
   try {
@@ -48,30 +68,34 @@ async function convertAudioToMp3(inputBuffer: Buffer): Promise<string> {
 
   await writeFile(inputPath, inputBuffer);
 
-  await new Promise<void>((resolve, reject) => {
-    ffmpeg(inputPath)
-      .inputOptions([
-        '-err_detect', 'ignore_err',
-        '-fflags', '+genpts+igndts+ignidx+discardcorrupt',
-        '-analyzeduration', '0',
-        '-probesize', '32',
-        '-max_error_rate', '1.0',
-      ])
-      .toFormat('mp3')
-      .audioCodec('libmp3lame')
-      .audioBitrate('128k')
-      .audioChannels(1)
-      .audioFrequency(16000)
-      .outputOptions(['-write_xing', '0', '-id3v2_version', '0'])
-      .on('end', resolve)
-      .on('error', (err, _stdout, stderr) => {
-        console.error('FFmpeg error:', err.message, stderr);
-        reject(new Error(`Audio conversion failed: ${err.message}`));
-      })
-      .save(outputPath);
-  });
+  try {
+    await new Promise<void>((resolve, reject) => {
+      ffmpeg(inputPath)
+        .inputOptions([
+          '-err_detect', 'ignore_err',
+          '-fflags', '+genpts+igndts+ignidx+discardcorrupt',
+          '-analyzeduration', '0',
+          '-probesize', '32',
+          '-max_error_rate', '1.0',
+        ])
+        .toFormat('mp3')
+        .audioCodec('libmp3lame')
+        .audioBitrate('128k')
+        .audioChannels(1)
+        .audioFrequency(16000)
+        .outputOptions(['-write_xing', '0', '-id3v2_version', '0'])
+        .on('end', resolve)
+        .on('error', (err, _stdout, stderr) => {
+          console.error('FFmpeg error:', err.message, stderr);
+          reject(new Error(`Audio conversion failed: ${err.message}`));
+        })
+        .save(outputPath);
+    });
+  } finally {
+    // Always clean up the input temp file, even if ffmpeg fails
+    await safeUnlink(inputPath);
+  }
 
-  await safeUnlink(inputPath);
   return outputPath;
 }
 
@@ -103,12 +127,20 @@ async function processChunk(
   audioBuffer: Buffer,
   chunkIndex: number,
 ): Promise<void> {
+  const { signal } = session.abortController;
   let mp3Path: string | null = null;
 
+  await whisperSemaphore.acquire();
   try {
     mp3Path = await convertAudioToMp3(audioBuffer);
 
-    const rawText = await transcribeAudio(mp3Path, session.sourceLanguage, session.openaiApiKey || undefined);
+    if (signal.aborted) {
+      session.pendingResults.set(chunkIndex, { correctedText: '', translatedText: '' });
+      flushInOrder(session);
+      return;
+    }
+
+    const rawText = await transcribeAudio(mp3Path, session.sourceLanguage, session.openaiApiKey || undefined, signal);
 
     if (!rawText.trim()) {
       // Silent chunk — register empty result so ordering can advance
@@ -126,6 +158,12 @@ async function processChunk(
       }));
     }
 
+    if (signal.aborted) {
+      session.pendingResults.set(chunkIndex, { correctedText: rawText, translatedText: '' });
+      flushInOrder(session);
+      return;
+    }
+
     let correctedText: string;
     let translatedText: string;
 
@@ -139,6 +177,7 @@ async function processChunk(
         session.targetLanguage,
         session.detectSpeakers,
         session.anthropicApiKey,
+        signal,
       ));
     } else {
       // Default: OpenAI GPT-4o-mini
@@ -147,6 +186,7 @@ async function processChunk(
         session.targetLanguage,
         session.detectSpeakers,
         session.openaiApiKey || undefined,
+        signal,
       ));
     }
 
@@ -154,6 +194,12 @@ async function processChunk(
     flushInOrder(session);
 
   } catch (error) {
+    // Don't log or surface errors from intentional aborts
+    if (error instanceof Error && error.name === 'AbortError') {
+      session.pendingResults.set(chunkIndex, { correctedText: '', translatedText: '' });
+      flushInOrder(session);
+      return;
+    }
     console.error(`Chunk ${chunkIndex} error:`, error);
     if (session.clientWs.readyState === WsWebSocket.OPEN) {
       session.clientWs.send(JSON.stringify({
@@ -166,6 +212,7 @@ async function processChunk(
     session.pendingResults.set(chunkIndex, { correctedText: '', translatedText: '' });
     flushInOrder(session);
   } finally {
+    whisperSemaphore.release();
     if (mp3Path) await safeUnlink(mp3Path);
   }
 }
@@ -191,6 +238,7 @@ export function setupChunkTranscriptionWebSocket(wss: WebSocketServer): void {
               anthropicApiKey: message.anthropicApiKey || '',
               nextExpectedChunk: 0,
               pendingResults: new Map(),
+              abortController: new AbortController(),
             };
             activeSessions.set(clientWs, session);
             clientWs.send(JSON.stringify({ type: 'ready' }));
@@ -206,6 +254,7 @@ export function setupChunkTranscriptionWebSocket(wss: WebSocketServer): void {
             }
 
           } else if (message.type === 'stop') {
+            if (session) session.abortController.abort();
             activeSessions.delete(clientWs);
             session = null;
           }
@@ -215,11 +264,18 @@ export function setupChunkTranscriptionWebSocket(wss: WebSocketServer): void {
 
           // Binary protocol: first 4 bytes = chunk index (big-endian uint32),
           // remaining bytes = raw audio (webm/opus from MediaRecorder)
-          const buf = Buffer.isBuffer(data) ? data : Buffer.from(data as ArrayBuffer);
+          const buf = Buffer.isBuffer(data) ? data : Buffer.from(data as unknown as ArrayBuffer);
           if (buf.length < 5) return;
 
-          const chunkIndex = buf.readUInt32BE(0);
           const audioBuffer = buf.subarray(4);
+
+          // Reject oversized chunks to prevent memory/disk exhaustion
+          if (audioBuffer.length > MAX_CHUNK_SIZE) {
+            console.warn(`Chunk audio exceeds ${MAX_CHUNK_SIZE} bytes; discarding`);
+            return;
+          }
+
+          const chunkIndex = buf.readUInt32BE(0);
 
           // Reject unreasonably large indexes to prevent memory exhaustion
           if (chunkIndex > session.nextExpectedChunk + MAX_CHUNK_QUEUE_DEPTH) {
@@ -240,6 +296,7 @@ export function setupChunkTranscriptionWebSocket(wss: WebSocketServer): void {
 
     clientWs.on('close', () => {
       console.log('Client disconnected');
+      if (session) session.abortController.abort();
       activeSessions.delete(clientWs);
       session = null;
     });
