@@ -18,15 +18,23 @@ interface ChunkSession {
   translationProvider: TranslationProvider;
   openaiApiKey: string;
   anthropicApiKey: string;
+  glossary: string;
+  sermonContext: string;
   // Tracks which chunk index to send to the client next (ordered delivery)
   nextExpectedChunk: number;
   // Stores completed results waiting for earlier chunks to finish
   pendingResults: Map<number, ChunkResult>;
 }
 
-interface ChunkResult {
+export interface ChunkResult {
   correctedText: string;
   translatedText: string;
+}
+
+export interface ChunkSessionForTest {
+  clientWs: { readyState: number; send: (msg: string) => void };
+  nextExpectedChunk: number;
+  pendingResults: Map<number, ChunkResult>;
 }
 
 const activeSessions = new Map<WsWebSocket, ChunkSession>();
@@ -34,6 +42,13 @@ const activeSessions = new Map<WsWebSocket, ChunkSession>();
 // Safety limit: reject chunk indexes that are unreasonably far ahead to
 // prevent unbounded memory growth in pendingResults.
 const MAX_CHUNK_QUEUE_DEPTH = 200;
+
+// When SIMULATE_LATENCY_MS is set, each chunk waits this many ms after the
+// audio is converted before sending to Whisper. Simulates the time a mobile
+// device needs to upload the audio blob over a real network connection.
+const SIM_LATENCY_MS = parseInt(process.env.SIMULATE_LATENCY_MS || '0', 10);
+const simulateLatency = (): Promise<void> =>
+  SIM_LATENCY_MS > 0 ? new Promise(r => setTimeout(r, SIM_LATENCY_MS)) : Promise.resolve();
 
 async function safeUnlink(path: string): Promise<void> {
   try {
@@ -77,12 +92,13 @@ async function convertAudioToMp3(inputBuffer: Buffer): Promise<string> {
 
 // Flush completed results to the client in strict recording order.
 // A chunk is only delivered after all lower-indexed chunks have been sent.
-function flushInOrder(session: ChunkSession): void {
+// Exported for unit testing; not part of the public API.
+export function flushInOrder(session: ChunkSessionForTest): void {
   while (session.pendingResults.has(session.nextExpectedChunk)) {
     const result = session.pendingResults.get(session.nextExpectedChunk)!;
     session.pendingResults.delete(session.nextExpectedChunk);
 
-    if (result.correctedText && session.clientWs.readyState === WsWebSocket.OPEN) {
+    if (result.correctedText && session.clientWs.readyState === 1 /* WS OPEN */) {
       session.clientWs.send(JSON.stringify({
         type: 'translation',
         original: result.correctedText,
@@ -107,8 +123,9 @@ async function processChunk(
 
   try {
     mp3Path = await convertAudioToMp3(audioBuffer);
+    await simulateLatency(); // emulate mobile audio-upload delay when enabled
 
-    const rawText = await transcribeAudio(mp3Path, session.sourceLanguage, session.openaiApiKey || undefined);
+    const rawText = await transcribeAudio(mp3Path, session.sourceLanguage, session.openaiApiKey || undefined, session.glossary || undefined, session.sermonContext || undefined);
 
     if (!rawText.trim()) {
       // Silent chunk — register empty result so ordering can advance
@@ -139,6 +156,8 @@ async function processChunk(
         session.targetLanguage,
         session.detectSpeakers,
         session.anthropicApiKey,
+        session.glossary || undefined,
+        session.sermonContext || undefined,
       ));
     } else {
       // Default: OpenAI GPT-4o-mini
@@ -147,6 +166,8 @@ async function processChunk(
         session.targetLanguage,
         session.detectSpeakers,
         session.openaiApiKey || undefined,
+        session.glossary || undefined,
+        session.sermonContext || undefined,
       ));
     }
 
@@ -189,6 +210,8 @@ export function setupChunkTranscriptionWebSocket(wss: WebSocketServer): void {
               translationProvider: (message.translationProvider as TranslationProvider) || 'openai',
               openaiApiKey: message.openaiApiKey || '',
               anthropicApiKey: message.anthropicApiKey || '',
+              glossary: message.glossary || '',
+              sermonContext: message.sermonContext || '',
               nextExpectedChunk: 0,
               pendingResults: new Map(),
             };
@@ -203,6 +226,8 @@ export function setupChunkTranscriptionWebSocket(wss: WebSocketServer): void {
               if (message.translationProvider) session.translationProvider = message.translationProvider;
               if (message.openaiApiKey !== undefined) session.openaiApiKey = message.openaiApiKey;
               if (message.anthropicApiKey !== undefined) session.anthropicApiKey = message.anthropicApiKey;
+              if (message.glossary !== undefined) session.glossary = message.glossary;
+              if (message.sermonContext !== undefined) session.sermonContext = message.sermonContext;
             }
 
           } else if (message.type === 'stop') {

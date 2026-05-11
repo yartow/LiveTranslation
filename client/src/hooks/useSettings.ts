@@ -2,12 +2,19 @@ import { useState, useCallback } from 'react';
 
 export type TranscriptionProvider = 'whisper' | 'browser';
 export type TranslationProvider = 'openai' | 'claude' | 'none';
+export type SpeechMode = 'monologue' | 'dialogue';
+export type DisplayContent = 'original' | 'translation' | 'both';
+export type TextDisplay = 'subtitle' | 'stream';
 
 export interface AppSettings {
   openaiApiKey: string;
   anthropicApiKey: string;
   transcriptionProvider: TranscriptionProvider;
   translationProvider: TranslationProvider;
+  speechMode: SpeechMode;
+  displayContent: DisplayContent;
+  textDisplay: TextDisplay;
+  theologicalGlossary: string;
 }
 
 const STORAGE_KEY = 'sermonscribe_settings';
@@ -17,6 +24,10 @@ const defaultSettings: AppSettings = {
   anthropicApiKey: '',
   transcriptionProvider: 'whisper',
   translationProvider: 'openai',
+  speechMode: 'monologue',
+  displayContent: 'translation',
+  textDisplay: 'subtitle',
+  theologicalGlossary: '',
 };
 
 function loadSettings(): AppSettings {

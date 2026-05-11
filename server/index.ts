@@ -5,13 +5,11 @@ import { WebSocketServer } from 'ws';
 import { setupStreamingWebSocket } from './lib/assemblyai-streaming';
 
 if (!process.env.OPENAI_API_KEY) {
-  console.error("Error: OPENAI_API_KEY environment variable is required");
-  process.exit(1);
+  console.warn("Warning: OPENAI_API_KEY is not set — translation will fail");
 }
 
 if (!process.env.ASSEMBLYAI_API_KEY) {
-  console.error("Error: ASSEMBLYAI_API_KEY environment variable is required");
-  process.exit(1);
+  console.warn("Warning: ASSEMBLYAI_API_KEY is not set — real-time transcription will fail");
 }
 
 const app = express();
@@ -27,6 +25,15 @@ app.use(express.json({
   }
 }));
 app.use(express.urlencoded({ extended: false }));
+
+// Inject artificial latency on all /api routes when SIMULATE_LATENCY_MS is set.
+// Simulates mobile upload delay + slower network round-trips during local dev.
+// Example: set SIMULATE_LATENCY_MS=1500 in .env to emulate slow 4G conditions.
+const _simDelay = parseInt(process.env.SIMULATE_LATENCY_MS || '0', 10);
+if (_simDelay > 0) {
+  log(`Latency simulation enabled: +${_simDelay}ms on all /api routes`);
+  app.use('/api', (_req, _res, next) => setTimeout(next, _simDelay));
+}
 
 app.use((req, res, next) => {
   const start = Date.now();
@@ -83,28 +90,41 @@ app.use((req, res, next) => {
   setupStreamingWebSocket(wss);
   log('WebSocket server set up for AssemblyAI real-time streaming transcription');
 
+  // Prevent unhandled WSS errors (e.g. client dropping mid-handshake) from
+  // crashing the process. Individual connection errors are handled per-socket.
+  wss.on('error', (err) => {
+    console.error('WebSocket server error:', err);
+  });
+
   // ALWAYS serve the app on the port specified in the environment variable PORT
   // Other ports are firewalled. Default to 5000 if not specified.
   // this serves both the API and the client.
   // It is the only port that is not firewalled.
   const port = parseInt(process.env.PORT || '5000', 10);
 
-  const startServer = (retries = 5, delayMs = 1000) => {
-    server.listen({ port, host: "0.0.0.0", reusePort: true }, () => {
-      log(`serving on port ${port}`);
-    });
-
-    server.on('error', (err: NodeJS.ErrnoException) => {
+  function startServer(retries = 5, delayMs = 1000) {
+    // Use `once` so each listen attempt registers exactly one error handler.
+    // With `on`, every retry would accumulate another handler on the same
+    // server instance, causing multiple handlers to fire on the next error.
+    const onError = (err: NodeJS.ErrnoException) => {
       if (err.code === 'EADDRINUSE' && retries > 0) {
-        log(`Port ${port} in use, retrying in ${delayMs}ms... (${retries} retries left)`);
-        server.close();
+        // The server never started listening (port was held by another process),
+        // so server.close() is not needed and would throw ERR_SERVER_NOT_RUNNING.
+        log(`Port ${port} in use, retrying in ${delayMs}ms… (${retries} retries left)`);
         setTimeout(() => startServer(retries - 1, delayMs), delayMs);
       } else {
-        console.error('Server error:', err);
+        console.error('Fatal server error:', err);
         process.exit(1);
       }
+    };
+
+    server.once('error', onError);
+    server.listen({ port, host: '0.0.0.0', reusePort: true }, () => {
+      // Success — remove the error handler so it doesn't linger
+      server.removeListener('error', onError);
+      log(`serving on port ${port}`);
     });
-  };
+  }
 
   startServer();
 })();

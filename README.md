@@ -1,84 +1,198 @@
 # SermonScribe
 
-A mobile-first web application for real-time sermon transcription and multi-language translation. Designed for distraction-free, one-handed mobile use during services.
+A mobile-first web application for real-time sermon transcription and multi-language translation. Designed for one-handed use during services — start it, put your phone down, read the live translation.
+
+---
 
 ## What It Does
 
-- **Real-time transcription** — Captures spoken audio and converts it to text with ~300ms latency using AssemblyAI's streaming API.
-- **Automatic translation** — Translates transcribed text into your chosen language (default: Dutch) using GPT-4o-mini.
-- **Live language switching** — Change the target language mid-recording and all text re-translates on the fly.
+- **Real-time transcription** — Captures spoken audio via the browser microphone and converts it to text using OpenAI Whisper (paid, high accuracy) or the free Browser Speech API.
+- **Automatic translation** — Translates each transcribed chunk into your chosen language using OpenAI GPT-4o-mini or Claude Haiku. Can also run translation-free (transcription only).
+- **Live language switching** — Change the target language mid-recording; all accumulated text re-translates on the fly.
 - **Speaker detection** — Optionally identifies and labels different speakers.
-- **Retroactive correction** — Every 5 sentences, GPT-4o-mini reviews and improves grammar and coherence.
+- **Retroactive correction** — Every 5 sentences, the AI reviews the full accumulated text for grammar and coherence.
 - **Export** — Download transcripts as plain text or Markdown, or upload directly to Google Drive.
 - **RTL support** — Right-to-left layout for Arabic and Farsi.
 - **Dark/light theme** — Automatic detection with manual toggle.
 
+---
+
+## Browser & Device Compatibility
+
+The app runs entirely in the browser — no app install needed. Compatibility depends on the transcription backend you choose:
+
+| Platform | Whisper (chunk-based) | Browser Speech API |
+|---|---|---|
+| Desktop Chrome / Edge | ✅ | ✅ |
+| Desktop Firefox | ✅ | ❌ not supported |
+| Desktop Safari | ✅ | ❌ not supported |
+| Android Chrome | ✅ | ✅ |
+| **iOS Safari** | ✅ (iOS 14.5+) | ❌ not supported |
+
+**Recommendation for iPhone/iPad:** Use the Whisper backend. The free Browser Speech API is not available on iOS Safari. On any platform, Whisper gives significantly better accuracy.
+
+---
+
+## Microphone & Permissions
+
+The browser will request microphone permission the first time you press Record. Two important constraints:
+
+1. **HTTPS is required in production.** The browser's `getUserMedia` API (and therefore both transcription backends) only works on `https://` or `localhost`. If you deploy to HTTP, microphone access will be silently blocked. Use a TLS-terminating reverse proxy (nginx, Caddy) in front of the app.
+
+2. **User gesture required on iOS.** The microphone can only be activated from a button tap — the app already handles this correctly.
+
+### Bluetooth Microphones
+
+Bluetooth mics work automatically at the OS level. The app requests the system default audio input; if you have a Bluetooth headset connected and selected as the default mic, the browser will use it. No app changes are needed.
+
+> **Note:** When a Bluetooth headset is active on iOS or macOS, the system switches to HFP (Hands-Free Profile) mode, reducing audio quality to ~8 kHz mono. Whisper handles this cleanly, but if audio quality matters, a wired or USB microphone is better.
+
+---
+
 ## Supported Languages
 
-English, Spanish, French, German, Dutch, Portuguese, Italian, Chinese (Simplified), Chinese (Traditional), Arabic, Farsi, Hindi, Russian, Japanese, Korean.
+English · Spanish · French · German · Dutch · Portuguese · Italian · Chinese (Simplified) · Chinese (Traditional) · Arabic · Farsi · Hindi · Russian · Japanese · Korean
 
-## Getting Started
+---
 
-### Required Environment Variables
+## API Providers & Free Mode
 
-| Variable | Description |
-|---|---|
-| `ASSEMBLYAI_API_KEY` | AssemblyAI API key for real-time transcription |
-| `OPENAI_API_KEY` | OpenAI API key for translation and correction |
-| `DATABASE_URL` | PostgreSQL connection string |
-| `SESSION_SECRET` | Secret for session management |
+All API keys are entered in the in-app Settings (⚙︎ icon). Keys are stored only in your browser's `sessionStorage` and are never sent to this server's storage — they travel directly to OpenAI or Anthropic with each request.
 
-### Running Locally
+| Provider | Cost | What it does |
+|---|---|---|
+| **OpenAI Whisper** | ~$0.006/min | Highest accuracy transcription |
+| **Browser Speech API** | Free | Transcription via the browser — Chrome/Edge only |
+| **OpenAI GPT-4o-mini** | ~$0.001/request | Fast translation + grammar correction |
+| **Claude Haiku** | Free tier available | High-quality translation |
+| **None** | Free | Raw transcription only, no translation or correction |
+
+**Fully free mode:** Browser Speech API + None translation. No API keys needed. Works best in Chrome or Edge on a desktop.
+
+---
+
+## Running Locally — npm
+
+Requirements: Node 20+, ffmpeg (`brew install ffmpeg` on Mac).
 
 ```bash
+# 1. Copy the env template and fill in your keys
+cp .env.example .env
+
+# 2. Install dependencies
 npm install
+
+# 3. Start the dev server (reads .env automatically)
 npm run dev
 ```
 
-The app runs on port 5000 by default. Open `http://localhost:5000` in your browser.
+Open [http://localhost:5001](http://localhost:5001).
+
+The `.env.example` file documents all available variables. At minimum, set `OPENAI_API_KEY` if you want Whisper transcription, or leave keys empty to use Browser Speech + None for free.
+
+---
+
+## Running Locally — Docker
+
+Requirements: Docker Desktop.
+
+```bash
+cp .env.example .env   # fill in your API keys
+docker compose up --build
+```
+
+Open [http://localhost:5001](http://localhost:5001).
+
+The container runs the production build (Vite client + esbuild server bundle). ffmpeg is included in the image.
+
+---
+
+## Simulating Mobile Latency in Development
+
+On a local dev machine the audio chunk upload is instant (localhost). On a real phone over 4G, the same upload adds 500–1500 ms of lag on top of the normal API round-trip. To get a realistic feel during development, set `SIMULATE_LATENCY_MS` in your `.env`:
+
+```bash
+# .env
+SIMULATE_LATENCY_MS=1500
+```
+
+This injects a 1.5 s delay at two points:
+- **Before every `/api/` HTTP response** — simulates mobile network latency on translation calls.
+- **After audio conversion in each WebSocket chunk** — simulates the time a phone takes to upload the audio blob over a real connection.
+
+The server logs `Latency simulation enabled: +1500ms` as a reminder when this is active. Set back to `0` (or remove the line) to disable.
+
+---
 
 ## Architecture
 
 ```
-Browser (Web Audio API, 16kHz PCM16)
-  ↓ WebSocket /ws/transcribe
-Express + Node.js backend
-  ↓ WebSocket relay
-AssemblyAI Real-time API (~300ms latency)
-  ↓ transcription result
-GPT-4o-mini (correction + translation)
-  ↓ 500ms debounce
-Browser display
+Browser
+  ├── MediaRecorder  ──5 s chunks──►  WebSocket /ws/transcribe
+  │     (Whisper path)                  ↓ ffmpeg (webm → mp3)
+  │                                     ↓ OpenAI Whisper (transcription)
+  │                                     ↓ GPT-4o-mini / Claude Haiku (correct + translate)
+  │                                     ↓ ordered delivery back to browser
+  │
+  └── SpeechRecognition API  ──final text──►  POST /api/translate
+        (Browser path, Chrome/Edge)            ↓ GPT-4o-mini / Claude Haiku
+                                               ↓ JSON response to browser
 ```
 
 ### Key Technical Details
 
-- **Audio format**: 16kHz sample rate, PCM16 mono, captured via `ScriptProcessorNode`
-- **Silence detection**: Skips audio chunks with average volume below 0.01 to prevent hallucinations from background noise
-- **Word boost**: AssemblyAI is configured to boost recognition of religious terms (sermon, scripture, bible, gospel, faith, prayer, amen)
-- **Translation debounce**: 500ms window to batch partial transcripts before sending to GPT-4o-mini
-- **Retroactive correction**: Full paragraph review every 5 completed sentences
+- **Chunk pipeline**: Each 5 s audio chunk is processed concurrently (ffmpeg → Whisper → LLM). Results are buffered and delivered strictly in recording order, even if a later chunk finishes faster.
+- **Audio format**: `audio/webm;codecs=opus` preferred; falls back to `audio/mp4` on iOS Safari.
+- **Raw preview**: Whisper's raw transcript is shown immediately as a grey preview while the correction/translation is still running.
+- **Retroactive correction**: Every 5 completed sentences the full accumulated text is sent back to the LLM for a coherence and grammar pass.
+- **Storage**: In-memory only — no database is required to run the app.
 
-### Stack
+---
+
+## Running Tests
+
+```bash
+# Unit + integration tests (fast, no API calls)
+npm test
+
+# Regression tests — run explicitly when needed
+npm run test:regression
+```
+
+The regression suite tests specific bugs that have been fixed (chunk ordering, validation, provider fallback). Run it before merging changes that touch the server pipeline.
+
+---
+
+## Stack
 
 | Layer | Technology |
 |---|---|
-| Frontend | React + TypeScript, Vite, Tailwind CSS, shadcn/ui |
-| Backend | Node.js, Express |
+| Frontend | React 18 + TypeScript, Vite, Tailwind CSS, shadcn/ui |
+| Backend | Node.js 20+, Express |
 | Routing | Wouter |
 | State | TanStack Query |
-| Transcription | AssemblyAI Real-time WebSocket API |
-| AI / Translation | OpenAI GPT-4o-mini |
-| Database | PostgreSQL via Drizzle ORM (Neon) |
-| File Storage | Google Drive API |
+| Transcription | OpenAI Whisper (chunk-based WS) or Browser SpeechRecognition |
+| Translation | OpenAI GPT-4o-mini or Claude Haiku (Anthropic) |
+| Audio processing | ffmpeg via fluent-ffmpeg |
+| Testing | Vitest + Supertest |
+
+---
 
 ## Estimated Cost
 
-- **AssemblyAI**: ~€0.14/hour of transcription
-- **OpenAI**: Minimal — GPT-4o-mini is used only for translation and correction, not audio processing
+With Whisper + GPT-4o-mini (both OpenAI):
+
+- **Whisper**: ~$0.006 per minute of audio
+- **GPT-4o-mini**: ~$0.001 per transcription chunk (very cheap)
+- **Total**: roughly $0.01–0.02 per 1-hour session
+
+Claude Haiku pricing is similar. The Browser Speech + None combination is completely free.
+
+---
 
 ## Export Options
 
 - Plain text (`.txt`) or Markdown (`.md`)
-- Export original, translation, or both side-by-side
-- Download locally or save to Google Drive (with folder selection)
+- Export original transcription, translation, or both side-by-side
+- Optional AI formatting pass before export
+- Download locally or save to Google Drive (requires Google Drive connector configured in Replit)

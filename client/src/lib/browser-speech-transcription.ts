@@ -9,6 +9,8 @@ export class BrowserSpeechTranscription {
   private translationProvider: TranslationProvider = 'none';
   private openaiApiKey = '';
   private anthropicApiKey = '';
+  private glossary = '';
+  private sermonContext = '';
   private chunkIndex = 0;
 
   constructor(events: ChunkTranscriptionEvents) {
@@ -22,6 +24,8 @@ export class BrowserSpeechTranscription {
     translationProvider: TranslationProvider = 'none',
     openaiApiKey = '',
     anthropicApiKey = '',
+    glossary = '',
+    sermonContext = '',
   ): Promise<void> {
     this.sourceLanguage = sourceLanguage;
     this.targetLanguage = targetLanguage;
@@ -29,6 +33,8 @@ export class BrowserSpeechTranscription {
     this.translationProvider = translationProvider;
     this.openaiApiKey = openaiApiKey;
     this.anthropicApiKey = anthropicApiKey;
+    this.glossary = glossary;
+    this.sermonContext = sermonContext;
     this.chunkIndex = 0;
 
     const SpeechRecognition =
@@ -104,6 +110,8 @@ export class BrowserSpeechTranscription {
           translationProvider: this.translationProvider,
           openaiApiKey: this.openaiApiKey,
           anthropicApiKey: this.anthropicApiKey,
+          glossary: this.glossary || undefined,
+          sermonContext: this.sermonContext || undefined,
         }),
       });
 
@@ -128,6 +136,8 @@ export class BrowserSpeechTranscription {
     translationProvider?: TranslationProvider,
     openaiApiKey?: string,
     anthropicApiKey?: string,
+    glossary?: string,
+    sermonContext?: string,
   ): void {
     this.sourceLanguage = sourceLanguage;
     this.targetLanguage = targetLanguage;
@@ -135,6 +145,8 @@ export class BrowserSpeechTranscription {
     if (translationProvider) this.translationProvider = translationProvider;
     if (openaiApiKey !== undefined) this.openaiApiKey = openaiApiKey;
     if (anthropicApiKey !== undefined) this.anthropicApiKey = anthropicApiKey;
+    if (glossary !== undefined) this.glossary = glossary;
+    if (sermonContext !== undefined) this.sermonContext = sermonContext;
 
     if (this.recognition) {
       this.recognition.lang = sourceLanguage;

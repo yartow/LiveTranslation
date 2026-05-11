@@ -1,4 +1,4 @@
-import { useEffect, useRef } from 'react';
+import { useEffect, useRef, useState } from 'react';
 
 interface TranscriptionDisplayProps {
   title: string;
@@ -6,31 +6,100 @@ interface TranscriptionDisplayProps {
   testId?: string;
   isRTL?: boolean;
   isPartial?: boolean;
+  displayStyle?: 'default' | 'stream';
 }
 
-export default function TranscriptionDisplay({ title, text, testId, isRTL = false, isPartial = false }: TranscriptionDisplayProps) {
+function useTypewriter(text: string, active: boolean): string {
+  const [displayed, setDisplayed] = useState(text);
+  const prevRef = useRef(text);
+  const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+
+  useEffect(() => {
+    if (!active) {
+      setDisplayed(text);
+      prevRef.current = text;
+      return;
+    }
+
+    const prev = prevRef.current;
+    prevRef.current = text;
+
+    if (timerRef.current) {
+      clearInterval(timerRef.current);
+      timerRef.current = null;
+    }
+
+    if (text === prev) return;
+
+    if (!text.startsWith(prev)) {
+      // Retranslation or reset — snap immediately
+      setDisplayed(text);
+      return;
+    }
+
+    // Extension of existing text — animate new words word-by-word
+    const newPart = text.slice(prev.length);
+    const words = newPart.match(/\S+\s*/g) ?? [];
+    if (words.length === 0) {
+      setDisplayed(text);
+      return;
+    }
+
+    let i = 0;
+    let current = prev;
+    timerRef.current = setInterval(() => {
+      if (i >= words.length) {
+        clearInterval(timerRef.current!);
+        timerRef.current = null;
+        setDisplayed(text);
+        return;
+      }
+      current += words[i];
+      i++;
+      setDisplayed(current);
+    }, 120);
+
+    return () => {
+      if (timerRef.current) clearInterval(timerRef.current);
+    };
+  }, [text, active]);
+
+  return displayed;
+}
+
+export default function TranscriptionDisplay({
+  title,
+  text,
+  testId,
+  isRTL = false,
+  isPartial = false,
+  displayStyle = 'default',
+}: TranscriptionDisplayProps) {
   const scrollRef = useRef<HTMLDivElement>(null);
+  const isStream = displayStyle === 'stream' && !isPartial;
+  const displayedText = useTypewriter(text, isStream);
+  const visibleText = isStream ? displayedText : text;
 
   useEffect(() => {
     if (scrollRef.current) {
       scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
     }
-  }, [text]);
+  }, [visibleText]);
 
   return (
     <div className="flex flex-col h-full">
       <div className="text-xs font-medium text-muted-foreground mb-2 px-6 pt-4">
         {title}
       </div>
-      <div 
+      <div
         ref={scrollRef}
         className="flex-1 overflow-y-auto px-6 pb-6 scrollbar-thin"
         data-testid={testId}
         dir={isRTL ? 'rtl' : 'ltr'}
       >
-        {text ? (
+        {visibleText ? (
           <p className={`text-lg leading-relaxed whitespace-pre-wrap ${isPartial ? 'text-muted-foreground' : 'text-foreground'}`}>
-            {text}
+            {visibleText}
             {isPartial && <span className="inline-block w-2 h-5 bg-primary ml-1 animate-pulse" />}
           </p>
         ) : (
