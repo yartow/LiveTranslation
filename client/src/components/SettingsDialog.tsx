@@ -1,4 +1,5 @@
 import { useState } from 'react';
+import LanguageSelector from '@/components/LanguageSelector';
 import {
   Dialog,
   DialogContent,
@@ -11,7 +12,15 @@ import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { RadioGroup, RadioGroupItem } from '@/components/ui/radio-group';
 import { Textarea } from '@/components/ui/textarea';
-import type { AppSettings, TranscriptionProvider, TranslationProvider } from '@/hooks/useSettings';
+import { Switch } from '@/components/ui/switch';
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '@/components/ui/select';
+import type { AppSettings, TranscriptionProvider, TranslationProvider, LocalWhisperModel } from '@/hooks/useSettings';
 import { maskKey } from '@/lib/mask-key';
 
 interface SettingsDialogProps {
@@ -27,19 +36,25 @@ interface ApiKeyFieldProps {
   description: string;
   value: string;
   onChange: (value: string) => void;
+  keyPrefix?: string;
 }
 
-function ApiKeyField({ label, placeholder, description, value, onChange }: ApiKeyFieldProps) {
+function ApiKeyField({ label, placeholder, description, value, onChange, keyPrefix }: ApiKeyFieldProps) {
   const [isEditing, setIsEditing] = useState(false);
   const [draft, setDraft] = useState('');
+  const [validationError, setValidationError] = useState('');
 
   const isSet = value.length > 0;
 
   function handleSave() {
     const trimmed = draft.trim();
-    if (trimmed) {
-      onChange(trimmed);
+    if (!trimmed) return;
+    if (keyPrefix && !trimmed.startsWith(keyPrefix)) {
+      setValidationError(`Key must start with "${keyPrefix}"`);
+      return;
     }
+    setValidationError('');
+    onChange(trimmed);
     setIsEditing(false);
     setDraft('');
   }
@@ -55,6 +70,7 @@ function ApiKeyField({ label, placeholder, description, value, onChange }: ApiKe
     if (e.key === 'Escape') {
       setIsEditing(false);
       setDraft('');
+      setValidationError('');
     }
   }
 
@@ -92,26 +108,31 @@ function ApiKeyField({ label, placeholder, description, value, onChange }: ApiKe
           </Button>
         </div>
       ) : (
-        <div className="flex items-center gap-2">
-          <Input
-            type="password"
-            placeholder={placeholder}
-            value={draft}
-            onChange={(e) => setDraft(e.target.value)}
-            onKeyDown={handleKeyDown}
-            autoComplete="off"
-            autoFocus={isEditing}
-            className="font-mono text-sm"
-          />
-          <Button size="sm" onClick={handleSave} disabled={!draft.trim()}>
-            Save
-          </Button>
+        <div className="flex flex-col gap-1.5">
+          <div className="flex items-center gap-2">
+            <Input
+              type="password"
+              placeholder={placeholder}
+              value={draft}
+              onChange={(e) => { setDraft(e.target.value); setValidationError(''); }}
+              onKeyDown={handleKeyDown}
+              autoComplete="off"
+              autoFocus={!isSet || isEditing}
+              className={`font-mono text-sm ${validationError ? 'border-destructive' : ''}`}
+            />
+            <Button size="sm" onClick={handleSave} disabled={!draft.trim()}>
+              Save
+            </Button>
+          </div>
+          {validationError && (
+            <p className="text-xs text-destructive">{validationError}</p>
+          )}
           {isSet && (
             <Button
               variant="outline"
               size="sm"
               className="shrink-0"
-              onClick={() => { setIsEditing(false); setDraft(''); }}
+              onClick={() => { setIsEditing(false); setDraft(''); setValidationError(''); }}
             >
               Cancel
             </Button>
@@ -149,6 +170,7 @@ export default function SettingsDialog({ isOpen, onClose, settings, onUpdate }: 
               description="Required for OpenAI Whisper transcription and GPT-4o-mini translation. Get one at platform.openai.com."
               value={settings.openaiApiKey}
               onChange={(v) => onUpdate({ openaiApiKey: v })}
+              keyPrefix="sk-"
             />
 
             <ApiKeyField
@@ -157,6 +179,7 @@ export default function SettingsDialog({ isOpen, onClose, settings, onUpdate }: 
               description="Required for Claude Haiku translation. Free tier available at console.anthropic.com."
               value={settings.anthropicApiKey}
               onChange={(v) => onUpdate({ anthropicApiKey: v })}
+              keyPrefix="sk-ant-"
             />
           </section>
 
@@ -190,6 +213,35 @@ export default function SettingsDialog({ isOpen, onClose, settings, onUpdate }: 
                   <p className="text-xs text-muted-foreground mt-0.5">
                     No API key required. Best in Chrome or Edge. Lower accuracy and limited language support compared to Whisper.
                   </p>
+                </div>
+              </div>
+              <div className="flex items-start gap-3 rounded-md border border-border p-3">
+                <RadioGroupItem value="transformers" id="t-transformers" className="mt-0.5" />
+                <div className="flex-1">
+                  <Label htmlFor="t-transformers" className="font-medium cursor-pointer">
+                    Local Whisper (Transformers.js){' '}
+                    <span className="text-xs font-normal text-green-600 dark:text-green-400">free · offline</span>
+                  </Label>
+                  <p className="text-xs text-muted-foreground mt-0.5">
+                    Runs Whisper in your browser. No API key needed. First use downloads the model once and caches it.
+                  </p>
+                  {settings.transcriptionProvider === 'transformers' && (
+                    <div className="mt-2">
+                      <Select
+                        value={settings.localWhisperModel}
+                        onValueChange={(v) => onUpdate({ localWhisperModel: v as LocalWhisperModel })}
+                      >
+                        <SelectTrigger className="h-8 text-xs">
+                          <SelectValue />
+                        </SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value="tiny">Tiny (~40 MB) — fastest, lower accuracy</SelectItem>
+                          <SelectItem value="small">Small (~244 MB) — recommended</SelectItem>
+                          <SelectItem value="medium">Medium (~769 MB) — near-OpenAI quality, slow on mobile</SelectItem>
+                        </SelectContent>
+                      </Select>
+                    </div>
+                  )}
                 </div>
               </div>
             </RadioGroup>
@@ -241,6 +293,30 @@ export default function SettingsDialog({ isOpen, onClose, settings, onUpdate }: 
             </RadioGroup>
           </section>
 
+          {/* ── Default Languages ── */}
+          <section className="space-y-3">
+            <h3 className="text-sm font-semibold text-foreground border-b border-border pb-1">
+              Default Languages
+            </h3>
+            <p className="text-xs text-muted-foreground">
+              These languages are pre-selected when you open the app. You can always change them per session.
+            </p>
+            <div className="grid grid-cols-2 gap-3">
+              <LanguageSelector
+                value={settings.defaultSourceLanguage}
+                onChange={(v) => onUpdate({ defaultSourceLanguage: v })}
+                label="Speaking in"
+                testId="select-default-source-language"
+              />
+              <LanguageSelector
+                value={settings.defaultTargetLanguage}
+                onChange={(v) => onUpdate({ defaultTargetLanguage: v })}
+                label="Translate to"
+                testId="select-default-target-language"
+              />
+            </div>
+          </section>
+
           {/* ── Theological Glossary ── */}
           <section className="space-y-3">
             <h3 className="text-sm font-semibold text-foreground border-b border-border pb-1">
@@ -259,6 +335,28 @@ export default function SettingsDialog({ isOpen, onClose, settings, onUpdate }: 
               rows={6}
               className="font-mono text-sm resize-y"
             />
+          </section>
+
+          {/* ── Debug Mode ── */}
+          <section className="space-y-3">
+            <h3 className="text-sm font-semibold text-foreground border-b border-border pb-1">
+              Debug Mode
+            </h3>
+            <div className="flex items-center justify-between">
+              <div>
+                <Label htmlFor="debug-mode" className="font-medium cursor-pointer">
+                  Show live status messages
+                </Label>
+                <p className="text-xs text-muted-foreground mt-0.5">
+                  Displays a real-time log of what the app is doing — recording, sending to Whisper, API key errors, etc.
+                </p>
+              </div>
+              <Switch
+                id="debug-mode"
+                checked={settings.debugMode}
+                onCheckedChange={(checked) => onUpdate({ debugMode: checked })}
+              />
+            </div>
           </section>
 
           {/* ── Free mode callout ── */}

@@ -8,10 +8,13 @@ interface RecordButtonProps {
 }
 
 export default function RecordButton({ isRecording, isProcessing, onClick, disabled }: RecordButtonProps) {
+  // Only disable the button while we're initialising before recording has started.
+  // Once isRecording is true the user must always be able to click Stop.
+  const isInitializing = isProcessing && !isRecording;
   return (
     <button
       onClick={onClick}
-      disabled={disabled || isProcessing}
+      disabled={disabled || isInitializing}
       data-testid="button-record"
       aria-label={isRecording ? 'Stop recording' : 'Start recording'}
       className={[
@@ -23,12 +26,12 @@ export default function RecordButton({ isRecording, isProcessing, onClick, disab
           : 'bg-primary text-primary-foreground hover:opacity-90',
       ].join(' ')}
     >
-      {/* Pulsing outer ring when recording */}
-      {isRecording && !isProcessing && (
+      {/* Pulsing outer ring while actively recording */}
+      {isRecording && (
         <span className="absolute inset-0 rounded-full animate-ping bg-red-600 opacity-20" />
       )}
 
-      {isProcessing
+      {isInitializing
         ? <Loader2 className="h-6 w-6 animate-spin" />
         : isRecording
           ? <Square className="h-5 w-5 fill-current" />

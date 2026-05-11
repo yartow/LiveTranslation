@@ -20,6 +20,7 @@ import {
 } from '@/components/ui/select';
 import { useToast } from '@/hooks/use-toast';
 import { Loader2 } from 'lucide-react';
+import { getLanguageName } from '@/components/LanguageSelector';
 
 interface ExportDialogProps {
   isOpen: boolean;
@@ -27,6 +28,28 @@ interface ExportDialogProps {
   originalText: string;
   translatedText: string;
   targetLanguage: string;
+  sourceLanguage?: string;
+  sermonContext?: string;
+}
+
+function buildMetadataHeader(
+  exportType: 'original' | 'translation' | 'both',
+  sourceLanguage: string | undefined,
+  targetLanguage: string,
+  sermonContext: string | undefined,
+  fileFormat: 'txt' | 'md',
+): string {
+  const date = new Date().toLocaleDateString(undefined, { year: 'numeric', month: 'long', day: 'numeric' });
+  const title = sermonContext || 'Sermon Transcript';
+  const srcName = getLanguageName(sourceLanguage ?? 'en');
+  const tgtName = getLanguageName(targetLanguage);
+  const langLine = exportType === 'original' ? srcName
+    : exportType === 'translation' ? tgtName
+    : `${srcName} → ${tgtName}`;
+  if (fileFormat === 'md') {
+    return `# ${title}\n**Date:** ${date}\n**Language:** ${langLine}\n\n---\n\n`;
+  }
+  return `${title}\nDate: ${date}\nLanguage: ${langLine}\n\n`;
 }
 
 export default function ExportDialog({
@@ -35,6 +58,8 @@ export default function ExportDialog({
   originalText,
   translatedText,
   targetLanguage,
+  sourceLanguage,
+  sermonContext,
 }: ExportDialogProps) {
   const [exportType, setExportType] = useState<'original' | 'translation' | 'both'>('both');
   const [fileFormat, setFileFormat] = useState<'txt' | 'md'>('txt');
@@ -97,11 +122,13 @@ export default function ExportDialog({
       }
 
       const data = await response.json();
+      const header = buildMetadataHeader(exportType, sourceLanguage, targetLanguage, sermonContext, fileFormat);
+      const finalContent = header + data.formattedContent;
 
       if (exportToGoogleDrive) {
-        await exportToGoogleDriveFunc(data.formattedContent, fileFormat);
+        await exportToGoogleDriveFunc(finalContent, fileFormat);
       } else {
-        downloadFile(data.formattedContent, fileFormat);
+        downloadFile(finalContent, fileFormat);
       }
 
       toast({

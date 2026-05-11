@@ -8,10 +8,6 @@ if (!process.env.OPENAI_API_KEY) {
   console.warn("Warning: OPENAI_API_KEY is not set — translation will fail");
 }
 
-if (!process.env.ASSEMBLYAI_API_KEY) {
-  console.warn("Warning: ASSEMBLYAI_API_KEY is not set — real-time transcription will fail");
-}
-
 const app = express();
 
 declare module 'http' {
@@ -85,17 +81,6 @@ app.use((req, res, next) => {
     serveStatic(app);
   }
 
-  // Set up WebSocket server for AssemblyAI real-time streaming transcription
-  const wss = new WebSocketServer({ server, path: '/ws/transcribe' });
-  setupStreamingWebSocket(wss);
-  log('WebSocket server set up for AssemblyAI real-time streaming transcription');
-
-  // Prevent unhandled WSS errors (e.g. client dropping mid-handshake) from
-  // crashing the process. Individual connection errors are handled per-socket.
-  wss.on('error', (err) => {
-    console.error('WebSocket server error:', err);
-  });
-
   // ALWAYS serve the app on the port specified in the environment variable PORT
   // Other ports are firewalled. Default to 5000 if not specified.
   // this serves both the API and the client.
@@ -111,7 +96,7 @@ app.use((req, res, next) => {
         // The server never started listening (port was held by another process),
         // so server.close() is not needed and would throw ERR_SERVER_NOT_RUNNING.
         log(`Port ${port} in use, retrying in ${delayMs}ms… (${retries} retries left)`);
-        setTimeout(() => startServer(retries - 1, delayMs), delayMs);
+        setTimeout(() => startServer(retries - 1, delayMs * 2), delayMs);
       } else {
         console.error('Fatal server error:', err);
         process.exit(1);
@@ -119,10 +104,35 @@ app.use((req, res, next) => {
     };
 
     server.once('error', onError);
-    server.listen({ port, host: '0.0.0.0', reusePort: true }, () => {
+    server.listen({ port, host: '0.0.0.0' }, () => {
       // Success — remove the error handler so it doesn't linger
       server.removeListener('error', onError);
       log(`serving on port ${port}`);
+
+      // noServer mode: the WSS never attaches its own 'upgrade' listener to the
+      // http server, so it never calls abortHandshake() on requests that don't
+      // match our path. Without this, the ws library sends HTTP 400 + destroys
+      // the socket for every non-matching upgrade (including Vite's HMR
+      // connections), which corrupts the already-established HMR WebSocket and
+      // produces "Invalid frame header" in the browser.
+      const wss = new WebSocketServer({ noServer: true, maxPayload: 10 * 1024 * 1024 });
+      setupStreamingWebSocket(wss);
+      wss.on('error', (err) => {
+        console.error('WebSocket server error:', err);
+      });
+
+      // Manually route only /ws/transcribe upgrades to our WSS.
+      // All other upgrade requests (Vite HMR at /) are left untouched.
+      server.on('upgrade', (req, socket, head) => {
+        const pathname = req.url?.split('?')[0];
+        if (pathname === '/ws/transcribe') {
+          wss.handleUpgrade(req, socket, head, (ws) => {
+            wss.emit('connection', ws, req);
+          });
+        }
+      });
+
+      log('WebSocket server set up for AssemblyAI real-time streaming transcription');
     });
   }
 

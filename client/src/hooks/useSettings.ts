@@ -1,10 +1,11 @@
 import { useState, useCallback } from 'react';
 
-export type TranscriptionProvider = 'whisper' | 'browser';
+export type TranscriptionProvider = 'whisper' | 'browser' | 'transformers';
 export type TranslationProvider = 'openai' | 'claude' | 'none';
 export type SpeechMode = 'monologue' | 'dialogue';
 export type DisplayContent = 'original' | 'translation' | 'both';
 export type TextDisplay = 'subtitle' | 'stream';
+export type LocalWhisperModel = 'tiny' | 'small' | 'medium';
 
 export interface AppSettings {
   openaiApiKey: string;
@@ -15,9 +16,13 @@ export interface AppSettings {
   displayContent: DisplayContent;
   textDisplay: TextDisplay;
   theologicalGlossary: string;
+  localWhisperModel: LocalWhisperModel;
+  defaultSourceLanguage: string;
+  defaultTargetLanguage: string;
+  debugMode: boolean;
 }
 
-const STORAGE_KEY = 'sermonscribe_settings';
+const PREFS_KEY = 'sermonscribe_prefs';
 
 const defaultSettings: AppSettings = {
   openaiApiKey: '',
@@ -28,18 +33,44 @@ const defaultSettings: AppSettings = {
   displayContent: 'translation',
   textDisplay: 'subtitle',
   theologicalGlossary: '',
+  localWhisperModel: 'tiny',
+  defaultSourceLanguage: 'en',
+  defaultTargetLanguage: 'nl',
+  debugMode: false,
 };
 
+const VALID_TRANSCRIPTION: TranscriptionProvider[] = ['whisper', 'browser', 'transformers'];
+const VALID_TRANSLATION: TranslationProvider[] = ['openai', 'claude', 'none'];
+const VALID_LOCAL_MODEL: LocalWhisperModel[] = ['tiny', 'small', 'medium'];
+
 function loadSettings(): AppSettings {
+  let prefs: Partial<AppSettings> = {};
+  let keys: Partial<AppSettings> = {};
+
   try {
-    const stored = localStorage.getItem(STORAGE_KEY);
-    if (stored) {
-      return { ...defaultSettings, ...JSON.parse(stored) };
-    }
-  } catch {
-    // Ignore parse errors — start fresh
+    const stored = localStorage.getItem(PREFS_KEY);
+    if (stored) prefs = JSON.parse(stored);
+  } catch {}
+
+  try {
+    const stored = sessionStorage.getItem(PREFS_KEY);
+    if (stored) keys = JSON.parse(stored);
+  } catch {}
+
+  const merged = { ...defaultSettings, ...prefs, ...keys };
+
+  // Validate enums; fall back to defaults for unrecognised values
+  if (!VALID_TRANSCRIPTION.includes(merged.transcriptionProvider)) {
+    merged.transcriptionProvider = defaultSettings.transcriptionProvider;
   }
-  return { ...defaultSettings };
+  if (!VALID_TRANSLATION.includes(merged.translationProvider)) {
+    merged.translationProvider = defaultSettings.translationProvider;
+  }
+  if (!VALID_LOCAL_MODEL.includes(merged.localWhisperModel)) {
+    merged.localWhisperModel = defaultSettings.localWhisperModel;
+  }
+
+  return merged;
 }
 
 export function useSettings() {
@@ -48,11 +79,31 @@ export function useSettings() {
   const updateSettings = useCallback((updates: Partial<AppSettings>) => {
     setSettings((prev) => {
       const next = { ...prev, ...updates };
+
+      // Provider preferences are not sensitive — persist across sessions
       try {
-        localStorage.setItem(STORAGE_KEY, JSON.stringify(next));
-      } catch {
-        // Storage quota exceeded or private browsing — silently continue
-      }
+        localStorage.setItem(PREFS_KEY, JSON.stringify({
+          transcriptionProvider: next.transcriptionProvider,
+          translationProvider: next.translationProvider,
+          localWhisperModel: next.localWhisperModel,
+          speechMode: next.speechMode,
+          displayContent: next.displayContent,
+          textDisplay: next.textDisplay,
+          theologicalGlossary: next.theologicalGlossary,
+          defaultSourceLanguage: next.defaultSourceLanguage,
+          defaultTargetLanguage: next.defaultTargetLanguage,
+          debugMode: next.debugMode,
+        }));
+      } catch {}
+
+      // API keys are sensitive — use sessionStorage so they clear on tab close
+      try {
+        sessionStorage.setItem(PREFS_KEY, JSON.stringify({
+          openaiApiKey: next.openaiApiKey,
+          anthropicApiKey: next.anthropicApiKey,
+        }));
+      } catch {}
+
       return next;
     });
   }, []);
