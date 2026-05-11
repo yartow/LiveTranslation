@@ -16,12 +16,13 @@ import ExportDialog from '@/components/ExportDialog';
 import SessionHistoryDialog from '@/components/SessionHistoryDialog';
 import { ChunkBasedTranscription } from '@/lib/chunk-based-transcription';
 import { BrowserSpeechTranscription } from '@/lib/browser-speech-transcription';
+import { StreamingTranscription } from '@/lib/streaming-transcription';
 import { countSentences } from '@/lib/text-utils';
 import { LocalWhisperTranscription } from '@/lib/local-whisper-transcription';
 import { useAudioQuality } from '@/hooks/useAudioQuality';
 import { saveSession } from '@/lib/session-db';
 
-type AnyTranscriptionBackend = ChunkBasedTranscription | BrowserSpeechTranscription | LocalWhisperTranscription;
+type AnyTranscriptionBackend = StreamingTranscription | ChunkBasedTranscription | BrowserSpeechTranscription | LocalWhisperTranscription;
 
 interface TranscriptionSegment {
   original: string;
@@ -328,6 +329,24 @@ export default function Home() {
   }, [toast]);
 
   const startRecording = useCallback(async () => {
+    // ── Pre-flight API key validation ─────────────────────────────────────────
+    if (settings.translationProvider === 'claude' && !settings.anthropicApiKey?.trim()) {
+      toast({
+        title: 'Anthropic API key required',
+        description: 'Open Settings and enter your Anthropic API key to use Claude (Haiku).',
+        variant: 'destructive',
+      });
+      return;
+    }
+    if (settings.translationProvider === 'openai' && !settings.openaiApiKey?.trim()) {
+      toast({
+        title: 'OpenAI API key required',
+        description: 'Open Settings and enter your OpenAI API key to use GPT translation.',
+        variant: 'destructive',
+      });
+      return;
+    }
+
     try {
       setOriginalText('');
       setTranslatedText('');
@@ -459,11 +478,12 @@ export default function Home() {
           sermonContextRef.current,
         );
       } else {
-        const chunkBackend = new ChunkBasedTranscription(events, chunkDurationSecs * 1000);
-        backend = chunkBackend;
+        // Default: AssemblyAI real-time streaming (PCM16 over WebSocket)
+        const streamingBackend = new StreamingTranscription(events);
+        backend = streamingBackend;
         backendRef.current = backend;
-        if (settings.debugMode) addDebugLog('Connecting to transcription server…');
-        await chunkBackend.start(
+        if (settings.debugMode) addDebugLog('Requesting microphone and connecting to AssemblyAI…');
+        await streamingBackend.start(
           sourceLanguage,
           targetLanguage,
           detectSpeakers,
