@@ -623,38 +623,38 @@ export default function Home() {
             <div className="flex flex-wrap gap-x-6 gap-y-3">
               <div className="flex items-center gap-2">
                 <span className="text-sm text-muted-foreground">Mode</span>
-                <SegControl<SpeechMode>
+                <SegControl
                   options={[
                     { value: 'monologue', label: 'Monologue' },
                     { value: 'dialogue', label: 'Dialogue' },
-                  ]}
+                  ] as { value: SpeechMode; label: string }[]}
                   value={settings.speechMode}
-                  onChange={v => updateSettings({ speechMode: v })}
+                  onChange={v => updateSettings({ speechMode: v as SpeechMode })}
                   disabled={isRecording}
                 />
               </div>
 
               <div className="flex items-center gap-2">
                 <span className="text-sm text-muted-foreground">Show</span>
-                <SegControl<DisplayContent>
+                <SegControl
                   options={[
                     { value: 'original', label: 'Original' },
                     { value: 'translation', label: 'Translation' },
                     { value: 'both', label: 'Both' },
-                  ]}
+                  ] as { value: DisplayContent; label: string }[]}
                   value={settings.displayContent}
-                  onChange={v => updateSettings({ displayContent: v })}
+                  onChange={v => updateSettings({ displayContent: v as DisplayContent })}
                 />
               </div>
 
               {showTranslation && (
                 <div className="flex items-center gap-2">
                   <span className="text-sm text-muted-foreground">Style</span>
-                  <SegControl<TextDisplay>
+                  <SegControl
                     options={[
                       { value: 'subtitle', label: 'Subtitle' },
                       { value: 'stream', label: 'Stream' },
-                    ]}
+                    ] as { value: TextDisplay; label: string }[]}
                     value={settings.textDisplay}
                     onChange={v => updateSettings({ textDisplay: v })}
                   />

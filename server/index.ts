@@ -2,7 +2,7 @@ import express, { type Request, Response, NextFunction } from "express";
 import { registerRoutes } from "./routes";
 import { setupVite, serveStatic, log } from "./vite";
 import { WebSocketServer } from 'ws';
-import { setupChunkTranscriptionWebSocket } from './lib/chunk-transcription';
+import { setupStreamingWebSocket } from './lib/assemblyai-streaming';
 
 if (!process.env.OPENAI_API_KEY) {
   console.warn("Warning: OPENAI_API_KEY is not set — translation will fail");
@@ -116,7 +116,7 @@ app.use((req, res, next) => {
       // connections), which corrupts the already-established HMR WebSocket and
       // produces "Invalid frame header" in the browser.
       const wss = new WebSocketServer({ noServer: true, maxPayload: 10 * 1024 * 1024 });
-      setupChunkTranscriptionWebSocket(wss);
+      setupStreamingWebSocket(wss);
       wss.on('error', (err) => {
         console.error('WebSocket server error:', err);
       });
@@ -132,7 +132,7 @@ app.use((req, res, next) => {
         }
       });
 
-      log('WebSocket server set up for chunk-based transcription');
+      log('WebSocket server set up for AssemblyAI real-time streaming transcription');
     });
   }
 
