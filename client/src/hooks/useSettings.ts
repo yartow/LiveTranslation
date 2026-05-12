@@ -22,7 +22,7 @@ export interface AppSettings {
   debugMode: boolean;
 }
 
-const PREFS_KEY = 'sermonscribe_prefs';
+const PREFS_KEY = 'cttay_prefs';
 
 const defaultSettings: AppSettings = {
   openaiApiKey: '',

@@ -155,7 +155,7 @@ export default function ExportDialog({
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;
-    a.download = `sermon-transcript-${Date.now()}.${format}`;
+    a.download = `cttay-transcript-${Date.now()}.${format}`;
     
     document.body.appendChild(a);
     
@@ -170,7 +170,7 @@ export default function ExportDialog({
 
   const exportToGoogleDriveFunc = async (content: string, format: string) => {
     try {
-      const fileName = `sermon-transcript-${Date.now()}.${format}`;
+      const fileName = `cttay-transcript-${Date.now()}.${format}`;
       const mimeType = format === 'md' ? 'text/markdown' : 'text/plain';
       
       const response = await fetch('/api/upload-to-drive', {

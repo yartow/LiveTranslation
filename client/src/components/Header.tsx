@@ -12,7 +12,7 @@ export default function Header({ onThemeToggle, onSettingsOpen, isDark }: Header
       <div className="flex items-center justify-between h-12 px-4">
         <div className="flex items-center gap-2">
           <span className="w-2 h-2 rounded-full bg-primary" />
-          <h1 className="text-base font-semibold tracking-tight text-foreground">SermonScribe</h1>
+          <h1 className="text-base font-semibold tracking-tight text-foreground">CTT.AY</h1>
         </div>
         <div className="flex items-center gap-1">
           {onThemeToggle && (

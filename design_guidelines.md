@@ -1,4 +1,4 @@
-# Live Sermon Transcription & Translation App - Design Guidelines
+# CTT.AY - Design Guidelines
 
 ## Design Approach
 
