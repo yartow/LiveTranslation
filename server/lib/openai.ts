@@ -231,12 +231,12 @@ export async function formatForExport(
 
   if (exportType === 'original') {
     contentToFormat = originalText;
-    formatPrompt = `Format this sermon transcript for export. Add proper line breaks between paragraphs, correct punctuation, and make minor corrections where there are obvious misinterpretations. Mark any corrections you make with asterisks (e.g., "he went to *their* house" if you corrected "there" to "their"). ${formatInstructions}`;
+    formatPrompt = `Format this transcript for export. Add proper line breaks between paragraphs, correct punctuation, and make minor corrections where there are obvious misinterpretations. Mark any corrections you make with asterisks (e.g., "he went to *their* house" if you corrected "there" to "their"). ${formatInstructions}`;
   } else if (exportType === 'translation') {
     contentToFormat = translatedText;
-    formatPrompt = `Format this sermon transcript translation (in ${targetLanguageName}) for export. Add proper line breaks between paragraphs, correct punctuation, and make minor corrections where there are obvious misinterpretations. Mark any corrections you make with asterisks. ${formatInstructions}`;
+    formatPrompt = `Format this transcript translation (in ${targetLanguageName}) for export. Add proper line breaks between paragraphs, correct punctuation, and make minor corrections where there are obvious misinterpretations. Mark any corrections you make with asterisks. ${formatInstructions}`;
   } else {
-    formatPrompt = `Format both the original sermon transcript and its ${targetLanguageName} translation for side-by-side export. For each version:
+    formatPrompt = `Format both the original transcript and its ${targetLanguageName} translation for side-by-side export. For each version:
 1. Add proper line breaks between paragraphs
 2. Correct punctuation
 3. Make minor corrections where there are obvious misinterpretations
@@ -254,7 +254,7 @@ Translation (${targetLanguageName}): "${translatedText}"`;
     messages: [
       {
         role: 'system',
-        content: 'You are a helpful assistant that formats sermon transcripts for export. You add proper formatting, fix punctuation, and make minor corrections to obvious transcription errors. Always mark corrections with asterisks so readers can see what was changed.',
+        content: 'You are a helpful assistant that formats transcripts for export. You add proper formatting, fix punctuation, and make minor corrections to obvious transcription errors. Always mark corrections with asterisks so readers can see what was changed.',
       },
       {
         role: 'user',

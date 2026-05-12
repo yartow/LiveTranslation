@@ -1,17 +1,23 @@
-# SermonScribe
+# CTT.AY
 
-A mobile-first web application for real-time sermon transcription and multi-language translation. Designed for one-handed use during services — start it, put your phone down, read the live translation.
+**Contextual Transcriptions & Translations — Andrew Yong**
+Pronounced *"stay"*.
+
+A mobile-first web application for real-time audio transcription and multi-language translation. Designed for one-handed use — start it, put your phone down, read the live translation.
 
 ---
 
 ## What It Does
 
 - **Real-time transcription** — Captures spoken audio via the browser microphone and converts it to text using OpenAI Whisper (paid, high accuracy) or the free Browser Speech API.
-- **Automatic translation** — Translates each transcribed chunk into your chosen language using OpenAI GPT-4o-mini or Claude Haiku. Can also run translation-free (transcription only).
+- **On-device transcription** — Optional local Whisper via Transformers.js (tiny / small / medium models). Downloads once, runs entirely offline thereafter.
+- **Automatic translation** — Translates each transcribed chunk into your chosen language using OpenAI GPT-4o-mini or Claude. Can also run translation-free (transcription only).
 - **Live language switching** — Change the target language mid-recording; all accumulated text re-translates on the fly.
 - **Speaker detection** — Optionally identifies and labels different speakers.
 - **Retroactive correction** — Every 5 sentences, the AI reviews the full accumulated text for grammar and coherence.
 - **Export** — Download transcripts as plain text or Markdown, or upload directly to Google Drive.
+- **Session history** — Every recording is auto-saved to IndexedDB; browse, export, or delete past sessions.
+- **PWA** — Installable on Android (Chrome) and iOS (Share → Add to Home Screen); opens fullscreen with no browser chrome.
 - **RTL support** — Right-to-left layout for Arabic and Farsi.
 - **Dark/light theme** — Automatic detection with manual toggle.
 
@@ -62,9 +68,10 @@ All API keys are entered in the in-app Settings (⚙︎ icon). Keys are stored o
 | Provider | Cost | What it does |
 |---|---|---|
 | **OpenAI Whisper** | ~$0.006/min | Highest accuracy transcription |
+| **Local Whisper** | Free (after model download) | On-device Transformers.js inference |
 | **Browser Speech API** | Free | Transcription via the browser — Chrome/Edge only |
 | **OpenAI GPT-4o-mini** | ~$0.001/request | Fast translation + grammar correction |
-| **Claude Haiku** | Free tier available | High-quality translation |
+| **Claude** | Free tier available | High-quality translation |
 | **None** | Free | Raw transcription only, no translation or correction |
 
 **Fully free mode:** Browser Speech API + None translation. No API keys needed. Works best in Chrome or Edge on a desktop.
@@ -128,14 +135,17 @@ The server logs `Latency simulation enabled: +1500ms` as a reminder when this is
 
 ```
 Browser
-  ├── MediaRecorder  ──5 s chunks──►  WebSocket /ws/transcribe
+  ├── MediaRecorder  ──5 s chunks──►  WebSocket /ws/transcribe (max 10 MB)
   │     (Whisper path)                  ↓ ffmpeg (webm → mp3)
   │                                     ↓ OpenAI Whisper (transcription)
-  │                                     ↓ GPT-4o-mini / Claude Haiku (correct + translate)
+  │                                     ↓ GPT-4o-mini / Claude (correct + translate)
   │                                     ↓ ordered delivery back to browser
   │
+  ├── Transformers.js  ──on-device──►  Local Whisper (tiny / small / medium)
+  │     (Local Whisper path)            ↓ text sent to POST /api/translate
+  │
   └── SpeechRecognition API  ──final text──►  POST /api/translate
-        (Browser path, Chrome/Edge)            ↓ GPT-4o-mini / Claude Haiku
+        (Browser path, Chrome/Edge)            ↓ GPT-4o-mini / Claude
                                                ↓ JSON response to browser
 ```
 
@@ -145,7 +155,8 @@ Browser
 - **Audio format**: `audio/webm;codecs=opus` preferred; falls back to `audio/mp4` on iOS Safari.
 - **Raw preview**: Whisper's raw transcript is shown immediately as a grey preview while the correction/translation is still running.
 - **Retroactive correction**: Every 5 completed sentences the full accumulated text is sent back to the LLM for a coherence and grammar pass.
-- **Storage**: In-memory only — no database is required to run the app.
+- **Local Whisper**: Transformers.js models are downloaded once and cached by the browser; model sizes are ~40 MB (tiny), ~244 MB (small), ~769 MB (medium).
+- **Session history**: Every recording is auto-saved to IndexedDB; sessions expire after 30 days.
 
 ---
 
@@ -171,9 +182,12 @@ The regression suite tests specific bugs that have been fixed (chunk ordering, v
 | Backend | Node.js 20+, Express |
 | Routing | Wouter |
 | State | TanStack Query |
-| Transcription | OpenAI Whisper (chunk-based WS) or Browser SpeechRecognition |
-| Translation | OpenAI GPT-4o-mini or Claude Haiku (Anthropic) |
+| Transcription | OpenAI Whisper (chunk-based WS) · Transformers.js (local) · Browser SpeechRecognition |
+| Translation | OpenAI GPT-4o-mini · Claude (Anthropic) |
 | Audio processing | ffmpeg via fluent-ffmpeg |
+| Database | PostgreSQL via Drizzle ORM (Neon) |
+| File Storage | Google Drive API |
+| Offline / PWA | IndexedDB (session history) · Web App Manifest |
 | Testing | Vitest + Supertest |
 
 ---
@@ -186,9 +200,7 @@ With Whisper + GPT-4o-mini (both OpenAI):
 - **GPT-4o-mini**: ~$0.001 per transcription chunk (very cheap)
 - **Total**: roughly $0.01–0.02 per 1-hour session
 
-Claude Haiku pricing is similar. The Browser Speech + None combination is completely free.
-
----
+Claude pricing is similar. Local Whisper + None translation is completely free.
 
 ## Export Options
 
