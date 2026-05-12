@@ -736,12 +736,12 @@ export default function Home() {
       )}
 
       {/* ── Improve transcript bar ───────────────────────────────────────── */}
-      {originalText && (
+      {(isRecording || originalText) && (
         <div className="flex items-center gap-2 px-4 py-2 border-b border-border bg-background">
           <button
             type="button"
             onClick={improveTranscript}
-            disabled={isImproving || isRecording}
+            disabled={isImproving || !originalText}
             className="flex items-center gap-1.5 text-xs font-medium px-2.5 py-1.5 rounded-md border border-border bg-background hover:bg-muted/50 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
           >
             {isImproving
