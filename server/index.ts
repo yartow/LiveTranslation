@@ -72,6 +72,27 @@ app.use((req, res, next) => {
     throw err;
   });
 
+  // Register the WebSocket upgrade handler BEFORE setupVite.
+  // Vite registers its own HMR upgrade handler inside setupVite(); Node.js
+  // fires 'upgrade' listeners in registration order, so registering ours first
+  // ensures /ws/transcribe is claimed before Vite can intercept it and 404.
+  const wss = new WebSocketServer({ noServer: true, maxPayload: 10 * 1024 * 1024 });
+  setupStreamingWebSocket(wss);
+  wss.on('error', (err) => {
+    console.error('WebSocket server error:', err);
+  });
+
+  server.on('upgrade', (req, socket, head) => {
+    const pathname = req.url?.split('?')[0];
+    if (pathname === '/ws/transcribe') {
+      wss.handleUpgrade(req, socket, head, (ws) => {
+        wss.emit('connection', ws, req);
+      });
+    }
+    // All other upgrade requests (e.g. Vite HMR at /__vite_hmr) are left
+    // untouched so Vite's handler (registered below) can claim them.
+  });
+
   // importantly only setup vite in development and after
   // setting up all the other routes so the catch-all route
   // doesn't interfere with the other routes
@@ -105,34 +126,9 @@ app.use((req, res, next) => {
 
     server.once('error', onError);
     server.listen({ port, host: '0.0.0.0' }, () => {
-      // Success — remove the error handler so it doesn't linger
       server.removeListener('error', onError);
       log(`serving on port ${port}`);
-
-      // noServer mode: the WSS never attaches its own 'upgrade' listener to the
-      // http server, so it never calls abortHandshake() on requests that don't
-      // match our path. Without this, the ws library sends HTTP 400 + destroys
-      // the socket for every non-matching upgrade (including Vite's HMR
-      // connections), which corrupts the already-established HMR WebSocket and
-      // produces "Invalid frame header" in the browser.
-      const wss = new WebSocketServer({ noServer: true, maxPayload: 10 * 1024 * 1024 });
-      setupStreamingWebSocket(wss);
-      wss.on('error', (err) => {
-        console.error('WebSocket server error:', err);
-      });
-
-      // Manually route only /ws/transcribe upgrades to our WSS.
-      // All other upgrade requests (Vite HMR at /) are left untouched.
-      server.on('upgrade', (req, socket, head) => {
-        const pathname = req.url?.split('?')[0];
-        if (pathname === '/ws/transcribe') {
-          wss.handleUpgrade(req, socket, head, (ws) => {
-            wss.emit('connection', ws, req);
-          });
-        }
-      });
-
-      log('WebSocket server set up for AssemblyAI real-time streaming transcription');
+      log('WebSocket server ready for AssemblyAI real-time streaming transcription');
     });
   }
 

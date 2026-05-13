@@ -10,6 +10,7 @@ export class StreamingTranscription {
   private targetLanguage: string = 'nl';
   private detectSpeakers: boolean = false;
   private isConnected: boolean = false;
+  private debugMode: boolean = false;
 
   constructor(events: ChunkTranscriptionEvents) {
     this.events = events;
@@ -24,10 +25,11 @@ export class StreamingTranscription {
     _anthropicApiKey = '',
     _glossary = '',
     _sermonContext = '',
-    _debugMode = false,
+    debugMode = false,
   ): Promise<void> {
     this.targetLanguage = targetLanguage;
     this.detectSpeakers = detectSpeakers;
+    this.debugMode = debugMode;
 
     // ── Step 1: request mic FIRST ────────────────────────────────────────────
     // Safari iOS silently denies getUserMedia if it is called after an async
@@ -71,6 +73,7 @@ export class StreamingTranscription {
           type: 'start',
           targetLanguage: this.targetLanguage,
           detectSpeakers: this.detectSpeakers,
+          debugMode: this.debugMode,
         }));
       };
 
@@ -81,7 +84,7 @@ export class StreamingTranscription {
           switch (message.type) {
             case 'ready':
               this.isConnected = true;
-              this.events.onDebug?.('AssemblyAI session ready — starting audio pipeline');
+              this.events.onDebug?.('Server ready — starting audio pipeline…');
               try {
                 await this.startAudioProcessing();
                 this.events.onReady();
@@ -99,7 +102,6 @@ export class StreamingTranscription {
               break;
 
             case 'final':
-              // Show final text as a preview until translation arrives
               if (message.text) {
                 this.events.onRawTranscript(message.text, -1);
               }
@@ -111,6 +113,10 @@ export class StreamingTranscription {
 
             case 'error':
               this.events.onError(message.message ?? 'Transcription error');
+              break;
+
+            case 'debug':
+              this.events.onDebug?.(message.message as string);
               break;
           }
         } catch {
@@ -132,24 +138,34 @@ export class StreamingTranscription {
   }
 
   private async startAudioProcessing(): Promise<void> {
-    // Use the device's native sample rate — don't force 16 kHz.
-    // Safari on iOS typically uses 44 100 Hz or 48 000 Hz and will not honour
-    // a sampleRate override on AudioContext.
     const AudioCtx = window.AudioContext || (window as any).webkitAudioContext as typeof AudioContext;
     this.audioContext = new AudioCtx();
+    this.events.onDebug?.(`AudioContext created — sample rate: ${this.audioContext.sampleRate} Hz, state: ${this.audioContext.state}`);
 
-    // iOS requires AudioContext to be resumed from a user-gesture context.
     if (this.audioContext.state === 'suspended') {
+      this.events.onDebug?.('AudioContext suspended — resuming…');
       await this.audioContext.resume();
+      this.events.onDebug?.(`AudioContext resumed — state: ${this.audioContext.state}`);
     }
 
     const nativeRate = this.audioContext.sampleRate;
     const targetRate = 16_000;
-    const ratio = nativeRate / targetRate; // e.g. 3 for 48 kHz → 16 kHz
+    const ratio = nativeRate / targetRate;
 
     this.source = this.audioContext.createMediaStreamSource(this.mediaStream!);
-    // Buffer size 4096 gives ~85 ms at 48 kHz — small enough for low latency.
     this.processor = this.audioContext.createScriptProcessor(4096, 1, 1);
+
+    let framesSent = 0;
+    let framesSkipped = 0;
+    let debugInterval: ReturnType<typeof setInterval> | null = setInterval(() => {
+      if (!this.isConnected) {
+        if (debugInterval) { clearInterval(debugInterval); debugInterval = null; }
+        return;
+      }
+      this.events.onDebug?.(`Audio: ${framesSent} frames sent, ${framesSkipped} silent frames skipped in last 5s`);
+      framesSent = 0;
+      framesSkipped = 0;
+    }, 5000);
 
     this.processor.onaudioprocess = (event) => {
       if (!this.isConnected || !this.ws || this.ws.readyState !== WebSocket.OPEN) return;
@@ -159,9 +175,9 @@ export class StreamingTranscription {
       // Silence gate — skip frames that are just background noise
       let sum = 0;
       for (let i = 0; i < input.length; i++) sum += Math.abs(input[i]);
-      if (sum / input.length < 0.01) return;
+      if (sum / input.length < 0.01) { framesSkipped++; return; }
 
-      // Downsample to 16 kHz via nearest-neighbour (good enough for speech)
+      // Downsample to 16 kHz via nearest-neighbour
       const outLen = Math.floor(input.length / ratio);
       const resampled = new Float32Array(outLen);
       for (let i = 0; i < outLen; i++) {
@@ -176,10 +192,12 @@ export class StreamingTranscription {
       }
 
       this.ws!.send(pcm16.buffer);
+      framesSent++;
     };
 
     this.source.connect(this.processor);
     this.processor.connect(this.audioContext.destination);
+    this.events.onDebug?.('Audio pipeline connected — sending PCM16 to server');
   }
 
   private stopMediaStream(): void {
