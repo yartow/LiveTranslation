@@ -91,6 +91,15 @@ export default function Home() {
   const [lookbackChars, setLookbackChars] = useState(() => {
     try { return parseInt(localStorage.getItem('lookbackChars') || '1000', 10) || 1000; } catch { return 1000; }
   });
+  const [webGpuSupported, setWebGpuSupported] = useState<boolean | null>(null);
+
+  useEffect(() => {
+    if (!('gpu' in navigator)) { setWebGpuSupported(false); return; }
+    (navigator as Navigator & { gpu: { requestAdapter(): Promise<unknown> } }).gpu
+      .requestAdapter()
+      .then(a => setWebGpuSupported(a !== null))
+      .catch(() => setWebGpuSupported(false));
+  }, []);
 
   const [subtitleCurrent, setSubtitleCurrent] = useState('');
   const [subtitlePrevious, setSubtitlePrevious] = useState('');
@@ -900,6 +909,7 @@ export default function Home() {
         onClose={() => setIsSettingsOpen(false)}
         settings={settings}
         onUpdate={updateSettings}
+        webGpuSupported={webGpuSupported}
       />
 
       <SessionHistoryDialog
