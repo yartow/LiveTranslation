@@ -28,6 +28,7 @@ interface SettingsDialogProps {
   onClose: () => void;
   settings: AppSettings;
   onUpdate: (updates: Partial<AppSettings>) => void;
+  webGpuSupported?: boolean | null;
 }
 
 interface ApiKeyFieldProps {
@@ -86,8 +87,8 @@ function ApiKeyField({ label, placeholder, description, value, onChange, keyPref
       </div>
 
       {!isEditing && isSet ? (
-        <div className="flex items-center gap-2">
-          <code className="flex-1 text-xs bg-muted rounded px-3 py-2 font-mono text-muted-foreground overflow-hidden text-ellipsis whitespace-nowrap">
+        <div className="flex items-center gap-2 min-w-0">
+          <code className="flex-1 min-w-0 text-xs bg-muted rounded px-3 py-2 font-mono text-muted-foreground overflow-hidden text-ellipsis whitespace-nowrap">
             {maskKey(value)}
           </code>
           <Button
@@ -145,10 +146,15 @@ function ApiKeyField({ label, placeholder, description, value, onChange, keyPref
   );
 }
 
-export default function SettingsDialog({ isOpen, onClose, settings, onUpdate }: SettingsDialogProps) {
+export default function SettingsDialog({ isOpen, onClose, settings, onUpdate, webGpuSupported }: SettingsDialogProps) {
+  const hasOpenAIKey = settings.openaiApiKey.length > 0;
+  const hasAnthropicKey = settings.anthropicApiKey.length > 0;
+  const noWebGpu = webGpuSupported === false;
+  const isBrave = typeof (window.navigator as any).brave !== 'undefined';
+
   return (
     <Dialog open={isOpen} onOpenChange={onClose}>
-      <DialogContent className="sm:max-w-[500px] max-h-[90vh] overflow-y-auto" data-testid="dialog-settings">
+      <DialogContent className="w-[calc(100vw-2rem)] sm:w-[66vw] max-h-[90vh] overflow-y-auto overflow-x-hidden" data-testid="dialog-settings">
         <DialogHeader>
           <DialogTitle>Settings</DialogTitle>
         </DialogHeader>
@@ -192,17 +198,23 @@ export default function SettingsDialog({ isOpen, onClose, settings, onUpdate }: 
               value={settings.transcriptionProvider}
               onValueChange={(v) => onUpdate({ transcriptionProvider: v as TranscriptionProvider })}
             >
-              <div className="flex items-start gap-3 rounded-md border border-border p-3">
-                <RadioGroupItem value="whisper" id="t-whisper" className="mt-0.5" />
+              {/* OpenAI Whisper — requires OpenAI key */}
+              <div className={`flex items-start gap-3 rounded-md border border-border p-3 transition-opacity ${!hasOpenAIKey ? 'opacity-50' : ''}`}>
+                <RadioGroupItem value="whisper" id="t-whisper" className="mt-0.5" disabled={!hasOpenAIKey} />
                 <div>
-                  <Label htmlFor="t-whisper" className="font-medium cursor-pointer">
-                    OpenAI Whisper
+                  <Label htmlFor="t-whisper" className={`font-medium ${hasOpenAIKey ? 'cursor-pointer' : 'cursor-not-allowed'}`}>
+                    OpenAI Whisper (gpt-4o-transcribe)
                   </Label>
                   <p className="text-xs text-muted-foreground mt-0.5">
-                    High accuracy across 50+ languages. Requires an OpenAI API key.
+                    Highest accuracy across 50+ languages. Same engine as ChatGPT voice.
                   </p>
+                  {!hasOpenAIKey && (
+                    <p className="text-xs text-amber-600 dark:text-amber-400 mt-0.5">Enter an OpenAI API key above to enable.</p>
+                  )}
                 </div>
               </div>
+
+              {/* Browser Speech — always available */}
               <div className="flex items-start gap-3 rounded-md border border-border p-3">
                 <RadioGroupItem value="browser" id="t-browser" className="mt-0.5" />
                 <div>
@@ -211,21 +223,34 @@ export default function SettingsDialog({ isOpen, onClose, settings, onUpdate }: 
                     <span className="text-xs font-normal text-green-600 dark:text-green-400">free</span>
                   </Label>
                   <p className="text-xs text-muted-foreground mt-0.5">
-                    No API key required. Best in Chrome or Edge. Lower accuracy and limited language support compared to Whisper.
+                    No API key required. Best in Chrome or Edge. Lower accuracy than Whisper.
                   </p>
+                  {isBrave && (
+                    <p className="text-xs text-amber-600 dark:text-amber-400 mt-0.5">
+                      Brave blocks Google's speech service by default. Disable Shields for this page, or use OpenAI Whisper instead.
+                    </p>
+                  )}
                 </div>
               </div>
-              <div className="flex items-start gap-3 rounded-md border border-border p-3">
-                <RadioGroupItem value="transformers" id="t-transformers" className="mt-0.5" />
+
+              {/* Local Whisper — requires WebGPU */}
+              <div className={`flex items-start gap-3 rounded-md border border-border p-3 transition-opacity ${noWebGpu ? 'opacity-50' : ''}`}>
+                <RadioGroupItem value="transformers" id="t-transformers" className="mt-0.5" disabled={noWebGpu} />
                 <div className="flex-1">
-                  <Label htmlFor="t-transformers" className="font-medium cursor-pointer">
+                  <Label htmlFor="t-transformers" className={`font-medium ${noWebGpu ? 'cursor-not-allowed' : 'cursor-pointer'}`}>
                     Local Whisper (Transformers.js){' '}
                     <span className="text-xs font-normal text-green-600 dark:text-green-400">free · offline</span>
                   </Label>
-                  <p className="text-xs text-muted-foreground mt-0.5">
-                    Runs Whisper in your browser. No API key needed. First use downloads the model once and caches it.
-                  </p>
-                  {settings.transcriptionProvider === 'transformers' && (
+                  {noWebGpu ? (
+                    <p className="text-xs text-amber-600 dark:text-amber-400 mt-0.5">
+                      WebGPU is not available in this browser. Use Chrome or Edge for local inference.
+                    </p>
+                  ) : (
+                    <p className="text-xs text-muted-foreground mt-0.5">
+                      Runs Whisper in your browser. No API key needed. First use downloads the model once.
+                    </p>
+                  )}
+                  {settings.transcriptionProvider === 'transformers' && !noWebGpu && (
                     <div className="mt-2">
                       <Select
                         value={settings.localWhisperModel}
@@ -237,7 +262,9 @@ export default function SettingsDialog({ isOpen, onClose, settings, onUpdate }: 
                         <SelectContent>
                           <SelectItem value="tiny">Tiny (~40 MB) — fastest, lower accuracy</SelectItem>
                           <SelectItem value="small">Small (~244 MB) — recommended</SelectItem>
-                          <SelectItem value="medium">Medium (~769 MB) — near-OpenAI quality, slow on mobile</SelectItem>
+                          <SelectItem value="medium">
+                            Medium (~769 MB) — high accuracy, requires strong WebGPU support
+                          </SelectItem>
                         </SelectContent>
                       </Select>
                     </div>
@@ -256,28 +283,39 @@ export default function SettingsDialog({ isOpen, onClose, settings, onUpdate }: 
               value={settings.translationProvider}
               onValueChange={(v) => onUpdate({ translationProvider: v as TranslationProvider })}
             >
-              <div className="flex items-start gap-3 rounded-md border border-border p-3">
-                <RadioGroupItem value="openai" id="tr-openai" className="mt-0.5" />
+              {/* GPT-4o-mini — requires OpenAI key */}
+              <div className={`flex items-start gap-3 rounded-md border border-border p-3 transition-opacity ${!hasOpenAIKey ? 'opacity-50' : ''}`}>
+                <RadioGroupItem value="openai" id="tr-openai" className="mt-0.5" disabled={!hasOpenAIKey} />
                 <div>
-                  <Label htmlFor="tr-openai" className="font-medium cursor-pointer">
+                  <Label htmlFor="tr-openai" className={`font-medium ${hasOpenAIKey ? 'cursor-pointer' : 'cursor-not-allowed'}`}>
                     OpenAI GPT-4o-mini
                   </Label>
                   <p className="text-xs text-muted-foreground mt-0.5">
-                    Fast correction and translation. Requires an OpenAI API key.
+                    Fast correction and translation.
                   </p>
+                  {!hasOpenAIKey && (
+                    <p className="text-xs text-amber-600 dark:text-amber-400 mt-0.5">Enter an OpenAI API key above to enable.</p>
+                  )}
                 </div>
               </div>
-              <div className="flex items-start gap-3 rounded-md border border-border p-3">
-                <RadioGroupItem value="claude" id="tr-claude" className="mt-0.5" />
+
+              {/* Claude Haiku — requires Anthropic key */}
+              <div className={`flex items-start gap-3 rounded-md border border-border p-3 transition-opacity ${!hasAnthropicKey ? 'opacity-50' : ''}`}>
+                <RadioGroupItem value="claude" id="tr-claude" className="mt-0.5" disabled={!hasAnthropicKey} />
                 <div>
-                  <Label htmlFor="tr-claude" className="font-medium cursor-pointer">
+                  <Label htmlFor="tr-claude" className={`font-medium ${hasAnthropicKey ? 'cursor-pointer' : 'cursor-not-allowed'}`}>
                     Claude Haiku (Anthropic)
                   </Label>
                   <p className="text-xs text-muted-foreground mt-0.5">
-                    Excellent translation quality. Requires an Anthropic API key. Anthropic offers a free tier.
+                    Excellent translation quality. Anthropic offers a free tier.
                   </p>
+                  {!hasAnthropicKey && (
+                    <p className="text-xs text-amber-600 dark:text-amber-400 mt-0.5">Enter an Anthropic API key above to enable.</p>
+                  )}
                 </div>
               </div>
+
+              {/* None — always available */}
               <div className="flex items-start gap-3 rounded-md border border-border p-3">
                 <RadioGroupItem value="none" id="tr-none" className="mt-0.5" />
                 <div>

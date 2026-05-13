@@ -85,7 +85,16 @@ export class BrowserSpeechTranscription {
 
     rec.onerror = (event: any) => {
       if (event.error === 'not-allowed') {
+        this.intentionalStop = true;
         this.events.onError('Microphone access denied. Please allow microphone access and try again.');
+      } else if (event.error === 'network') {
+        this.intentionalStop = true; // prevent restart loop
+        const isBrave = typeof (window.navigator as any).brave !== 'undefined';
+        this.events.onError(
+          isBrave
+            ? 'Brave is blocking Google\'s speech service. Go to Brave Shields (lion icon) → disable for this page, then try again. Or switch to OpenAI Whisper in Settings.'
+            : 'Could not reach Google\'s speech recognition service. Check your internet connection, or switch to OpenAI Whisper in Settings.',
+        );
       } else if (event.error !== 'no-speech') {
         this.events.onError(`Speech recognition error: ${event.error}`);
       }
