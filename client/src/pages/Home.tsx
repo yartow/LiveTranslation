@@ -231,7 +231,8 @@ export default function Home() {
   }, []);
 
   const improveTranscript = useCallback(async () => {
-    const fullOriginal = originalText;
+    // Use all visible text — combine finalized + live preview if recording
+    const fullOriginal = originalText + (previewText ? (originalText ? ' ' : '') + previewText : '');
     if (!fullOriginal || isImproving) return;
 
     setIsImproving(true);
@@ -290,7 +291,7 @@ export default function Home() {
     } finally {
       setIsImproving(false);
     }
-  }, [originalText, lookbackChars, isImproving, toast]);
+  }, [originalText, previewText, lookbackChars, isImproving, toast]);
 
   const toggleTheme = () => {
     const next = !isDark;
@@ -749,7 +750,7 @@ export default function Home() {
           <button
             type="button"
             onClick={improveTranscript}
-            disabled={isImproving || !originalText}
+            disabled={isImproving || (!originalText && !previewText)}
             className="flex items-center gap-1.5 text-xs font-medium px-2.5 py-1.5 rounded-md border border-border bg-background hover:bg-muted/50 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
           >
             {isImproving

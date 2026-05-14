@@ -87,8 +87,8 @@ function ApiKeyField({ label, placeholder, description, value, onChange, keyPref
       </div>
 
       {!isEditing && isSet ? (
-        <div className="flex items-center gap-2 min-w-0">
-          <code className="flex-1 min-w-0 text-xs bg-muted rounded px-3 py-2 font-mono text-muted-foreground overflow-hidden text-ellipsis whitespace-nowrap">
+        <div className="flex items-center gap-2 min-w-0 overflow-hidden">
+          <code className="block flex-1 min-w-0 text-xs bg-muted rounded px-3 py-2 font-mono text-muted-foreground overflow-hidden text-ellipsis whitespace-nowrap">
             {maskKey(value)}
           </code>
           <Button
@@ -154,7 +154,7 @@ export default function SettingsDialog({ isOpen, onClose, settings, onUpdate, we
 
   return (
     <Dialog open={isOpen} onOpenChange={onClose}>
-      <DialogContent className="w-[calc(100vw-2rem)] sm:w-[66vw] max-h-[90vh] overflow-y-auto overflow-x-hidden" data-testid="dialog-settings">
+      <DialogContent className="w-full max-w-[calc(100vw-2rem)] sm:max-w-2xl max-h-[90vh] overflow-y-auto overflow-x-hidden" data-testid="dialog-settings">
         <DialogHeader>
           <DialogTitle>Settings</DialogTitle>
         </DialogHeader>
@@ -403,7 +403,7 @@ export default function SettingsDialog({ isOpen, onClose, settings, onUpdate, we
             <p className="text-xs text-muted-foreground">
               These languages are pre-selected when you open the app. You can always change them per session.
             </p>
-            <div className="grid grid-cols-2 gap-3">
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
               <LanguageSelector
                 value={settings.defaultSourceLanguage}
                 onChange={(v) => onUpdate({ defaultSourceLanguage: v })}

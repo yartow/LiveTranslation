@@ -7,6 +7,7 @@ export class StreamingTranscription {
   private processor: ScriptProcessorNode | null = null;
   private source: MediaStreamAudioSourceNode | null = null;
   private events: ChunkTranscriptionEvents;
+  private sourceLanguage: string = 'en';
   private targetLanguage: string = 'nl';
   private detectSpeakers: boolean = false;
   private isConnected: boolean = false;
@@ -17,7 +18,7 @@ export class StreamingTranscription {
   }
 
   async start(
-    _sourceLanguage: string,
+    sourceLanguage: string,
     targetLanguage: string,
     detectSpeakers: boolean,
     _translationProvider: TranslationProvider = 'openai',
@@ -27,6 +28,7 @@ export class StreamingTranscription {
     _sermonContext = '',
     debugMode = false,
   ): Promise<void> {
+    this.sourceLanguage = sourceLanguage;
     this.targetLanguage = targetLanguage;
     this.detectSpeakers = detectSpeakers;
     this.debugMode = debugMode;
@@ -71,6 +73,7 @@ export class StreamingTranscription {
         this.events.onDebug?.('WebSocket open — starting AssemblyAI session…');
         ws.send(JSON.stringify({
           type: 'start',
+          sourceLanguage: this.sourceLanguage,
           targetLanguage: this.targetLanguage,
           detectSpeakers: this.detectSpeakers,
           debugMode: this.debugMode,
