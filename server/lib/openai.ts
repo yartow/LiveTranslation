@@ -172,7 +172,11 @@ export async function retroactiveCorrection(
 6. Ensure speaker consistency throughout the text`
     : '';
 
-  const contextSection = buildContextSection(glossary, sermonContext);
+  // Only pass sermonContext to buildContextSection; glossary gets its own explicit instruction below
+  const contextSection = buildContextSection(undefined, sermonContext);
+  const glossarySection = glossary?.trim()
+    ? `\n\nTHEOLOGICAL GLOSSARY — if a transcribed word sounds like one of these terms, replace it with the correct term:\n${glossary.trim()}`
+    : '';
   const timeout = AbortSignal.timeout(30_000);
   const combinedSignal = signal ? AbortSignal.any([timeout, signal]) : timeout;
 
@@ -182,21 +186,25 @@ export async function retroactiveCorrection(
       messages: [
         {
           role: 'system',
-          content: `You are a helpful assistant that performs retroactive coherence checking and grammar correction on accumulated transcribed text.${contextSection}
+          content: `You are a professional transcription editor specialising in theological and sermon content. Fix the raw speech recognition output below.${contextSection}${glossarySection}
 
-Your tasks:
-1. Review the accumulated text for overall coherence and flow
-2. Check if any words were transcribed incorrectly based on context (e.g., "their" vs "there", "to" vs "too")
-3. Fix any grammar mistakes, tense inconsistencies, or word choice errors
-4. Preserve the original meaning and speaking style - only fix errors, don't rewrite
-5. Format the text like prose in a book - write sentences continuously in paragraphs
-6. ONLY add a new paragraph (line break) when the speaker changes topics
-7. Translate the corrected text to ${targetLanguageName} following the same formatting rules
-8. Return JSON with this exact format: { "correctedText": "corrected original text", "translatedText": "translation in ${targetLanguageName}" }${speakerInstructions}`,
+CORRECTION RULES — apply all of them aggressively:
+1. Fix ASR homophones and near-misses — choose the word that makes most sense in context (e.g. pray/prey, alter/altar, hole/whole/holy, their/there/they're, to/too/two, word/world, peace/piece, bread/bred, verse/voice, grace/greys, reign/rain/rein, soul/sole, profit/prophet, wine/whine)
+2. Correct ALL spelling errors including proper nouns and theological terms
+3. Apply the theological glossary — replace any transcribed word that sounds like a glossary term with the correct term
+4. If a phrase is semantically incoherent or makes no sense, infer what the speaker most likely said and write that instead
+5. Add proper punctuation: sentence-ending periods, commas for natural pauses, question marks, exclamation points where appropriate
+6. Capitalise the first word of each sentence and all proper nouns (God, Jesus, Christ, Holy Spirit, Bible, Lord, Scripture, etc.)
+7. Fix sentence fragments and run-ons — produce clean, complete sentences
+8. Remove filler words (um, uh, like, you know, er, so), stutters, and false starts
+9. Do NOT paraphrase, summarise, or change the speaker's meaning or structure — only fix errors
+10. Format as flowing prose paragraphs; add a new paragraph only when the topic clearly shifts
+11. Translate the corrected text to ${targetLanguageName} with the same formatting and paragraph structure
+12. Return ONLY valid JSON: { "correctedText": "corrected original text", "translatedText": "translation in ${targetLanguageName}" }${speakerInstructions}`,
         },
         {
           role: 'user',
-          content: `Accumulated transcription to review and correct: "${accumulatedText}"`,
+          content: `Raw transcription to correct: "${accumulatedText}"`,
         },
       ],
       response_format: { type: 'json_object' },

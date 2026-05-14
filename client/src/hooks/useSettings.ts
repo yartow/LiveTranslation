@@ -2,6 +2,7 @@ import { useState, useCallback } from 'react';
 
 export type TranscriptionProvider = 'whisper' | 'browser' | 'transformers';
 export type TranslationProvider = 'openai' | 'claude' | 'none';
+export type ImprovementProvider = 'openai' | 'claude';
 export type SpeechMode = 'monologue' | 'dialogue';
 export type DisplayContent = 'original' | 'translation' | 'both';
 export type TextDisplay = 'subtitle' | 'stream';
@@ -12,6 +13,8 @@ export interface AppSettings {
   anthropicApiKey: string;
   transcriptionProvider: TranscriptionProvider;
   translationProvider: TranslationProvider;
+  improvementProvider: ImprovementProvider;
+  defaultLookbackChars: number;
   speechMode: SpeechMode;
   displayContent: DisplayContent;
   textDisplay: TextDisplay;
@@ -29,6 +32,8 @@ const defaultSettings: AppSettings = {
   anthropicApiKey: '',
   transcriptionProvider: 'whisper',
   translationProvider: 'openai',
+  improvementProvider: 'openai',
+  defaultLookbackChars: 1000,
   speechMode: 'monologue',
   displayContent: 'translation',
   textDisplay: 'subtitle',
@@ -41,6 +46,7 @@ const defaultSettings: AppSettings = {
 
 const VALID_TRANSCRIPTION: TranscriptionProvider[] = ['whisper', 'browser', 'transformers'];
 const VALID_TRANSLATION: TranslationProvider[] = ['openai', 'claude', 'none'];
+const VALID_IMPROVEMENT: ImprovementProvider[] = ['openai', 'claude'];
 const VALID_LOCAL_MODEL: LocalWhisperModel[] = ['tiny', 'small', 'medium'];
 
 function loadSettings(): AppSettings {
@@ -66,6 +72,12 @@ function loadSettings(): AppSettings {
   if (!VALID_TRANSLATION.includes(merged.translationProvider)) {
     merged.translationProvider = defaultSettings.translationProvider;
   }
+  if (!VALID_IMPROVEMENT.includes(merged.improvementProvider)) {
+    merged.improvementProvider = defaultSettings.improvementProvider;
+  }
+  if (typeof merged.defaultLookbackChars !== 'number' || merged.defaultLookbackChars < 100) {
+    merged.defaultLookbackChars = defaultSettings.defaultLookbackChars;
+  }
   if (!VALID_LOCAL_MODEL.includes(merged.localWhisperModel)) {
     merged.localWhisperModel = defaultSettings.localWhisperModel;
   }
@@ -85,6 +97,8 @@ export function useSettings() {
         localStorage.setItem(PREFS_KEY, JSON.stringify({
           transcriptionProvider: next.transcriptionProvider,
           translationProvider: next.translationProvider,
+          improvementProvider: next.improvementProvider,
+          defaultLookbackChars: next.defaultLookbackChars,
           localWhisperModel: next.localWhisperModel,
           speechMode: next.speechMode,
           displayContent: next.displayContent,
