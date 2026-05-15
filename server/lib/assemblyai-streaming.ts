@@ -107,9 +107,23 @@ export function setupStreamingWebSocket(wss: WebSocketServer) {
 
           if (message.type === 'start') {
             const debugMode: boolean = message.debugMode ?? false;
-            const sourceLanguage: string = message.sourceLanguage || 'en';
-            console.log('Starting AssemblyAI streaming session (lang:', sourceLanguage, ', debug:', debugMode, ')');
-            sendDebug(clientWs, `Server received start — language: ${sourceLanguage}`, debugMode);
+            const sourceLanguage: string = message.sourceLanguage || 'auto';
+
+            // English → dedicated English model (higher accuracy).
+            // Any other specific language → multilingual model with languageDetection off.
+            // 'auto' or unknown → multilingual model with languageDetection on.
+            const isEnglish = sourceLanguage === 'en';
+            const isAuto = !sourceLanguage || sourceLanguage === 'auto';
+            const speechModel = isEnglish
+              ? 'universal-streaming-english'
+              : 'universal-streaming-multilingual';
+            const useLanguageDetection = isAuto;
+
+            console.log('Starting AssemblyAI streaming session (lang:', sourceLanguage, ', model:', speechModel, ', debug:', debugMode, ')');
+            const langDesc = isAuto
+              ? `auto-detect (languageDetection: true)`
+              : `${sourceLanguage} → speechModel: ${speechModel}`;
+            sendDebug(clientWs, `Server received start — ${langDesc}`, debugMode);
 
             if (!client) {
               sendError(clientWs, 'AssemblyAI API key is not configured on the server. Set ASSEMBLYAI_API_KEY in your .env file.');
@@ -117,13 +131,14 @@ export function setupStreamingWebSocket(wss: WebSocketServer) {
               return;
             }
 
-            sendDebug(clientWs, `Creating AssemblyAI streaming transcriber (language: ${sourceLanguage})…`, debugMode);
+            sendDebug(clientWs, `Creating AssemblyAI streaming transcriber (${langDesc})…`, debugMode);
 
             let streamingWs: any;
             try {
               streamingWs = client.streaming.transcriber({
                 sampleRate: 16000,
-                languageDetection: true,
+                speechModel,
+                languageDetection: useLanguageDetection,
                 keytermsPrompt: ['sermon', 'scripture', 'bible', 'gospel', 'faith', 'prayer', 'amen'],
                 formatTurns: true,
               });
