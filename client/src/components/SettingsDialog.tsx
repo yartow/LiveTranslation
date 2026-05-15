@@ -20,7 +20,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/select';
-import type { AppSettings, TranscriptionProvider, TranslationProvider, LocalWhisperModel } from '@/hooks/useSettings';
+import type { AppSettings, TranscriptionProvider, TranslationProvider, ImprovementProvider, LocalWhisperModel } from '@/hooks/useSettings';
 import { maskKey } from '@/lib/mask-key';
 
 interface SettingsDialogProps {
@@ -87,8 +87,8 @@ function ApiKeyField({ label, placeholder, description, value, onChange, keyPref
       </div>
 
       {!isEditing && isSet ? (
-        <div className="flex items-center gap-2 min-w-0">
-          <code className="flex-1 min-w-0 text-xs bg-muted rounded px-3 py-2 font-mono text-muted-foreground overflow-hidden text-ellipsis whitespace-nowrap">
+        <div className="flex items-center gap-2 min-w-0 overflow-hidden">
+          <code className="block flex-1 min-w-0 text-xs bg-muted rounded px-3 py-2 font-mono text-muted-foreground overflow-hidden text-ellipsis whitespace-nowrap">
             {maskKey(value)}
           </code>
           <Button
@@ -154,7 +154,7 @@ export default function SettingsDialog({ isOpen, onClose, settings, onUpdate, we
 
   return (
     <Dialog open={isOpen} onOpenChange={onClose}>
-      <DialogContent className="w-[calc(100vw-2rem)] sm:w-[66vw] max-h-[90vh] overflow-y-auto overflow-x-hidden" data-testid="dialog-settings">
+      <DialogContent className="w-full max-w-[calc(100vw-2rem)] sm:max-w-2xl max-h-[90vh] overflow-y-auto overflow-x-hidden" data-testid="dialog-settings">
         <DialogHeader>
           <DialogTitle>Settings</DialogTitle>
         </DialogHeader>
@@ -331,6 +331,70 @@ export default function SettingsDialog({ isOpen, onClose, settings, onUpdate, we
             </RadioGroup>
           </section>
 
+          {/* ── Improve Transcription ── */}
+          <section className="space-y-3">
+            <h3 className="text-sm font-semibold text-foreground border-b border-border pb-1">
+              Improve Transcription
+            </h3>
+            <p className="text-xs text-muted-foreground">
+              The "Improve" button re-processes the last N characters with an LLM to fix spelling,
+              punctuation, theological terms, and incoherent ASR output.
+            </p>
+
+            <div className="space-y-1">
+              <Label className="text-xs font-medium">Provider</Label>
+              <RadioGroup
+                value={settings.improvementProvider}
+                onValueChange={(v) => onUpdate({ improvementProvider: v as ImprovementProvider })}
+              >
+                <div className={`flex items-start gap-3 rounded-md border border-border p-3 transition-opacity ${!hasOpenAIKey ? 'opacity-50' : ''}`}>
+                  <RadioGroupItem value="openai" id="imp-openai" className="mt-0.5" disabled={!hasOpenAIKey} />
+                  <div>
+                    <Label htmlFor="imp-openai" className={`font-medium ${hasOpenAIKey ? 'cursor-pointer' : 'cursor-not-allowed'}`}>
+                      OpenAI GPT-4o-mini
+                    </Label>
+                    <p className="text-xs text-muted-foreground mt-0.5">Fast correction.</p>
+                    {!hasOpenAIKey && (
+                      <p className="text-xs text-amber-600 dark:text-amber-400 mt-0.5">Enter an OpenAI API key above to enable.</p>
+                    )}
+                  </div>
+                </div>
+                <div className={`flex items-start gap-3 rounded-md border border-border p-3 transition-opacity ${!hasAnthropicKey ? 'opacity-50' : ''}`}>
+                  <RadioGroupItem value="claude" id="imp-claude" className="mt-0.5" disabled={!hasAnthropicKey} />
+                  <div>
+                    <Label htmlFor="imp-claude" className={`font-medium ${hasAnthropicKey ? 'cursor-pointer' : 'cursor-not-allowed'}`}>
+                      Claude Haiku (Anthropic)
+                    </Label>
+                    <p className="text-xs text-muted-foreground mt-0.5">High-quality correction and theological term handling.</p>
+                    {!hasAnthropicKey && (
+                      <p className="text-xs text-amber-600 dark:text-amber-400 mt-0.5">Enter an Anthropic API key above to enable.</p>
+                    )}
+                  </div>
+                </div>
+              </RadioGroup>
+            </div>
+
+            <div className="flex items-center gap-3">
+              <Label htmlFor="default-lookback" className="text-xs font-medium whitespace-nowrap">
+                Default chars to improve
+              </Label>
+              <Input
+                id="default-lookback"
+                type="number"
+                min={100}
+                max={9999}
+                step={100}
+                value={settings.defaultLookbackChars}
+                onChange={(e) => {
+                  const v = parseInt(e.target.value, 10);
+                  if (!isNaN(v) && v >= 100) onUpdate({ defaultLookbackChars: v });
+                }}
+                className="w-24 text-xs text-center"
+              />
+              <span className="text-xs text-muted-foreground">chars</span>
+            </div>
+          </section>
+
           {/* ── Default Languages ── */}
           <section className="space-y-3">
             <h3 className="text-sm font-semibold text-foreground border-b border-border pb-1">
@@ -339,7 +403,7 @@ export default function SettingsDialog({ isOpen, onClose, settings, onUpdate, we
             <p className="text-xs text-muted-foreground">
               These languages are pre-selected when you open the app. You can always change them per session.
             </p>
-            <div className="grid grid-cols-2 gap-3">
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
               <LanguageSelector
                 value={settings.defaultSourceLanguage}
                 onChange={(v) => onUpdate({ defaultSourceLanguage: v })}

@@ -107,8 +107,9 @@ export function setupStreamingWebSocket(wss: WebSocketServer) {
 
           if (message.type === 'start') {
             const debugMode: boolean = message.debugMode ?? false;
-            console.log('Starting AssemblyAI streaming session (debug:', debugMode, ')');
-            sendDebug(clientWs, 'Server received start — checking AssemblyAI API key…', debugMode);
+            const sourceLanguage: string = message.sourceLanguage || 'en';
+            console.log('Starting AssemblyAI streaming session (lang:', sourceLanguage, ', debug:', debugMode, ')');
+            sendDebug(clientWs, `Server received start — language: ${sourceLanguage}`, debugMode);
 
             if (!client) {
               sendError(clientWs, 'AssemblyAI API key is not configured on the server. Set ASSEMBLYAI_API_KEY in your .env file.');
@@ -116,12 +117,13 @@ export function setupStreamingWebSocket(wss: WebSocketServer) {
               return;
             }
 
-            sendDebug(clientWs, 'Creating AssemblyAI streaming transcriber…', debugMode);
+            sendDebug(clientWs, `Creating AssemblyAI streaming transcriber (language: ${sourceLanguage})…`, debugMode);
 
             let streamingWs: any;
             try {
               streamingWs = client.streaming.transcriber({
                 sampleRate: 16000,
+                languageDetection: true,
                 keytermsPrompt: ['sermon', 'scripture', 'bible', 'gospel', 'faith', 'prayer', 'amen'],
                 formatTurns: true,
               });

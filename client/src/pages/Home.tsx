@@ -88,9 +88,8 @@ export default function Home() {
   const [chunkDurationSecs, setChunkDurationSecs] = useState(5);
   const [debugLogs, setDebugLogs] = useState<string[]>([]);
   const [isImproving, setIsImproving] = useState(false);
-  const [lookbackChars, setLookbackChars] = useState(() => {
-    try { return parseInt(localStorage.getItem('lookbackChars') || '1000', 10) || 1000; } catch { return 1000; }
-  });
+  const [lookbackChars, setLookbackChars] = useState(() => settings.defaultLookbackChars);
+  useEffect(() => { setLookbackChars(settings.defaultLookbackChars); }, [settings.defaultLookbackChars]);
   const [webGpuSupported, setWebGpuSupported] = useState<boolean | null>(null);
 
   useEffect(() => {
@@ -232,7 +231,8 @@ export default function Home() {
   }, []);
 
   const improveTranscript = useCallback(async () => {
-    const fullOriginal = originalText;
+    // Use all visible text — combine finalized + live preview if recording
+    const fullOriginal = originalText + (previewText ? (originalText ? ' ' : '') + previewText : '');
     if (!fullOriginal || isImproving) return;
 
     setIsImproving(true);
@@ -263,7 +263,7 @@ export default function Home() {
           accumulatedText: tailOriginal,
           targetLanguage: targetLanguageRef.current,
           detectSpeakers: detectSpeakersRef.current,
-          translationProvider: s.translationProvider,
+          translationProvider: s.improvementProvider,
           openaiApiKey: s.openaiApiKey,
           anthropicApiKey: s.anthropicApiKey,
           glossary: s.theologicalGlossary || undefined,
@@ -291,7 +291,7 @@ export default function Home() {
     } finally {
       setIsImproving(false);
     }
-  }, [originalText, lookbackChars, isImproving, toast]);
+  }, [originalText, previewText, lookbackChars, isImproving, toast]);
 
   const toggleTheme = () => {
     const next = !isDark;
@@ -750,7 +750,7 @@ export default function Home() {
           <button
             type="button"
             onClick={improveTranscript}
-            disabled={isImproving || !originalText}
+            disabled={isImproving || (!originalText && !previewText)}
             className="flex items-center gap-1.5 text-xs font-medium px-2.5 py-1.5 rounded-md border border-border bg-background hover:bg-muted/50 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
           >
             {isImproving
@@ -767,9 +767,9 @@ export default function Home() {
             value={lookbackChars}
             onChange={(e) => {
               const v = parseInt(e.target.value, 10);
-              if (!isNaN(v) && v > 0) {
+              if (!isNaN(v) && v >= 100) {
                 setLookbackChars(v);
-                try { localStorage.setItem('lookbackChars', String(v)); } catch {}
+                updateSettings({ defaultLookbackChars: v });
               }
             }}
             className="w-16 text-xs border border-input rounded-md px-2 py-1 bg-background text-foreground text-center [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none"

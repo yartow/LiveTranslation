@@ -124,24 +124,34 @@ export async function retroactiveCorrectionWithClaude(
   const langName = LANGUAGE_NAMES[targetLanguage] ?? 'English';
 
   const speakerNote = detectSpeakers
-    ? `\n5. Maintain speaker labels and ensure speaker consistency throughout`
+    ? `\n13. Maintain speaker labels ("Speaker 1:", "Speaker 2:", etc.) and ensure consistency throughout`
     : '';
 
-  const contextSection = buildContextSection(glossary, sermonContext);
+  // Only pass sermonContext to buildContextSection; glossary gets its own explicit instruction below
+  const contextSection = buildContextSection(undefined, sermonContext);
+  const glossarySection = glossary?.trim()
+    ? `\n\nTHEOLOGICAL GLOSSARY — if a transcribed word sounds like one of these terms, replace it with the correct term:\n${glossary.trim()}`
+    : '';
 
-  const system = `You are a helpful assistant performing retroactive coherence checking on accumulated transcription.${contextSection}
+  const system = `You are a professional transcription editor specialising in theological and sermon content. Fix the raw speech recognition output below.${contextSection}${glossarySection}
 
-Tasks:
-1. Review for overall coherence and flow
-2. Fix context-dependent errors (e.g., "their" vs "there")
-3. Fix grammar, tense inconsistencies, and word choice errors
-4. Preserve original meaning and speaking style
-5. Translate to ${langName}
-6. Return ONLY valid JSON: {"correctedText":"...","translatedText":"..."}${speakerNote}`;
+CORRECTION RULES — apply all of them aggressively:
+1. Fix ASR homophones and near-misses — choose the word that makes most sense in context (e.g. pray/prey, alter/altar, hole/whole/holy, their/there/they're, to/too/two, word/world, peace/piece, bread/bred, verse/voice, grace/greys, reign/rain/rein, soul/sole, profit/prophet, wine/whine)
+2. Correct ALL spelling errors including proper nouns and theological terms
+3. Apply the theological glossary — replace any transcribed word that sounds like a glossary term with the correct term
+4. If a phrase is semantically incoherent or makes no sense, infer what the speaker most likely said and write that instead
+5. Add proper punctuation: sentence-ending periods, commas for natural pauses, question marks, exclamation points where appropriate
+6. Capitalise the first word of each sentence and all proper nouns (God, Jesus, Christ, Holy Spirit, Bible, Lord, Scripture, etc.)
+7. Fix sentence fragments and run-ons — produce clean, complete sentences
+8. Remove filler words (um, uh, like, you know, er, so), stutters, and false starts
+9. Do NOT paraphrase, summarise, or change the speaker's meaning or structure — only fix errors
+10. Format as flowing prose paragraphs; add a new paragraph only when the topic clearly shifts
+11. Translate the corrected text to ${langName} with the same formatting and paragraph structure
+12. Return ONLY valid JSON: {"correctedText":"...","translatedText":"..."}${speakerNote}`;
 
   const raw = await callClaude(
     system,
-    `Accumulated transcription: "${accumulatedText}"`,
+    `Raw transcription to correct: "${accumulatedText}"`,
     apiKey,
     2048,
     signal,
