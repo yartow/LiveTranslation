@@ -231,9 +231,11 @@ export default function Home() {
   }, []);
 
   const improveTranscript = useCallback(async () => {
-    // Use all visible text — combine finalized + live preview if recording
-    const fullOriginal = originalText + (previewText ? (originalText ? ' ' : '') + previewText : '');
-    if (!fullOriginal || isImproving) return;
+    // Require at least one finalized segment; preview-only text is in-flight and
+    // would be re-emitted by onTranslation, causing duplicates if improved now.
+    if (!originalText || isImproving) return;
+    // Append preview only when there is already finalized text to anchor it.
+    const fullOriginal = previewText ? originalText + ' ' + previewText : originalText;
 
     setIsImproving(true);
     const chars = Math.max(1, lookbackChars);
@@ -750,7 +752,7 @@ export default function Home() {
           <button
             type="button"
             onClick={improveTranscript}
-            disabled={isImproving || (!originalText && !previewText)}
+            disabled={isImproving || !originalText}
             className="flex items-center gap-1.5 text-xs font-medium px-2.5 py-1.5 rounded-md border border-border bg-background hover:bg-muted/50 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
           >
             {isImproving
