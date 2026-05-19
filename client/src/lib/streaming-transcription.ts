@@ -12,9 +12,16 @@ export class StreamingTranscription {
   private detectSpeakers: boolean = false;
   private isConnected: boolean = false;
   private debugMode: boolean = false;
+  private normalizationGain: number = 1.0;
+  private assemblyEndOfTurnThreshold: number = 0.7;
+  private assemblyTurnSilenceMs: number = 700;
 
   constructor(events: ChunkTranscriptionEvents) {
     this.events = events;
+  }
+
+  setNormalizationGain(gain: number): void {
+    this.normalizationGain = Math.max(0.1, Math.min(10, gain));
   }
 
   async start(
@@ -27,11 +34,17 @@ export class StreamingTranscription {
     _glossary = '',
     _sermonContext = '',
     debugMode = false,
+    normalizationGain = 1.0,
+    assemblyEndOfTurnThreshold = 0.7,
+    assemblyTurnSilenceMs = 700,
   ): Promise<void> {
     this.sourceLanguage = sourceLanguage;
     this.targetLanguage = targetLanguage;
     this.detectSpeakers = detectSpeakers;
     this.debugMode = debugMode;
+    this.normalizationGain = normalizationGain;
+    this.assemblyEndOfTurnThreshold = assemblyEndOfTurnThreshold;
+    this.assemblyTurnSilenceMs = assemblyTurnSilenceMs;
 
     // ── Step 1: request mic FIRST ────────────────────────────────────────────
     // Safari iOS silently denies getUserMedia if it is called after an async
@@ -77,6 +90,8 @@ export class StreamingTranscription {
           targetLanguage: this.targetLanguage,
           detectSpeakers: this.detectSpeakers,
           debugMode: this.debugMode,
+          assemblyEndOfTurnThreshold: this.assemblyEndOfTurnThreshold,
+          assemblyTurnSilenceMs: this.assemblyTurnSilenceMs,
         }));
       };
 
@@ -175,6 +190,12 @@ export class StreamingTranscription {
 
       const input = event.inputBuffer.getChannelData(0);
 
+      // RMS for VU meter
+      let rmsSum = 0;
+      for (let i = 0; i < input.length; i++) rmsSum += input[i] * input[i];
+      const rms = Math.sqrt(rmsSum / input.length);
+      this.events.onAudioLevel?.(rms);
+
       // Silence gate — skip frames that are just background noise
       let sum = 0;
       for (let i = 0; i < input.length; i++) sum += Math.abs(input[i]);
@@ -185,6 +206,14 @@ export class StreamingTranscription {
       const resampled = new Float32Array(outLen);
       for (let i = 0; i < outLen; i++) {
         resampled[i] = input[Math.floor(i * ratio)];
+      }
+
+      // Apply normalization gain
+      const gain = this.normalizationGain;
+      if (gain !== 1.0) {
+        for (let i = 0; i < resampled.length; i++) {
+          resampled[i] = Math.max(-1, Math.min(1, resampled[i] * gain));
+        }
       }
 
       // Convert float32 → PCM16

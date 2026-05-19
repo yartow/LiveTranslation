@@ -45,10 +45,16 @@ const LANGUAGE_NAMES: Record<string, string> = {
   ko: 'Korean',
 };
 
-// Build a short Whisper prompt from glossary + sermon context.
+// Build a short Whisper prompt from glossary + sermon context + previous transcript.
 // Whisper uses this as "previous context" to prime the decoder toward domain vocabulary.
-function buildWhisperPrompt(glossary?: string, sermonContext?: string): string | undefined {
+// The last 2 sentences of previousTranscript give inter-chunk continuity.
+function buildWhisperPrompt(glossary?: string, sermonContext?: string, previousTranscript?: string): string | undefined {
   const parts: string[] = [];
+  if (previousTranscript?.trim()) {
+    const sentences = previousTranscript.trim().split(/(?<=[.!?])\s+/).filter(Boolean);
+    const last2 = sentences.slice(-2).join(' ');
+    if (last2) parts.push(`...${last2}`);
+  }
   if (sermonContext?.trim()) parts.push(`Sermon: ${sermonContext.trim()}.`);
   if (glossary?.trim()) {
     const terms = glossary.split('\n')
@@ -78,11 +84,12 @@ export async function transcribeAudio(
   glossary?: string,
   sermonContext?: string,
   signal?: AbortSignal,
+  previousTranscript?: string,
 ): Promise<string> {
   const timeout = AbortSignal.timeout(60_000);
   const combinedSignal = signal ? AbortSignal.any([timeout, signal]) : timeout;
   const audioReadStream = fs.createReadStream(audioFilePath);
-  const whisperPrompt = buildWhisperPrompt(glossary, sermonContext);
+  const whisperPrompt = buildWhisperPrompt(glossary, sermonContext, previousTranscript);
   try {
     const transcription = await client(apiKey).audio.transcriptions.create(
       {

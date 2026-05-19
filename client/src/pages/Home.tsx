@@ -5,6 +5,8 @@ import RecordButton from '@/components/RecordButton';
 import TranscriptionDisplay from '@/components/TranscriptionDisplay';
 import SubtitleView from '@/components/SubtitleView';
 import SettingsDialog from '@/components/SettingsDialog';
+import LiveAudioPanel from '@/components/LiveAudioPanel';
+import AudioNormalizationWizard from '@/components/AudioNormalizationWizard';
 import { Label } from '@/components/ui/label';
 import { Button } from '@/components/ui/button';
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/components/ui/collapsible';
@@ -91,6 +93,8 @@ export default function Home() {
   const [lookbackChars, setLookbackChars] = useState(() => settings.defaultLookbackChars);
   useEffect(() => { setLookbackChars(settings.defaultLookbackChars); }, [settings.defaultLookbackChars]);
   const [webGpuSupported, setWebGpuSupported] = useState<boolean | null>(null);
+  const [audioLevel, setAudioLevel] = useState(0);
+  const [isWizardOpen, setIsWizardOpen] = useState(false);
 
   useEffect(() => {
     if (!('gpu' in navigator)) { setWebGpuSupported(false); return; }
@@ -388,13 +392,19 @@ export default function Home() {
           if (total > 0) setModelLoadProgress(loaded / total);
         },
         onRawTranscript: (text: string) => { setPreviewText(text); },
+        onAudioLevel: (rms: number) => { setAudioLevel(rms); },
         onTranslation: (original: string, translated: string) => {
           if (!original) return;
           setPreviewText('');
           transcriptionSegmentsRef.current.push({ original, translated });
-          setOriginalText(prev => prev + (prev ? ' ' : '') + original);
+          const newOriginal = transcriptionSegmentsRef.current.map(s => s.original).join(' ');
+          setOriginalText(newOriginal);
           setTranslatedText(prev => prev + (prev ? ' ' : '') + translated);
           setPreviewText('');
+          // Keep Whisper context up-to-date for the next chunk
+          if (backendRef.current instanceof ChunkBasedTranscription) {
+            backendRef.current.setPreviousTranscript(newOriginal.slice(-300));
+          }
 
           setSubtitlePrevious(subtitleCurrentRef.current);
           subtitleCurrentRef.current = translated;
@@ -488,8 +498,28 @@ export default function Home() {
           settings.theologicalGlossary,
           sermonContextRef.current,
         );
+      } else if (settings.transcriptionProvider === 'whisper') {
+        const chunkBackend = new ChunkBasedTranscription(events, chunkDurationSecs * 1000);
+        backend = chunkBackend;
+        backendRef.current = backend;
+        if (settings.debugMode) addDebugLog('Connecting to Whisper chunk transcription…');
+        await chunkBackend.start(
+          sourceLanguage,
+          targetLanguage,
+          detectSpeakers,
+          settings.translationProvider,
+          settings.openaiApiKey,
+          settings.anthropicApiKey,
+          settings.theologicalGlossary,
+          sermonContextRef.current,
+          settings.debugMode,
+          settings.audioNormalizationGain,
+          settings.chunkOverlapMs,
+          settings.useVADChunking,
+          settings.vadSilenceThresholdMs,
+        );
       } else {
-        // Default: AssemblyAI real-time streaming (PCM16 over WebSocket)
+        // AssemblyAI real-time streaming (PCM16 over WebSocket)
         const streamingBackend = new StreamingTranscription(events);
         backend = streamingBackend;
         backendRef.current = backend;
@@ -504,6 +534,9 @@ export default function Home() {
           settings.theologicalGlossary,
           sermonContextRef.current,
           settings.debugMode,
+          settings.audioNormalizationGain,
+          settings.assemblyEndOfTurnThreshold,
+          settings.assemblyTurnSilenceMs,
         );
       }
 
@@ -780,6 +813,31 @@ export default function Home() {
         </div>
       )}
 
+      {/* ── Live audio panel ─────────────────────────────────────────────── */}
+      {isRecording && settings.showAdvancedAudioDuringRecording && (
+        <LiveAudioPanel
+          audioLevel={audioLevel}
+          normalizationGain={settings.audioNormalizationGain}
+          vadSilenceThresholdMs={settings.vadSilenceThresholdMs}
+          useVADChunking={settings.useVADChunking}
+          onGainChange={(gain) => {
+            updateSettings({ audioNormalizationGain: gain });
+            if (backendRef.current instanceof ChunkBasedTranscription) {
+              backendRef.current.setNormalizationGain(gain);
+            } else if (backendRef.current instanceof StreamingTranscription) {
+              backendRef.current.setNormalizationGain(gain);
+            }
+          }}
+          onVADThresholdChange={(ms) => {
+            updateSettings({ vadSilenceThresholdMs: ms });
+            if (backendRef.current instanceof ChunkBasedTranscription) {
+              backendRef.current.setVADThreshold(ms);
+            }
+          }}
+          onNormalizeClick={() => setIsWizardOpen(true)}
+        />
+      )}
+
       {/* ── Text display ──────────────────────────────────────────────────── */}
       <div className="flex-1 overflow-hidden flex flex-col pb-24">
         {showOriginal && (
@@ -917,6 +975,20 @@ export default function Home() {
       <SessionHistoryDialog
         isOpen={isHistoryOpen}
         onClose={() => setIsHistoryOpen(false)}
+      />
+
+      <AudioNormalizationWizard
+        isOpen={isWizardOpen}
+        currentGain={settings.audioNormalizationGain}
+        onClose={() => setIsWizardOpen(false)}
+        onApply={(gain) => {
+          updateSettings({ audioNormalizationGain: gain });
+          if (backendRef.current instanceof ChunkBasedTranscription) {
+            backendRef.current.setNormalizationGain(gain);
+          } else if (backendRef.current instanceof StreamingTranscription) {
+            backendRef.current.setNormalizationGain(gain);
+          }
+        }}
       />
     </div>
   );

@@ -133,12 +133,21 @@ export function setupStreamingWebSocket(wss: WebSocketServer) {
 
             sendDebug(clientWs, `Creating AssemblyAI streaming transcriber (${langDesc})…`, debugMode);
 
+            const endOfTurnThreshold = typeof message.assemblyEndOfTurnThreshold === 'number'
+              ? Math.max(0.5, Math.min(1.0, message.assemblyEndOfTurnThreshold))
+              : 0.7;
+            const turnSilenceMs = typeof message.assemblyTurnSilenceMs === 'number'
+              ? Math.max(200, Math.min(2000, message.assemblyTurnSilenceMs))
+              : 700;
+
             let streamingWs: any;
             try {
               streamingWs = client.streaming.transcriber({
                 sampleRate: 16000,
                 speechModel,
                 languageDetection: useLanguageDetection,
+                endOfTurnConfidenceThreshold: endOfTurnThreshold,
+                minEndOfTurnSilenceWhenConfident: turnSilenceMs,
                 keytermsPrompt: ['sermon', 'scripture', 'bible', 'gospel', 'faith', 'prayer', 'amen'],
                 formatTurns: true,
               });
