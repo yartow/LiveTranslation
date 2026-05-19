@@ -112,8 +112,12 @@ export async function registerRoutes(app: Express): Promise<Server> {
       const provider = parseProvider(req.body.translationProvider) ?? 'openai';
       const openaiApiKey = req.body.openaiApiKey || undefined;
       const anthropicApiKey = req.body.anthropicApiKey || undefined;
+      const previousTranscript = typeof req.body.previousTranscript === 'string' ? req.body.previousTranscript : undefined;
 
-      webmFilePath = req.file.path + '.webm';
+      // Keep the original extension so ffmpeg can auto-detect the format.
+      const originalExt = req.file.originalname.match(/\.[^.]+$/)?.[0]?.toLowerCase() ?? '.bin';
+      const safeExt = /^\.[a-z0-9]{1,6}$/.test(originalExt) ? originalExt : '.bin';
+      webmFilePath = req.file.path + safeExt;
       mp3FilePath = req.file.path + '.mp3';
 
       fs.renameSync(req.file.path, webmFilePath);
@@ -123,7 +127,6 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
       await new Promise<void>((resolve, reject) => {
         ffmpeg(webmFilePath!)
-          .inputFormat('webm')
           .inputOptions([
             '-err_detect', 'ignore_err',
             '-fflags', '+genpts+igndts+ignidx+discardcorrupt',
@@ -145,7 +148,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
           .save(mp3FilePath!);
       });
 
-      const rawTranscript = await transcribeAudio(mp3FilePath, sourceLanguage, openaiApiKey);
+      const rawTranscript = await transcribeAudio(mp3FilePath, sourceLanguage, openaiApiKey, undefined, undefined, undefined, previousTranscript);
       const { correctedText, translatedText } = await runCorrectAndTranslate(
         rawTranscript, targetLanguage, detectSpeakers, provider, openaiApiKey, anthropicApiKey,
       );

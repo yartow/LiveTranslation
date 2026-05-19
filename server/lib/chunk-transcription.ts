@@ -21,6 +21,7 @@ interface ChunkSession {
   glossary: string;
   sermonContext: string;
   debugMode: boolean;
+  previousTranscript: string;
   // Tracks which chunk index to send to the client next (ordered delivery)
   nextExpectedChunk: number;
   // Stores completed results waiting for earlier chunks to finish
@@ -75,6 +76,13 @@ async function safeUnlink(path: string): Promise<void> {
   try {
     if (existsSync(path)) await unlink(path);
   } catch {}
+}
+
+async function writeWavFile(inputBuffer: Buffer): Promise<string> {
+  const id = randomUUID();
+  const wavPath = join(tmpdir(), `audio-${id}.wav`);
+  await writeFile(wavPath, inputBuffer);
+  return wavPath;
 }
 
 async function convertAudioToMp3(inputBuffer: Buffer): Promise<string> {
@@ -158,21 +166,27 @@ function classifyError(error: unknown): string {
   return msg;
 }
 
-// Pipeline per chunk: ffmpeg convert → Whisper → GPT/Claude correct+translate.
+// Pipeline per chunk: convert audio → Whisper → GPT/Claude correct+translate.
 // Chunks are processed concurrently; results are buffered and delivered in order.
 async function processChunk(
   session: ChunkSession,
   audioBuffer: Buffer,
   chunkIndex: number,
+  isWav = false,
 ): Promise<void> {
   const { signal } = session.abortController;
-  let mp3Path: string | null = null;
+  let audioPath: string | null = null;
 
-  sendDebug(session, `Chunk #${chunkIndex}: received (${audioBuffer.length} bytes) — waiting for slot`);
+  sendDebug(session, `Chunk #${chunkIndex}: received (${audioBuffer.length} bytes, ${isWav ? 'WAV' : 'webm'}) — waiting for slot`);
   await whisperSemaphore.acquire();
   try {
-    sendDebug(session, `Chunk #${chunkIndex}: converting audio to MP3…`);
-    mp3Path = await convertAudioToMp3(audioBuffer);
+    if (isWav) {
+      sendDebug(session, `Chunk #${chunkIndex}: writing WAV file…`);
+      audioPath = await writeWavFile(audioBuffer);
+    } else {
+      sendDebug(session, `Chunk #${chunkIndex}: converting audio to MP3…`);
+      audioPath = await convertAudioToMp3(audioBuffer);
+    }
     await simulateLatency();
 
     if (signal.aborted) {
@@ -188,7 +202,7 @@ async function processChunk(
       sendDebug(session, `Chunk #${chunkIndex}: sending to Whisper (${session.sourceLanguage})…`);
     }
 
-    const rawText = await transcribeAudio(mp3Path, session.sourceLanguage, session.openaiApiKey || undefined, session.glossary || undefined, session.sermonContext || undefined, signal);
+    const rawText = await transcribeAudio(audioPath, session.sourceLanguage, session.openaiApiKey || undefined, session.glossary || undefined, session.sermonContext || undefined, signal, session.previousTranscript || undefined);
 
     if (!rawText.trim()) {
       sendDebug(session, `Chunk #${chunkIndex}: silent — no speech detected`);
@@ -271,7 +285,7 @@ async function processChunk(
     flushInOrder(session);
   } finally {
     whisperSemaphore.release();
-    if (mp3Path) await safeUnlink(mp3Path);
+    if (audioPath) await safeUnlink(audioPath);
   }
 }
 
@@ -298,6 +312,7 @@ export function setupChunkTranscriptionWebSocket(wss: WebSocketServer): void {
               glossary: message.glossary || '',
               sermonContext: message.sermonContext || '',
               debugMode: message.debugMode ?? false,
+              previousTranscript: message.previousTranscript || '',
               nextExpectedChunk: 0,
               pendingResults: new Map(),
               abortController: new AbortController(),
@@ -315,6 +330,7 @@ export function setupChunkTranscriptionWebSocket(wss: WebSocketServer): void {
               if (message.anthropicApiKey !== undefined) session.anthropicApiKey = message.anthropicApiKey;
               if (message.glossary !== undefined) session.glossary = message.glossary;
               if (message.sermonContext !== undefined) session.sermonContext = message.sermonContext;
+              if (message.previousTranscript !== undefined) session.previousTranscript = message.previousTranscript;
             }
 
           } else if (message.type === 'stop') {
@@ -326,20 +342,21 @@ export function setupChunkTranscriptionWebSocket(wss: WebSocketServer): void {
         } else if (isBinary || data instanceof Buffer) {
           if (!session) return;
 
-          // Binary protocol: first 4 bytes = chunk index (big-endian uint32),
-          // remaining bytes = raw audio (webm/opus from MediaRecorder)
+          // Binary protocol: [4-byte big-endian chunk index][1-byte flags][audio data]
+          // flags bit 0 (0x01): 1 = PCM16/WAV, 0 = legacy webm/opus
           const buf = Buffer.isBuffer(data) ? data : Buffer.from(data as unknown as ArrayBuffer);
-          if (buf.length < 5) return;
+          if (buf.length < 6) return;
 
-          const audioBuffer = buf.subarray(4);
+          const chunkIndex = buf.readUInt32BE(0);
+          const flags = buf[4];
+          const audioBuffer = buf.subarray(5);
+          const isWav = (flags & 0x01) !== 0;
 
           // Reject oversized chunks to prevent memory/disk exhaustion
           if (audioBuffer.length > MAX_CHUNK_SIZE) {
             console.warn(`Chunk audio exceeds ${MAX_CHUNK_SIZE} bytes; discarding`);
             return;
           }
-
-          const chunkIndex = buf.readUInt32BE(0);
 
           // Reject unreasonably large indexes to prevent memory exhaustion
           if (chunkIndex > session.nextExpectedChunk + MAX_CHUNK_QUEUE_DEPTH) {
@@ -349,7 +366,7 @@ export function setupChunkTranscriptionWebSocket(wss: WebSocketServer): void {
 
           // Fire-and-forget: chunks are processed concurrently.
           // flushInOrder() ensures the client receives results in recording order.
-          processChunk(session, audioBuffer, chunkIndex).catch((err) => {
+          processChunk(session, audioBuffer, chunkIndex, isWav).catch((err) => {
             console.error('Unhandled chunk error:', err);
           });
         }

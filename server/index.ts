@@ -3,6 +3,7 @@ import { registerRoutes } from "./routes";
 import { setupVite, serveStatic, log } from "./vite";
 import { WebSocketServer } from 'ws';
 import { setupStreamingWebSocket } from './lib/assemblyai-streaming';
+import { setupChunkTranscriptionWebSocket } from './lib/chunk-transcription';
 
 if (!process.env.OPENAI_API_KEY) {
   console.warn("Warning: OPENAI_API_KEY is not set — translation will fail");
@@ -78,15 +79,21 @@ app.use((req, res, next) => {
   // ensures /ws/transcribe is claimed before Vite can intercept it and 404.
   const wss = new WebSocketServer({ noServer: true, maxPayload: 10 * 1024 * 1024 });
   setupStreamingWebSocket(wss);
-  wss.on('error', (err) => {
-    console.error('WebSocket server error:', err);
-  });
+  wss.on('error', (err) => { console.error('WebSocket server error:', err); });
+
+  const wssChunk = new WebSocketServer({ noServer: true, maxPayload: 10 * 1024 * 1024 });
+  setupChunkTranscriptionWebSocket(wssChunk);
+  wssChunk.on('error', (err) => { console.error('Chunk WebSocket server error:', err); });
 
   server.on('upgrade', (req, socket, head) => {
     const pathname = req.url?.split('?')[0];
     if (pathname === '/ws/transcribe') {
       wss.handleUpgrade(req, socket, head, (ws) => {
         wss.emit('connection', ws, req);
+      });
+    } else if (pathname === '/ws/chunk-transcribe') {
+      wssChunk.handleUpgrade(req, socket, head, (ws) => {
+        wssChunk.emit('connection', ws, req);
       });
     }
     // All other upgrade requests (e.g. Vite HMR at /__vite_hmr) are left

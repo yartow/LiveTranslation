@@ -8,6 +8,22 @@ export type DisplayContent = 'original' | 'translation' | 'both';
 export type TextDisplay = 'subtitle' | 'stream';
 export type LocalWhisperModel = 'tiny' | 'small' | 'medium';
 
+export interface DeviceProfile {
+  id: string;
+  name: string;
+  externalMic: boolean;
+  micDeviceId?: string;
+  // audio settings snapshot
+  audioNormalizationGain: number;
+  chunkOverlapMs: number;
+  useVADChunking: boolean;
+  vadSilenceThresholdMs: number;
+  assemblyEndOfTurnThreshold: number;
+  assemblyTurnSilenceMs: number;
+  useTranscriptAsWhisperContext: boolean;
+  chunkDurationSecs: number;
+}
+
 export interface AppSettings {
   openaiApiKey: string;
   anthropicApiKey: string;
@@ -23,6 +39,19 @@ export interface AppSettings {
   defaultSourceLanguage: string;
   defaultTargetLanguage: string;
   debugMode: boolean;
+  // audio pipeline
+  useTranscriptAsWhisperContext: boolean;
+  chunkOverlapMs: number;
+  useVADChunking: boolean;
+  vadSilenceThresholdMs: number;
+  audioNormalizationGain: number;
+  showAdvancedAudioDuringRecording: boolean;
+  // AssemblyAI tuning (applied at session start)
+  assemblyEndOfTurnThreshold: number;
+  assemblyTurnSilenceMs: number;
+  // device profiles
+  deviceProfiles: DeviceProfile[];
+  activeDeviceProfileId: string | null;
 }
 
 const PREFS_KEY = 'cttay_prefs';
@@ -42,12 +71,26 @@ const defaultSettings: AppSettings = {
   defaultSourceLanguage: 'en',
   defaultTargetLanguage: 'nl',
   debugMode: false,
+  useTranscriptAsWhisperContext: true,
+  chunkOverlapMs: 500,
+  useVADChunking: false,
+  vadSilenceThresholdMs: 800,
+  audioNormalizationGain: 1.0,
+  showAdvancedAudioDuringRecording: false,
+  assemblyEndOfTurnThreshold: 0.7,
+  assemblyTurnSilenceMs: 700,
+  deviceProfiles: [],
+  activeDeviceProfileId: null,
 };
 
 const VALID_TRANSCRIPTION: TranscriptionProvider[] = ['whisper', 'browser', 'transformers'];
 const VALID_TRANSLATION: TranslationProvider[] = ['openai', 'claude', 'none'];
 const VALID_IMPROVEMENT: ImprovementProvider[] = ['openai', 'claude'];
 const VALID_LOCAL_MODEL: LocalWhisperModel[] = ['tiny', 'small', 'medium'];
+
+function clamp(v: number, min: number, max: number): number {
+  return Math.max(min, Math.min(max, v));
+}
 
 function loadSettings(): AppSettings {
   let prefs: Partial<AppSettings> = {};
@@ -75,11 +118,38 @@ function loadSettings(): AppSettings {
   if (!VALID_IMPROVEMENT.includes(merged.improvementProvider)) {
     merged.improvementProvider = defaultSettings.improvementProvider;
   }
+  if (!VALID_LOCAL_MODEL.includes(merged.localWhisperModel)) {
+    merged.localWhisperModel = defaultSettings.localWhisperModel;
+  }
   if (typeof merged.defaultLookbackChars !== 'number' || merged.defaultLookbackChars < 100) {
     merged.defaultLookbackChars = defaultSettings.defaultLookbackChars;
   }
-  if (!VALID_LOCAL_MODEL.includes(merged.localWhisperModel)) {
-    merged.localWhisperModel = defaultSettings.localWhisperModel;
+  // Audio pipeline range validation
+  if (![0, 500, 1000].includes(merged.chunkOverlapMs)) {
+    merged.chunkOverlapMs = defaultSettings.chunkOverlapMs;
+  }
+  if (typeof merged.vadSilenceThresholdMs !== 'number') {
+    merged.vadSilenceThresholdMs = defaultSettings.vadSilenceThresholdMs;
+  } else {
+    merged.vadSilenceThresholdMs = clamp(merged.vadSilenceThresholdMs, 200, 2000);
+  }
+  if (typeof merged.audioNormalizationGain !== 'number') {
+    merged.audioNormalizationGain = defaultSettings.audioNormalizationGain;
+  } else {
+    merged.audioNormalizationGain = clamp(merged.audioNormalizationGain, 0.1, 10);
+  }
+  if (typeof merged.assemblyEndOfTurnThreshold !== 'number') {
+    merged.assemblyEndOfTurnThreshold = defaultSettings.assemblyEndOfTurnThreshold;
+  } else {
+    merged.assemblyEndOfTurnThreshold = clamp(merged.assemblyEndOfTurnThreshold, 0.5, 1.0);
+  }
+  if (typeof merged.assemblyTurnSilenceMs !== 'number') {
+    merged.assemblyTurnSilenceMs = defaultSettings.assemblyTurnSilenceMs;
+  } else {
+    merged.assemblyTurnSilenceMs = clamp(merged.assemblyTurnSilenceMs, 200, 2000);
+  }
+  if (!Array.isArray(merged.deviceProfiles)) {
+    merged.deviceProfiles = [];
   }
 
   return merged;
@@ -107,6 +177,16 @@ export function useSettings() {
           defaultSourceLanguage: next.defaultSourceLanguage,
           defaultTargetLanguage: next.defaultTargetLanguage,
           debugMode: next.debugMode,
+          useTranscriptAsWhisperContext: next.useTranscriptAsWhisperContext,
+          chunkOverlapMs: next.chunkOverlapMs,
+          useVADChunking: next.useVADChunking,
+          vadSilenceThresholdMs: next.vadSilenceThresholdMs,
+          audioNormalizationGain: next.audioNormalizationGain,
+          showAdvancedAudioDuringRecording: next.showAdvancedAudioDuringRecording,
+          assemblyEndOfTurnThreshold: next.assemblyEndOfTurnThreshold,
+          assemblyTurnSilenceMs: next.assemblyTurnSilenceMs,
+          deviceProfiles: next.deviceProfiles,
+          activeDeviceProfileId: next.activeDeviceProfileId,
         }));
       } catch {}
 

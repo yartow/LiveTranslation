@@ -20,7 +20,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/select';
-import type { AppSettings, TranscriptionProvider, TranslationProvider, ImprovementProvider, LocalWhisperModel } from '@/hooks/useSettings';
+import type { AppSettings, TranscriptionProvider, TranslationProvider, ImprovementProvider, LocalWhisperModel, DeviceProfile } from '@/hooks/useSettings';
 import { maskKey } from '@/lib/mask-key';
 
 interface SettingsDialogProps {
@@ -151,6 +151,34 @@ export default function SettingsDialog({ isOpen, onClose, settings, onUpdate, we
   const hasAnthropicKey = settings.anthropicApiKey.length > 0;
   const noWebGpu = webGpuSupported === false;
   const isBrave = typeof (window.navigator as any).brave !== 'undefined';
+
+  const [isSavingProfile, setIsSavingProfile] = useState(false);
+  const [newProfileName, setNewProfileName] = useState('');
+  const [newProfileExternalMic, setNewProfileExternalMic] = useState(false);
+
+  function saveNewProfile() {
+    const name = newProfileName.trim();
+    if (!name) return;
+    const profile: DeviceProfile = {
+      id: crypto.randomUUID(),
+      name,
+      externalMic: newProfileExternalMic,
+      audioNormalizationGain: settings.audioNormalizationGain,
+      chunkOverlapMs: settings.chunkOverlapMs,
+      useVADChunking: settings.useVADChunking,
+      vadSilenceThresholdMs: settings.vadSilenceThresholdMs,
+      assemblyEndOfTurnThreshold: settings.assemblyEndOfTurnThreshold,
+      assemblyTurnSilenceMs: settings.assemblyTurnSilenceMs,
+      useTranscriptAsWhisperContext: settings.useTranscriptAsWhisperContext,
+      chunkDurationSecs: 5,
+    };
+    onUpdate({
+      deviceProfiles: [...settings.deviceProfiles, profile],
+      activeDeviceProfileId: profile.id,
+    });
+    setIsSavingProfile(false);
+    setNewProfileName('');
+  }
 
   return (
     <Dialog open={isOpen} onOpenChange={onClose}>
@@ -395,6 +423,179 @@ export default function SettingsDialog({ isOpen, onClose, settings, onUpdate, we
             </div>
           </section>
 
+          {/* ── Advanced Audio ── */}
+          <section className="space-y-4">
+            <h3 className="text-sm font-semibold text-foreground border-b border-border pb-1">
+              Advanced Audio
+            </h3>
+
+            {/* Chunk overlap */}
+            <div className="space-y-1.5">
+              <Label className="text-xs font-medium">Chunk overlap (Whisper mode)</Label>
+              <p className="text-xs text-muted-foreground">
+                Audio overlap prepended to each chunk to prevent words being cut at boundaries.
+              </p>
+              <RadioGroup
+                value={String(settings.chunkOverlapMs)}
+                onValueChange={(v) => onUpdate({ chunkOverlapMs: Number(v) as 0 | 500 | 1000 })}
+                className="flex gap-4"
+              >
+                {([0, 500, 1000] as const).map((ms) => (
+                  <div key={ms} className="flex items-center gap-1.5">
+                    <RadioGroupItem value={String(ms)} id={`overlap-${ms}`} />
+                    <Label htmlFor={`overlap-${ms}`} className="cursor-pointer text-xs">
+                      {ms === 0 ? 'None' : `${ms} ms`}
+                    </Label>
+                  </div>
+                ))}
+              </RadioGroup>
+            </div>
+
+            {/* Previous transcript context */}
+            <div className="flex items-center justify-between">
+              <div>
+                <Label htmlFor="whisper-context" className="font-medium cursor-pointer text-sm">
+                  Previous transcript context
+                </Label>
+                <p className="text-xs text-muted-foreground mt-0.5">
+                  Passes the last 2 sentences to Whisper as context for better inter-chunk continuity.
+                </p>
+              </div>
+              <Switch
+                id="whisper-context"
+                checked={settings.useTranscriptAsWhisperContext}
+                onCheckedChange={(checked) => onUpdate({ useTranscriptAsWhisperContext: checked })}
+              />
+            </div>
+
+            {/* VAD chunking */}
+            <div className="space-y-2">
+              <div className="flex items-center justify-between">
+                <div>
+                  <Label htmlFor="vad-chunking" className="font-medium cursor-pointer text-sm">
+                    Voice activity detection
+                  </Label>
+                  <p className="text-xs text-muted-foreground mt-0.5">
+                    Commit a chunk on detected silence instead of a fixed timer.
+                  </p>
+                </div>
+                <Switch
+                  id="vad-chunking"
+                  checked={settings.useVADChunking}
+                  onCheckedChange={(checked) => onUpdate({ useVADChunking: checked })}
+                />
+              </div>
+              {settings.useVADChunking && (
+                <div className="flex items-center gap-3 pl-4">
+                  <Label htmlFor="vad-threshold" className="text-xs font-medium whitespace-nowrap">
+                    Silence threshold
+                  </Label>
+                  <input
+                    id="vad-threshold"
+                    type="range"
+                    min={200}
+                    max={2000}
+                    step={100}
+                    value={settings.vadSilenceThresholdMs}
+                    onChange={(e) => onUpdate({ vadSilenceThresholdMs: Number(e.target.value) })}
+                    className="flex-1 accent-primary"
+                  />
+                  <span className="text-xs text-muted-foreground w-14 text-right">
+                    {settings.vadSilenceThresholdMs} ms
+                  </span>
+                </div>
+              )}
+            </div>
+
+            {/* Normalization gain */}
+            <div className="space-y-1.5">
+              <div className="flex items-center gap-3">
+                <Label htmlFor="norm-gain" className="text-xs font-medium whitespace-nowrap">
+                  Normalization gain
+                </Label>
+                <input
+                  id="norm-gain"
+                  type="range"
+                  min={0.1}
+                  max={10}
+                  step={0.1}
+                  value={settings.audioNormalizationGain}
+                  onChange={(e) => onUpdate({ audioNormalizationGain: Number(e.target.value) })}
+                  className="flex-1 accent-primary"
+                />
+                <span className="text-xs text-muted-foreground w-10 text-right">
+                  {settings.audioNormalizationGain.toFixed(1)}×
+                </span>
+              </div>
+              <p className="text-xs text-muted-foreground">
+                Amplify quiet microphones. 1.0 = no change. Use the normalization wizard to calibrate.
+              </p>
+            </div>
+
+            {/* AssemblyAI thresholds */}
+            <div className="space-y-3 rounded-md border border-border p-3">
+              <div>
+                <p className="text-xs font-medium">AssemblyAI streaming thresholds</p>
+                <p className="text-xs text-muted-foreground mt-0.5">
+                  Applied when using the AssemblyAI streaming service (set at session start).
+                </p>
+              </div>
+              <div className="flex items-center gap-3">
+                <Label htmlFor="eot-threshold" className="text-xs whitespace-nowrap w-40">
+                  End-of-turn confidence
+                </Label>
+                <input
+                  id="eot-threshold"
+                  type="range"
+                  min={0.5}
+                  max={1.0}
+                  step={0.05}
+                  value={settings.assemblyEndOfTurnThreshold}
+                  onChange={(e) => onUpdate({ assemblyEndOfTurnThreshold: Number(e.target.value) })}
+                  className="flex-1 accent-primary"
+                />
+                <span className="text-xs text-muted-foreground w-10 text-right">
+                  {settings.assemblyEndOfTurnThreshold.toFixed(2)}
+                </span>
+              </div>
+              <div className="flex items-center gap-3">
+                <Label htmlFor="turn-silence" className="text-xs whitespace-nowrap w-40">
+                  Turn silence
+                </Label>
+                <input
+                  id="turn-silence"
+                  type="range"
+                  min={200}
+                  max={2000}
+                  step={100}
+                  value={settings.assemblyTurnSilenceMs}
+                  onChange={(e) => onUpdate({ assemblyTurnSilenceMs: Number(e.target.value) })}
+                  className="flex-1 accent-primary"
+                />
+                <span className="text-xs text-muted-foreground w-14 text-right">
+                  {settings.assemblyTurnSilenceMs} ms
+                </span>
+              </div>
+            </div>
+
+            {/* Show live audio controls */}
+            <div className="flex items-center justify-between">
+              <div>
+                <Label htmlFor="show-live-audio" className="font-medium cursor-pointer text-sm">
+                  Show live audio controls during recording
+                </Label>
+                <p className="text-xs text-muted-foreground mt-0.5">
+                  Adds a panel with VU meter, gain slider, and normalization wizard while recording.
+                </p>
+              </div>
+              <Switch
+                id="show-live-audio"
+                checked={settings.showAdvancedAudioDuringRecording}
+                onCheckedChange={(checked) => onUpdate({ showAdvancedAudioDuringRecording: checked })}
+              />
+            </div>
+          </section>
+
           {/* ── Default Languages ── */}
           <section className="space-y-3">
             <h3 className="text-sm font-semibold text-foreground border-b border-border pb-1">
@@ -437,6 +638,132 @@ export default function SettingsDialog({ isOpen, onClose, settings, onUpdate, we
               rows={6}
               className="font-mono text-sm resize-y"
             />
+          </section>
+
+          {/* ── Device Profiles ── */}
+          <section className="space-y-3">
+            <h3 className="text-sm font-semibold text-foreground border-b border-border pb-1">
+              Device Profiles
+            </h3>
+            <p className="text-xs text-muted-foreground">
+              Save the current audio settings as a named preset for quick switching between devices
+              (e.g. phone vs. laptop, with or without an external mic).
+            </p>
+
+            {settings.deviceProfiles.length > 0 && (
+              <div className="space-y-1">
+                <Label className="text-xs font-medium">Active profile</Label>
+                <Select
+                  value={settings.activeDeviceProfileId ?? '__none__'}
+                  onValueChange={(v) => {
+                    const profileId = v === '__none__' ? null : v;
+                    if (!profileId) { onUpdate({ activeDeviceProfileId: null }); return; }
+                    const profile = settings.deviceProfiles.find(p => p.id === profileId);
+                    if (profile) {
+                      onUpdate({
+                        activeDeviceProfileId: profile.id,
+                        audioNormalizationGain: profile.audioNormalizationGain,
+                        chunkOverlapMs: profile.chunkOverlapMs,
+                        useVADChunking: profile.useVADChunking,
+                        vadSilenceThresholdMs: profile.vadSilenceThresholdMs,
+                        assemblyEndOfTurnThreshold: profile.assemblyEndOfTurnThreshold,
+                        assemblyTurnSilenceMs: profile.assemblyTurnSilenceMs,
+                        useTranscriptAsWhisperContext: profile.useTranscriptAsWhisperContext,
+                      });
+                    }
+                  }}
+                >
+                  <SelectTrigger className="h-8 text-xs">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="__none__">— None —</SelectItem>
+                    {settings.deviceProfiles.map((p) => (
+                      <SelectItem key={p.id} value={p.id}>
+                        {p.name}{p.externalMic ? ' · external mic' : ''}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+            )}
+
+            {isSavingProfile ? (
+              <div className="space-y-2 rounded-md border border-border p-3">
+                <Label className="text-xs font-medium">Profile name</Label>
+                <Input
+                  value={newProfileName}
+                  onChange={(e) => setNewProfileName(e.target.value)}
+                  placeholder="e.g. Pixel 7 Pro – external mic"
+                  className="text-sm"
+                  autoFocus
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter') saveNewProfile();
+                    if (e.key === 'Escape') { setIsSavingProfile(false); setNewProfileName(''); }
+                  }}
+                />
+                <div className="flex items-center gap-2">
+                  <Switch
+                    id="new-profile-ext-mic"
+                    checked={newProfileExternalMic}
+                    onCheckedChange={setNewProfileExternalMic}
+                  />
+                  <Label htmlFor="new-profile-ext-mic" className="text-xs cursor-pointer">
+                    External microphone
+                  </Label>
+                </div>
+                <div className="flex gap-2">
+                  <Button size="sm" onClick={saveNewProfile} disabled={!newProfileName.trim()}>
+                    Save
+                  </Button>
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    onClick={() => { setIsSavingProfile(false); setNewProfileName(''); }}
+                  >
+                    Cancel
+                  </Button>
+                </div>
+              </div>
+            ) : (
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => { setIsSavingProfile(true); setNewProfileName(''); setNewProfileExternalMic(false); }}
+              >
+                Save current settings as profile…
+              </Button>
+            )}
+
+            {settings.deviceProfiles.length > 0 && (
+              <div className="space-y-1">
+                <Label className="text-xs font-medium text-muted-foreground">Saved profiles</Label>
+                {settings.deviceProfiles.map((p) => (
+                  <div key={p.id} className="flex items-center justify-between rounded-md border border-border px-3 py-2">
+                    <div>
+                      <span className="text-sm font-medium">{p.name}</span>
+                      {p.externalMic && (
+                        <span className="text-xs text-muted-foreground ml-2">· external mic</span>
+                      )}
+                    </div>
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      className="text-destructive hover:text-destructive h-7 px-2"
+                      onClick={() => {
+                        onUpdate({
+                          deviceProfiles: settings.deviceProfiles.filter(x => x.id !== p.id),
+                          activeDeviceProfileId:
+                            settings.activeDeviceProfileId === p.id ? null : settings.activeDeviceProfileId,
+                        });
+                      }}
+                    >
+                      Delete
+                    </Button>
+                  </div>
+                ))}
+              </div>
+            )}
           </section>
 
           {/* ── Debug Mode ── */}
