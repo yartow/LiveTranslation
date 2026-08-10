@@ -56,23 +56,26 @@ client/src/
 server/
   index.ts                        — Express app, WebSocket upgrade registration
   routes.ts                       — REST API endpoints
+  python/
+    mlx_worker.py                  — mlx-whisper sidecar (JSON-lines over stdin/stdout)
   lib/
     openai.ts                     — Whisper transcription + GPT-4o-mini correction/translation
     anthropic.ts                  — Claude Haiku correction/translation
     assemblyai-streaming.ts       — AssemblyAI streaming WebSocket handler
     chunk-transcription.ts        — Chunk-based Whisper pipeline
-    google-drive.ts               — Drive upload/folder listing
+    mlx-whisper.ts                 — Manages the mlx_worker.py sidecar process
 ```
 
 ---
 
 ## Transcription providers
 
-Three interchangeable backends all implement `ChunkTranscriptionEvents`:
+Four interchangeable backends all implement `ChunkTranscriptionEvents`:
 
 | Provider | Class | Notes |
 |----------|-------|-------|
 | `whisper` | `ChunkBasedTranscription` | Uploads ~5 s audio chunks to `gpt-4o-transcribe`; requires OpenAI key |
+| `mlx` | `ChunkBasedTranscription` | Same client class/transport as `whisper`, routed server-side to a local `mlx-whisper` sidecar instead of OpenAI. Apple Silicon only; free; no key. See "Local MLX transcription" below |
 | `browser` | `BrowserSpeechTranscription` | Web Speech API (Chrome/Edge); free, no key |
 | `transformers` | `LocalWhisperTranscription` | Transformers.js in Web Worker; requires WebGPU |
 | (streaming) | `StreamingTranscription` | AssemblyAI real-time via `/ws/transcribe`; requires `ASSEMBLYAI_API_KEY` env var |
@@ -81,6 +84,31 @@ Three interchangeable backends all implement `ChunkTranscriptionEvents`:
 - `sourceLanguage === 'en'` → `speechModel: 'universal-streaming-english'`, `languageDetection: false`
 - Any other specific language → `speechModel: 'universal-streaming-multilingual'`, `languageDetection: false`
 - `'auto'` or not provided → `speechModel: 'universal-streaming-multilingual'`, `languageDetection: true`
+
+---
+
+## Local MLX transcription (`whisper`/`mlx` share one pipeline)
+
+`whisper` and `mlx` are both the *same* `ChunkBasedTranscription` client class and the
+same `/ws/chunk-transcribe` binary protocol — the only difference is an `engine: 'openai' | 'mlx'`
+field on the WebSocket `start`/`config` messages, read by `server/lib/chunk-transcription.ts`
+to pick which function transcribes each chunk (`transcribeAudio` vs `transcribeWithMlx`).
+This means VAD, chunk overlap, reconnect, and the ordered-delivery buffer (`flushInOrder`)
+are shared code, not duplicated per engine.
+
+`server/lib/mlx-whisper.ts` manages a long-lived Python subprocess
+(`server/python/mlx_worker.py`) so the `whisper-large-v3-mlx` model stays loaded
+in memory between chunks rather than reloading per request. Requests are
+JSON-lines over stdin/stdout, correlated by an integer id; the worker restarts
+automatically (with backoff) if it crashes. The worker's stdout must carry
+**only** protocol JSON — HF/mlx diagnostics are routed to stderr, since any
+stray stdout line would desync the request/response correlation.
+
+`MLX_PYTHON` (env var) points at the Python interpreter with `mlx-whisper`
+installed — plain `python3` on PATH is often *not* that interpreter (e.g. it's
+under a conda/venv). This is the repo's only Python dependency and only
+subprocess boundary; it does not run outside macOS/Apple Silicon, so
+containerized deploys (`Dockerfile`) simply don't offer the `mlx` provider.
 
 ---
 
@@ -104,7 +132,7 @@ All persisted in `localStorage` (non-sensitive) and `sessionStorage` (API keys):
 interface AppSettings {
   openaiApiKey: string;           // sessionStorage
   anthropicApiKey: string;        // sessionStorage
-  transcriptionProvider: 'whisper' | 'browser' | 'transformers';
+  transcriptionProvider: 'whisper' | 'browser' | 'transformers' | 'mlx';
   translationProvider: 'openai' | 'claude' | 'none';
   improvementProvider: 'openai' | 'claude';  // for "Improve" button
   defaultLookbackChars: number;   // default chars for Improve (min 100)
@@ -130,8 +158,6 @@ interface AppSettings {
 | POST | `/api/retranslate` | Re-translate accumulated text to a new language |
 | POST | `/api/retroactive-correct` | "Improve" button — full correction pass on accumulated text |
 | POST | `/api/export-format` | AI-formatted TXT/MD export |
-| POST | `/api/upload-to-drive` | Upload transcript to Google Drive |
-| GET  | `/api/drive-folders` | List Google Drive folders |
 
 WebSocket: `ws://host/ws/transcribe` — binary PCM16 frames + JSON control messages (`start`, `stop`, `config`).
 
@@ -184,6 +210,7 @@ The `/ws/transcribe` upgrade handler is registered **before** `setupVite()` so V
 | `ANTHROPIC_API_KEY` | Optional | Default Anthropic client |
 | `ASSEMBLYAI_API_KEY` | For streaming transcription | AssemblyAI client |
 | `DATABASE_URL` | For session persistence | Neon PostgreSQL |
+| `MLX_PYTHON` | For local `mlx` transcription | Path to the Python interpreter with `mlx-whisper` installed (Apple Silicon only). Defaults to `python3` on PATH if unset |
 
 Client-supplied keys (from Settings) override server env keys per-request.
 

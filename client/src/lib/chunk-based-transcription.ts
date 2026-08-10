@@ -10,6 +10,10 @@ export interface ChunkTranscriptionEvents {
 }
 
 export type TranslationProvider = 'openai' | 'claude' | 'none';
+// Which service actually runs the speech-to-text step. 'mlx' is the local
+// mlx-whisper sidecar (Apple Silicon only) — same wire protocol as 'openai',
+// just routed to a different engine server-side.
+export type TranscriptionEngine = 'openai' | 'mlx';
 
 // Circular ring buffer keeping the last `capacity` float32 samples for overlap.
 class OverlapBuffer {
@@ -118,6 +122,7 @@ export class ChunkBasedTranscription {
   private chunkDurationMs: number;
   private chunkIndex = 0;
   private isRecording = false;
+  private engine: TranscriptionEngine;
   private translationProvider: TranslationProvider;
   private openaiApiKey: string;
   private anthropicApiKey: string;
@@ -153,6 +158,7 @@ export class ChunkBasedTranscription {
     this.sourceLanguage = 'en';
     this.detectSpeakers = false;
     this.chunkDurationMs = chunkDurationMs;
+    this.engine = 'openai';
     this.translationProvider = 'openai';
     this.openaiApiKey = '';
     this.anthropicApiKey = '';
@@ -177,11 +183,13 @@ export class ChunkBasedTranscription {
     chunkOverlapMs = 500,
     useVADChunking = false,
     vadSilenceThresholdMs = 800,
+    engine: TranscriptionEngine = 'openai',
   ): Promise<void> {
     this.sourceLanguage = sourceLanguage;
     this.targetLanguage = targetLanguage;
     this.detectSpeakers = detectSpeakers;
     this.chunkIndex = 0;
+    this.engine = engine;
     this.translationProvider = translationProvider;
     this.openaiApiKey = openaiApiKey;
     this.anthropicApiKey = anthropicApiKey;
@@ -247,6 +255,7 @@ export class ChunkBasedTranscription {
       sourceLanguage: this.sourceLanguage,
       targetLanguage: this.targetLanguage,
       detectSpeakers: this.detectSpeakers,
+      engine: this.engine,
       translationProvider: this.translationProvider,
       openaiApiKey: this.openaiApiKey,
       anthropicApiKey: this.anthropicApiKey,

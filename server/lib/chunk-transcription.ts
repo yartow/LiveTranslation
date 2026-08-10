@@ -1,6 +1,7 @@
 import { WebSocket as WsWebSocket, WebSocketServer } from 'ws';
 import { transcribeAudio, correctAndTranslateText } from './openai';
 import { correctAndTranslateWithClaude } from './anthropic';
+import { transcribeWithMlx } from './mlx-whisper';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { writeFile, unlink } from 'fs/promises';
@@ -9,12 +10,14 @@ import { randomUUID } from 'crypto';
 import ffmpeg from 'fluent-ffmpeg';
 
 type TranslationProvider = 'openai' | 'claude' | 'none';
+type TranscriptionEngine = 'openai' | 'mlx';
 
 interface ChunkSession {
   clientWs: WsWebSocket;
   targetLanguage: string;
   sourceLanguage: string;
   detectSpeakers: boolean;
+  engine: TranscriptionEngine;
   translationProvider: TranslationProvider;
   openaiApiKey: string;
   anthropicApiKey: string;
@@ -71,6 +74,10 @@ class Semaphore {
   }
 }
 const whisperSemaphore = new Semaphore(3);
+// The MLX worker is a single local process sharing one GPU — running more
+// than one transcription at a time would just serialize inside it anyway,
+// so cap concurrency at 1 to avoid extra queueing jitter.
+const mlxSemaphore = new Semaphore(1);
 
 async function safeUnlink(path: string): Promise<void> {
   try {
@@ -176,9 +183,10 @@ async function processChunk(
 ): Promise<void> {
   const { signal } = session.abortController;
   let audioPath: string | null = null;
+  const semaphore = session.engine === 'mlx' ? mlxSemaphore : whisperSemaphore;
 
   sendDebug(session, `Chunk #${chunkIndex}: received (${audioBuffer.length} bytes, ${isWav ? 'WAV' : 'webm'}) — waiting for slot`);
-  await whisperSemaphore.acquire();
+  await semaphore.acquire();
   try {
     if (isWav) {
       sendDebug(session, `Chunk #${chunkIndex}: writing WAV file…`);
@@ -195,14 +203,19 @@ async function processChunk(
       return;
     }
 
-    const hasOpenAIKey = !!(session.openaiApiKey || process.env.OPENAI_API_KEY);
-    if (!hasOpenAIKey) {
-      sendDebug(session, `Chunk #${chunkIndex}: ✗ No OpenAI API key — transcription will fail`);
+    let rawText: string;
+    if (session.engine === 'mlx') {
+      sendDebug(session, `Chunk #${chunkIndex}: sending to local MLX Whisper (${session.sourceLanguage})…`);
+      rawText = await transcribeWithMlx(audioPath, session.sourceLanguage, session.previousTranscript || undefined, signal);
     } else {
-      sendDebug(session, `Chunk #${chunkIndex}: sending to Whisper (${session.sourceLanguage})…`);
+      const hasOpenAIKey = !!(session.openaiApiKey || process.env.OPENAI_API_KEY);
+      if (!hasOpenAIKey) {
+        sendDebug(session, `Chunk #${chunkIndex}: ✗ No OpenAI API key — transcription will fail`);
+      } else {
+        sendDebug(session, `Chunk #${chunkIndex}: sending to Whisper (${session.sourceLanguage})…`);
+      }
+      rawText = await transcribeAudio(audioPath, session.sourceLanguage, session.openaiApiKey || undefined, session.glossary || undefined, session.sermonContext || undefined, signal, session.previousTranscript || undefined);
     }
-
-    const rawText = await transcribeAudio(audioPath, session.sourceLanguage, session.openaiApiKey || undefined, session.glossary || undefined, session.sermonContext || undefined, signal, session.previousTranscript || undefined);
 
     if (!rawText.trim()) {
       sendDebug(session, `Chunk #${chunkIndex}: silent — no speech detected`);
@@ -284,7 +297,7 @@ async function processChunk(
     session.pendingResults.set(chunkIndex, { correctedText: '', translatedText: '' });
     flushInOrder(session);
   } finally {
-    whisperSemaphore.release();
+    semaphore.release();
     if (audioPath) await safeUnlink(audioPath);
   }
 }
@@ -306,6 +319,7 @@ export function setupChunkTranscriptionWebSocket(wss: WebSocketServer): void {
               targetLanguage: message.targetLanguage || 'nl',
               sourceLanguage: message.sourceLanguage || 'en',
               detectSpeakers: message.detectSpeakers ?? false,
+              engine: (message.engine as TranscriptionEngine) || 'openai',
               translationProvider: (message.translationProvider as TranslationProvider) || 'openai',
               openaiApiKey: message.openaiApiKey || '',
               anthropicApiKey: message.anthropicApiKey || '',
@@ -325,6 +339,7 @@ export function setupChunkTranscriptionWebSocket(wss: WebSocketServer): void {
               if (message.targetLanguage) session.targetLanguage = message.targetLanguage;
               if (message.sourceLanguage) session.sourceLanguage = message.sourceLanguage;
               if (message.detectSpeakers !== undefined) session.detectSpeakers = message.detectSpeakers;
+              if (message.engine) session.engine = message.engine;
               if (message.translationProvider) session.translationProvider = message.translationProvider;
               if (message.openaiApiKey !== undefined) session.openaiApiKey = message.openaiApiKey;
               if (message.anthropicApiKey !== undefined) session.anthropicApiKey = message.anthropicApiKey;

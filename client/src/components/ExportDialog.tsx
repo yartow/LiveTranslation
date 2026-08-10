@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState } from 'react';
 import {
   Dialog,
   DialogContent,
@@ -10,14 +10,6 @@ import {
 import { Button } from '@/components/ui/button';
 import { Label } from '@/components/ui/label';
 import { RadioGroup, RadioGroupItem } from '@/components/ui/radio-group';
-import { Checkbox } from '@/components/ui/checkbox';
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from '@/components/ui/select';
 import { useToast } from '@/hooks/use-toast';
 import { Loader2 } from 'lucide-react';
 import { getLanguageName } from '@/components/LanguageSelector';
@@ -64,40 +56,9 @@ export default function ExportDialog({
   const [exportType, setExportType] = useState<'original' | 'translation' | 'both'>('both');
   const [fileFormat, setFileFormat] = useState<'txt' | 'md'>('txt');
   const [isExporting, setIsExporting] = useState(false);
-  const [exportToGoogleDrive, setExportToGoogleDrive] = useState(false);
-  const [driveFolderId, setDriveFolderId] = useState<string>('root');
-  const [driveFolders, setDriveFolders] = useState<Array<{ id: string; name: string }>>([]);
-  const [isLoadingFolders, setIsLoadingFolders] = useState(false);
   const { toast } = useToast();
 
   const hasContent = !!(originalText || translatedText);
-
-  useEffect(() => {
-    if (isOpen && exportToGoogleDrive && driveFolders.length === 0) {
-      loadDriveFolders();
-    }
-  }, [isOpen, exportToGoogleDrive]);
-
-  const loadDriveFolders = async () => {
-    setIsLoadingFolders(true);
-    try {
-      const response = await fetch('/api/drive-folders');
-      if (!response.ok) {
-        throw new Error('Failed to load Drive folders');
-      }
-      const data = await response.json();
-      setDriveFolders(data.folders || []);
-    } catch (error) {
-      console.error('Error loading Drive folders:', error);
-      toast({
-        title: "Could not load Google Drive folders",
-        description: "You can still upload to the root folder.",
-        variant: "destructive",
-      });
-    } finally {
-      setIsLoadingFolders(false);
-    }
-  };
 
   const handleExport = async () => {
     setIsExporting(true);
@@ -125,11 +86,7 @@ export default function ExportDialog({
       const header = buildMetadataHeader(exportType, sourceLanguage, targetLanguage, sermonContext, fileFormat);
       const finalContent = header + data.formattedContent;
 
-      if (exportToGoogleDrive) {
-        await exportToGoogleDriveFunc(finalContent, fileFormat);
-      } else {
-        downloadFile(finalContent, fileFormat);
-      }
+      downloadFile(finalContent, fileFormat);
 
       toast({
         title: "Export successful",
@@ -166,48 +123,6 @@ export default function ExportDialog({
         URL.revokeObjectURL(url);
       }, 100);
     }, 100);
-  };
-
-  const exportToGoogleDriveFunc = async (content: string, format: string) => {
-    try {
-      const fileName = `cttay-transcript-${Date.now()}.${format}`;
-      const mimeType = format === 'md' ? 'text/markdown' : 'text/plain';
-      
-      const response = await fetch('/api/upload-to-drive', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
-          fileName,
-          fileContent: content,
-          mimeType,
-          folderId: driveFolderId === 'root' ? undefined : driveFolderId,
-        }),
-      });
-
-      if (!response.ok) {
-        throw new Error('Failed to upload to Google Drive');
-      }
-
-      const data = await response.json();
-      
-      toast({
-        title: "Uploaded to Google Drive",
-        description: data.webViewLink 
-          ? "Your transcript has been saved successfully." 
-          : "Your transcript has been saved to Google Drive.",
-      });
-
-      if (data.webViewLink) {
-        window.open(data.webViewLink, '_blank');
-      }
-
-      return data;
-    } catch (error) {
-      console.error('Google Drive upload error:', error);
-      throw error;
-    }
   };
 
   return (
@@ -261,41 +176,6 @@ export default function ExportDialog({
                 </Label>
               </div>
             </RadioGroup>
-          </div>
-
-          <div className="space-y-3">
-            <div className="flex items-center space-x-2">
-              <Checkbox
-                id="google-drive"
-                checked={exportToGoogleDrive}
-                onCheckedChange={(checked) => setExportToGoogleDrive(checked as boolean)}
-                data-testid="checkbox-google-drive"
-              />
-              <Label htmlFor="google-drive" className="font-normal cursor-pointer">
-                Upload to Google Drive
-              </Label>
-            </div>
-            
-            {exportToGoogleDrive && (
-              <div className="ml-6 space-y-2">
-                <Label htmlFor="drive-folder" className="text-sm">
-                  Select folder
-                </Label>
-                <Select value={driveFolderId} onValueChange={setDriveFolderId}>
-                  <SelectTrigger id="drive-folder" data-testid="select-drive-folder" disabled={isLoadingFolders}>
-                    <SelectValue placeholder={isLoadingFolders ? "Loading folders..." : "Select a folder"} />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="root">My Drive (root)</SelectItem>
-                    {driveFolders.map((folder) => (
-                      <SelectItem key={folder.id} value={folder.id}>
-                        {folder.name}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-              </div>
-            )}
           </div>
         </div>
 

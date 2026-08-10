@@ -1,6 +1,6 @@
 import { useState, useCallback } from 'react';
 
-export type TranscriptionProvider = 'whisper' | 'browser' | 'transformers';
+export type TranscriptionProvider = 'whisper' | 'browser' | 'transformers' | 'mlx';
 export type TranslationProvider = 'openai' | 'claude' | 'none';
 export type ImprovementProvider = 'openai' | 'claude';
 export type SpeechMode = 'monologue' | 'dialogue';
@@ -83,7 +83,7 @@ const defaultSettings: AppSettings = {
   activeDeviceProfileId: null,
 };
 
-const VALID_TRANSCRIPTION: TranscriptionProvider[] = ['whisper', 'browser', 'transformers'];
+const VALID_TRANSCRIPTION: TranscriptionProvider[] = ['whisper', 'browser', 'transformers', 'mlx'];
 const VALID_TRANSLATION: TranslationProvider[] = ['openai', 'claude', 'none'];
 const VALID_IMPROVEMENT: ImprovementProvider[] = ['openai', 'claude'];
 const VALID_LOCAL_MODEL: LocalWhisperModel[] = ['tiny', 'small', 'medium'];

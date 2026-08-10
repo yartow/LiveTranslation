@@ -9,7 +9,7 @@ import {
   formatForExport,
 } from './lib/openai';
 import { correctAndTranslateWithClaude, retroactiveCorrectionWithClaude } from './lib/anthropic';
-import { uploadFileToDrive, listDriveFolders } from './lib/google-drive';
+import { transcribeWithMlx } from './lib/mlx-whisper';
 import fs from 'fs';
 import ffmpeg from 'fluent-ffmpeg';
 
@@ -113,6 +113,9 @@ export async function registerRoutes(app: Express): Promise<Server> {
       const openaiApiKey = req.body.openaiApiKey || undefined;
       const anthropicApiKey = req.body.anthropicApiKey || undefined;
       const previousTranscript = typeof req.body.previousTranscript === 'string' ? req.body.previousTranscript : undefined;
+      // Optional: route transcription to the local MLX engine instead of OpenAI Whisper.
+      // Used by the WER benchmark harness to compare engines on the same fixtures.
+      const engine = req.body.engine === 'mlx' ? 'mlx' : 'openai';
 
       // Keep the original extension so ffmpeg can auto-detect the format.
       const originalExt = req.file.originalname.match(/\.[^.]+$/)?.[0]?.toLowerCase() ?? '.bin';
@@ -148,7 +151,9 @@ export async function registerRoutes(app: Express): Promise<Server> {
           .save(mp3FilePath!);
       });
 
-      const rawTranscript = await transcribeAudio(mp3FilePath, sourceLanguage, openaiApiKey, undefined, undefined, undefined, previousTranscript);
+      const rawTranscript = engine === 'mlx'
+        ? await transcribeWithMlx(mp3FilePath, sourceLanguage, previousTranscript)
+        : await transcribeAudio(mp3FilePath, sourceLanguage, openaiApiKey, undefined, undefined, undefined, previousTranscript);
       const { correctedText, translatedText } = await runCorrectAndTranslate(
         rawTranscript, targetLanguage, detectSpeakers, provider, openaiApiKey, anthropicApiKey,
       );
@@ -282,44 +287,6 @@ export async function registerRoutes(app: Express): Promise<Server> {
       console.error('Export formatting error:', error);
       res.status(500).json({
         error: 'Failed to format export',
-        details: error instanceof Error ? error.message : 'Unknown error',
-      });
-    }
-  });
-
-  app.post('/api/upload-to-drive', async (req, res) => {
-    try {
-      const { fileName, fileContent, mimeType, folderId } = req.body;
-
-      if (!fileName || !fileContent || typeof fileName !== 'string' || typeof fileContent !== 'string') {
-        return res.status(400).json({ error: 'Missing or invalid required fields' });
-      }
-      if (mimeType && typeof mimeType !== 'string') {
-        return res.status(400).json({ error: 'Invalid MIME type' });
-      }
-      if (fileContent.length > 10 * 1024 * 1024) {
-        return res.status(400).json({ error: 'File content too large (max 10MB)' });
-      }
-
-      const result = await uploadFileToDrive(fileName, fileContent, mimeType, folderId);
-      res.json(result);
-    } catch (error) {
-      console.error('Google Drive upload error:', error);
-      res.status(500).json({
-        error: 'Failed to upload to Google Drive',
-        details: error instanceof Error ? error.message : 'Unknown error',
-      });
-    }
-  });
-
-  app.get('/api/drive-folders', async (req, res) => {
-    try {
-      const folders = await listDriveFolders();
-      res.json({ folders });
-    } catch (error) {
-      console.error('Google Drive folders error:', error);
-      res.status(500).json({
-        error: 'Failed to fetch Google Drive folders',
         details: error instanceof Error ? error.message : 'Unknown error',
       });
     }

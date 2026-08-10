@@ -42,11 +42,4 @@ describe('Regression: missing required fields return 400, not 500', () => {
     expect(res.status).toBe(400);
     expect(res.status).not.toBe(500);
   });
-
-  it('/api/upload-to-drive with missing fileName → 400', async () => {
-    const res = await request(server)
-      .post('/api/upload-to-drive')
-      .send({ fileContent: 'content' }); // missing fileName
-    expect(res.status).toBe(400);
-  });
 });

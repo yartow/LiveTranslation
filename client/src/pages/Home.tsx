@@ -498,11 +498,12 @@ export default function Home() {
           settings.theologicalGlossary,
           sermonContextRef.current,
         );
-      } else if (settings.transcriptionProvider === 'whisper') {
+      } else if (settings.transcriptionProvider === 'whisper' || settings.transcriptionProvider === 'mlx') {
         const chunkBackend = new ChunkBasedTranscription(events, chunkDurationSecs * 1000);
         backend = chunkBackend;
         backendRef.current = backend;
-        if (settings.debugMode) addDebugLog('Connecting to Whisper chunk transcription…');
+        const engine = settings.transcriptionProvider === 'mlx' ? 'mlx' : 'openai';
+        if (settings.debugMode) addDebugLog(`Connecting to ${engine === 'mlx' ? 'local MLX' : 'Whisper'} chunk transcription…`);
         await chunkBackend.start(
           sourceLanguage,
           targetLanguage,
@@ -517,6 +518,7 @@ export default function Home() {
           settings.chunkOverlapMs,
           settings.useVADChunking,
           settings.vadSilenceThresholdMs,
+          engine,
         );
       } else {
         // AssemblyAI real-time streaming (PCM16 over WebSocket)
@@ -596,7 +598,10 @@ export default function Home() {
   const configSummary = [
     `${getLanguageName(sourceLanguage)} → ${getLanguageName(targetLanguage)}`,
     settings.speechMode === 'monologue' ? 'Monologue' : 'Dialogue',
-    settings.transcriptionProvider === 'browser' ? 'Browser' : 'Whisper',
+    settings.transcriptionProvider === 'browser' ? 'Browser'
+      : settings.transcriptionProvider === 'transformers' ? 'Local Whisper'
+      : settings.transcriptionProvider === 'mlx' ? 'MLX'
+      : 'Whisper',
   ].join('  ·  ');
 
   return (
@@ -725,7 +730,7 @@ export default function Home() {
                 </div>
               )}
 
-              {settings.transcriptionProvider === 'whisper' && (
+              {(settings.transcriptionProvider === 'whisper' || settings.transcriptionProvider === 'mlx') && (
                 <div className="flex items-center gap-2">
                   <span className="text-sm text-muted-foreground">Interval</span>
                   <select
@@ -740,6 +745,7 @@ export default function Home() {
                     className="text-sm border border-input rounded-lg px-2 py-1.5 bg-background text-foreground disabled:opacity-50"
                     data-testid="select-chunk-duration"
                   >
+                    {settings.transcriptionProvider === 'mlx' && <option value={2}>2s</option>}
                     <option value={3}>3s</option>
                     <option value={5}>5s</option>
                     <option value={8}>8s</option>
@@ -754,6 +760,7 @@ export default function Home() {
             <p className="text-xs text-muted-foreground/60">
               {settings.transcriptionProvider === 'browser' ? 'Browser speech'
                 : settings.transcriptionProvider === 'transformers' ? 'Local Whisper'
+                : settings.transcriptionProvider === 'mlx' ? 'Local Whisper (MLX)'
                 : 'Whisper'}
               {' · '}
               {settings.translationProvider === 'none'

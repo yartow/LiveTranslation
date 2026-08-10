@@ -15,7 +15,7 @@ A mobile-first web application for real-time audio transcription and multi-langu
 - **Live language switching** — Change the target language mid-recording; all accumulated text re-translates on the fly.
 - **Speaker detection** — Optionally identifies and labels different speakers.
 - **Retroactive correction** — Every 5 sentences, the AI reviews the full accumulated text for grammar and coherence.
-- **Export** — Download transcripts as plain text or Markdown, or upload directly to Google Drive.
+- **Export** — Download transcripts as plain text or Markdown.
 - **Session history** — Every recording is auto-saved to IndexedDB; browse, export, or delete past sessions.
 - **PWA** — Installable on Android (Chrome) and iOS (Share → Add to Home Screen); opens fullscreen with no browser chrome.
 - **RTL support** — Right-to-left layout for Arabic and Farsi.
@@ -186,7 +186,6 @@ The regression suite tests specific bugs that have been fixed (chunk ordering, v
 | Translation | OpenAI GPT-4o-mini · Claude (Anthropic) |
 | Audio processing | ffmpeg via fluent-ffmpeg |
 | Database | PostgreSQL via Drizzle ORM (Neon) |
-| File Storage | Google Drive API |
 | Offline / PWA | IndexedDB (session history) · Web App Manifest |
 | Testing | Vitest + Supertest |
 
@@ -207,4 +206,4 @@ Claude pricing is similar. Local Whisper + None translation is completely free.
 - Plain text (`.txt`) or Markdown (`.md`)
 - Export original transcription, translation, or both side-by-side
 - Optional AI formatting pass before export
-- Download locally or save to Google Drive (requires Google Drive connector configured in Replit)
+- Downloads locally to your device

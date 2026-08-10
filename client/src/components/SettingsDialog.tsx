@@ -242,6 +242,22 @@ export default function SettingsDialog({ isOpen, onClose, settings, onUpdate, we
                 </div>
               </div>
 
+              {/* Local MLX Whisper — Apple Silicon only, no key/network needed */}
+              <div className="flex items-start gap-3 rounded-md border border-border p-3">
+                <RadioGroupItem value="mlx" id="t-mlx" className="mt-0.5" />
+                <div>
+                  <Label htmlFor="t-mlx" className="font-medium cursor-pointer">
+                    Local Whisper (MLX){' '}
+                    <span className="text-xs font-normal text-green-600 dark:text-green-400">free · offline</span>
+                  </Label>
+                  <p className="text-xs text-muted-foreground mt-0.5">
+                    Runs whisper-large-v3 on-device via mlx-whisper. Apple Silicon Macs only —
+                    requires the app's own server running locally with mlx-whisper installed.
+                    Fastest and most private option; no API key needed.
+                  </p>
+                </div>
+              </div>
+
               {/* Browser Speech — always available */}
               <div className="flex items-start gap-3 rounded-md border border-border p-3">
                 <RadioGroupItem value="browser" id="t-browser" className="mt-0.5" />
