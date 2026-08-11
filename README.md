@@ -7,6 +7,22 @@ A mobile-first web application for real-time audio transcription and multi-langu
 
 ---
 
+## Quick Start
+
+```bash
+git clone <this-repo>
+cd LiveTranslation
+npm install
+cp .env.example .env      # no keys needed for free mode (Browser Speech + None)
+npm run dev
+```
+
+Then open **`http://localhost:PORT`** in Chrome or Edge (the free Browser Speech transcription backend requires one of those) — the terminal running `npm run dev` logs `serving on port XXXX` on startup, so use that number. `PORT` defaults to `5001` (see `.env.example`), but **check your own `.env` file first**: if it already sets a different `PORT` (e.g. `3000`), that value wins and `5001` will not be listening at all. Press Record, allow microphone access, and start talking.
+
+Want Whisper transcription or AI translation instead of the free mode? Add `OPENAI_API_KEY` and/or `ANTHROPIC_API_KEY` to `.env`, or paste them into the in-app Settings (⚙︎) — see [API Providers & Free Mode](#api-providers--free-mode) below. Want to run entirely offline on Apple Silicon with the local `mlx` provider? See [Local MLX Transcription](#local-mlx-transcription-apple-silicon-only) — **do not use Docker for that path**, see the note in [Running Locally — Docker](#running-locally--docker).
+
+---
+
 ## What It Does
 
 - **Real-time transcription** — Captures spoken audio via the browser microphone and converts it to text using OpenAI Whisper (paid, high accuracy) or the free Browser Speech API.
@@ -93,7 +109,7 @@ npm install
 npm run dev
 ```
 
-Open [http://localhost:5001](http://localhost:5001).
+Open `http://localhost:PORT` — default `5001`, but **check your `.env`** for a `PORT=` line that overrides it (the server logs `serving on port XXXX` on startup either way).
 
 The `.env.example` file documents all available variables. At minimum, set `OPENAI_API_KEY` if you want Whisper transcription, or leave keys empty to use Browser Speech + None for free.
 
@@ -110,7 +126,22 @@ docker compose up --build
 
 Open [http://localhost:5001](http://localhost:5001).
 
+Unlike `npm run dev`, this port is **fixed at `5001`** even if your `.env` sets a different `PORT` — `docker-compose.yml` hardcodes `PORT: "5001"` in its `environment:` block, which takes precedence over whatever `.env` provides.
+
 The container runs the production build (Vite client + esbuild server bundle). ffmpeg is included in the image.
+
+> **⚠️ The `mlx` (local LLM / on-device Whisper) transcription provider does not work in Docker.** The Docker image (`Dockerfile`) is based on `node:20-alpine`, a Linux container — `mlx-whisper` depends on Apple's MLX framework, which only runs on Apple Silicon macOS, not Linux, and not inside a container even when Docker Desktop is hosted on an Apple Silicon Mac (the container's own kernel/CPU access is Linux/x86-virtualized, not native macOS). If you select `mlx` as the transcription provider while running via Docker, transcription requests will fail. Use `npm run dev` / `npm start` directly on macOS instead if you want the `mlx` provider — see [Local MLX Transcription](#local-mlx-transcription-apple-silicon-only). The other three transcription backends (`whisper` via OpenAI, `browser`, `transformers`) all work fine in Docker.
+
+---
+
+## Local MLX Transcription (Apple Silicon only)
+
+The `mlx` transcription provider runs `whisper-large-v3-mlx` fully on-device via a Python sidecar process (`server/python/mlx_worker.py`), using Apple's MLX framework. It is free, requires no API key, and stays fast because the model is kept loaded in memory between audio chunks.
+
+Requirements:
+- **macOS on Apple Silicon (M1/M2/M3/M4).** Not available on Intel Macs, Linux, Windows, or in Docker (see the warning above).
+- A Python interpreter with `mlx-whisper` installed, pointed to via the `MLX_PYTHON` env var (see `.env.example`). Plain `python3` on PATH is often not the right interpreter if you installed `mlx-whisper` into a conda/venv environment.
+- Run the app directly on the host with `npm run dev` or `npm run build && npm start` — not through `docker compose`.
 
 ---
 

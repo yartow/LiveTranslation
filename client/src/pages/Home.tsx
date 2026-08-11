@@ -225,6 +225,24 @@ export default function Home() {
     retranslateAll();
   }, [targetLanguage, detectSpeakers, isProcessing, isRetranslating]);
 
+  // Push translation settings (provider, keys, glossary) to the already-running
+  // backend so changes made mid-recording — e.g. switching to "Transcription
+  // only" — take effect on the next chunk instead of being silently queued
+  // until the session is stopped and restarted.
+  useEffect(() => {
+    if (!backendRef.current) return;
+    backendRef.current.updateConfig(
+      sourceLanguageRef.current,
+      targetLanguageRef.current,
+      detectSpeakersRef.current,
+      settings.translationProvider,
+      settings.openaiApiKey,
+      settings.anthropicApiKey,
+      settings.theologicalGlossary,
+      sermonContextRef.current,
+    );
+  }, [settings.translationProvider, settings.openaiApiKey, settings.anthropicApiKey, settings.theologicalGlossary]);
+
   const swapLanguages = useCallback(() => {
     setSourceLanguage(prev => { setTargetLanguage(prev); return targetLanguage; });
   }, [targetLanguage]);
@@ -269,7 +287,9 @@ export default function Home() {
           accumulatedText: tailOriginal,
           targetLanguage: targetLanguageRef.current,
           detectSpeakers: detectSpeakersRef.current,
-          translationProvider: s.improvementProvider,
+          // Respect "Transcription only" — improvementProvider has no 'none' option,
+          // so without this override Improve would silently re-enable translation.
+          translationProvider: s.translationProvider === 'none' ? 'none' : s.improvementProvider,
           openaiApiKey: s.openaiApiKey,
           anthropicApiKey: s.anthropicApiKey,
           glossary: s.theologicalGlossary || undefined,
@@ -592,11 +612,16 @@ export default function Home() {
       ? 'Transcription only'
       : 'Translation';
 
-  const showOriginal = settings.displayContent === 'original' || settings.displayContent === 'both';
-  const showTranslation = settings.displayContent === 'translation' || settings.displayContent === 'both';
+  const translationDisabled = settings.translationProvider === 'none';
+  // In "Transcription only" mode there is nothing to show a translation panel for —
+  // always show Original and never show the translation box, regardless of displayContent.
+  const showOriginal = translationDisabled || settings.displayContent === 'original' || settings.displayContent === 'both';
+  const showTranslation = !translationDisabled && (settings.displayContent === 'translation' || settings.displayContent === 'both');
 
   const configSummary = [
-    `${getLanguageName(sourceLanguage)} → ${getLanguageName(targetLanguage)}`,
+    translationDisabled
+      ? `${getLanguageName(sourceLanguage)} (Transcription only)`
+      : `${getLanguageName(sourceLanguage)} → ${getLanguageName(targetLanguage)}`,
     settings.speechMode === 'monologue' ? 'Monologue' : 'Dialogue',
     settings.transcriptionProvider === 'browser' ? 'Browser'
       : settings.transcriptionProvider === 'transformers' ? 'Local Whisper'
