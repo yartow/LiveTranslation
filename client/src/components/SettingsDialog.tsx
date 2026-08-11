@@ -20,7 +20,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/select';
-import type { AppSettings, TranscriptionProvider, TranslationProvider, ImprovementProvider, LocalWhisperModel, DeviceProfile } from '@/hooks/useSettings';
+import type { AppSettings, TranscriptionProvider, TranslationProvider, ImprovementProvider, LocalWhisperModel, DeviceProfile, SermonTranslationProvider } from '@/hooks/useSettings';
 import { maskKey } from '@/lib/mask-key';
 
 interface SettingsDialogProps {
@@ -818,6 +818,160 @@ export default function SettingsDialog({ isOpen, onClose, settings, onUpdate, we
                 ))}
               </div>
             )}
+          </section>
+
+          {/* ── Sermon Mode ── */}
+          <section className="space-y-4">
+            <h3 className="text-sm font-semibold text-foreground border-b border-border pb-1">
+              Preekmodus
+            </h3>
+            <p className="text-xs text-muted-foreground">
+              Instellingen voor de dual-pane preekvertaler (<code>/sermon</code>). Bracket-size en
+              stabiliteit werken direct door op een lopende sessie — geen herstart nodig.
+            </p>
+
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+              <div className="space-y-1">
+                <Label className="text-xs font-medium">Correctieprovider (ASR)</Label>
+                <Select
+                  value={settings.sermonCorrectionProvider}
+                  onValueChange={(v) => onUpdate({ sermonCorrectionProvider: v as SermonTranslationProvider })}
+                >
+                  <SelectTrigger className="h-8 text-xs" data-testid="select-sermon-correction-provider">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="openai">OpenAI GPT-4o-mini</SelectItem>
+                    <SelectItem value="claude">Claude Haiku</SelectItem>
+                    <SelectItem value="ollama">Ollama (lokaal)</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+              <div className="space-y-1">
+                <Label className="text-xs font-medium">Vertaalprovider</Label>
+                <Select
+                  value={settings.sermonTranslationProvider}
+                  onValueChange={(v) => onUpdate({ sermonTranslationProvider: v as SermonTranslationProvider })}
+                >
+                  <SelectTrigger className="h-8 text-xs" data-testid="select-sermon-translation-provider">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="openai">OpenAI GPT-4o-mini</SelectItem>
+                    <SelectItem value="claude">Claude Haiku</SelectItem>
+                    <SelectItem value="ollama">Ollama (lokaal)</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+            </div>
+
+            <div className="space-y-1.5">
+              <Label htmlFor="sermon-model" className="text-xs font-medium">Modelnaam</Label>
+              <input
+                id="sermon-model"
+                type="text"
+                value={settings.sermonModel}
+                onChange={(e) => onUpdate({ sermonModel: e.target.value })}
+                placeholder="gpt-4o-mini"
+                className="w-full rounded-md border border-border bg-background px-2 py-1 text-xs text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-1 focus:ring-ring"
+              />
+            </div>
+
+            <div className="flex items-center gap-3">
+              <Label htmlFor="sermon-max-latency" className="text-xs font-medium whitespace-nowrap w-40">
+                Max. vertraging (bracket-size)
+              </Label>
+              <input
+                id="sermon-max-latency"
+                type="range"
+                min={3}
+                max={20}
+                step={1}
+                value={settings.sermonMaxLatencySecs}
+                onChange={(e) => onUpdate({ sermonMaxLatencySecs: Number(e.target.value) })}
+                className="flex-1 accent-primary"
+              />
+              <span className="text-xs text-muted-foreground w-10 text-right">
+                {settings.sermonMaxLatencySecs}s
+              </span>
+            </div>
+
+            <div className="flex items-center gap-3">
+              <Label htmlFor="sermon-stability" className="text-xs font-medium whitespace-nowrap w-40">
+                Stabiliteits-debounce
+              </Label>
+              <input
+                id="sermon-stability"
+                type="range"
+                min={300}
+                max={5000}
+                step={100}
+                value={settings.sermonStabilityMs}
+                onChange={(e) => onUpdate({ sermonStabilityMs: Number(e.target.value) })}
+                className="flex-1 accent-primary"
+              />
+              <span className="text-xs text-muted-foreground w-14 text-right">
+                {settings.sermonStabilityMs} ms
+              </span>
+            </div>
+
+            <div className="grid grid-cols-2 gap-3">
+              <div className="flex items-center gap-2">
+                <Label htmlFor="sermon-context-before" className="text-xs font-medium whitespace-nowrap">
+                  Context vóór
+                </Label>
+                <Input
+                  id="sermon-context-before"
+                  type="number"
+                  min={0}
+                  max={5}
+                  value={settings.sermonContextBefore}
+                  onChange={(e) => {
+                    const v = parseInt(e.target.value, 10);
+                    if (!Number.isNaN(v)) onUpdate({ sermonContextBefore: v });
+                  }}
+                  className="w-16 text-xs text-center"
+                />
+              </div>
+              <div className="flex items-center gap-2">
+                <Label htmlFor="sermon-context-after" className="text-xs font-medium whitespace-nowrap">
+                  Context ná
+                </Label>
+                <Input
+                  id="sermon-context-after"
+                  type="number"
+                  min={0}
+                  max={3}
+                  value={settings.sermonContextAfter}
+                  onChange={(e) => {
+                    const v = parseInt(e.target.value, 10);
+                    if (!Number.isNaN(v)) onUpdate({ sermonContextAfter: v });
+                  }}
+                  className="w-16 text-xs text-center"
+                />
+              </div>
+            </div>
+
+            <div className="flex items-center justify-between">
+              <div>
+                <Label htmlFor="sermon-auto-translate" className="font-medium cursor-pointer text-sm">
+                  Automatisch vertalen
+                </Label>
+                <p className="text-xs text-muted-foreground mt-0.5">
+                  Nieuwe zinnen automatisch vertalen zodra ze stabiel zijn. Refresh werkt altijd, ook uit.
+                </p>
+              </div>
+              <Switch
+                id="sermon-auto-translate"
+                checked={settings.sermonAutoTranslate}
+                onCheckedChange={(checked) => onUpdate({ sermonAutoTranslate: checked })}
+              />
+            </div>
+
+            <p className="text-xs text-muted-foreground italic">
+              Preekmodus forceert tijdens opnemen voice-activity-detection chunking met overlap 0
+              (i.p.v. de audio-instellingen hierboven) — zo landen chunkgrenzen tussen woorden.
+            </p>
           </section>
 
           {/* ── Debug Mode ── */}

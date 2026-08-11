@@ -1,7 +1,7 @@
 import { WebSocket as WsWebSocket, WebSocketServer } from 'ws';
-import { transcribeAudio, correctAndTranslateText } from './openai';
-import { correctAndTranslateWithClaude } from './anthropic';
-import { correctAndTranslateWithOllama } from './ollama';
+import { transcribeAudio, correctAndTranslateText, correctTranscript } from './openai';
+import { correctAndTranslateWithClaude, correctTranscriptWithClaude } from './anthropic';
+import { correctAndTranslateWithOllama, correctTranscriptWithOllama } from './ollama';
 import { transcribeWithMlx } from './mlx-whisper';
 import { tmpdir } from 'os';
 import { join } from 'path';
@@ -9,9 +9,15 @@ import { writeFile, unlink } from 'fs/promises';
 import { existsSync } from 'fs';
 import { randomUUID } from 'crypto';
 import ffmpeg from 'fluent-ffmpeg';
+import { Semaphore } from './semaphore';
 
 type TranslationProvider = 'openai' | 'claude' | 'ollama' | 'none';
 type TranscriptionEngine = 'openai' | 'mlx';
+// 'translate' is the existing chunk pipeline. 'correct-only' is sermon
+// mode's ASR path: correct the chunk (punctuation, homophones) but never
+// translate it — see client/src/lib/chunk-based-transcription.ts's
+// OutputMode and the plan's "correctie-only ASR-pad" section.
+type OutputMode = 'translate' | 'correct-only';
 
 interface ChunkSession {
   clientWs: WsWebSocket;
@@ -19,6 +25,7 @@ interface ChunkSession {
   sourceLanguage: string;
   detectSpeakers: boolean;
   engine: TranscriptionEngine;
+  outputMode: OutputMode;
   translationProvider: TranslationProvider;
   openaiApiKey: string;
   anthropicApiKey: string;
@@ -63,19 +70,6 @@ const simulateLatency = (): Promise<void> =>
 // Reject individual audio chunks larger than 10 MB.
 const MAX_CHUNK_SIZE = 10 * 1024 * 1024;
 
-class Semaphore {
-  private slots: number;
-  private queue: Array<() => void> = [];
-  constructor(max: number) { this.slots = max; }
-  acquire(): Promise<void> {
-    if (this.slots > 0) { this.slots--; return Promise.resolve(); }
-    return new Promise(resolve => this.queue.push(resolve));
-  }
-  release(): void {
-    const next = this.queue.shift();
-    if (next) next(); else this.slots++;
-  }
-}
 const whisperSemaphore = new Semaphore(3);
 // The MLX worker is a single local process sharing one GPU — running more
 // than one transcription at a time would just serialize inside it anyway,
@@ -247,7 +241,33 @@ async function processChunk(
     let correctedText: string;
     let translatedText: string;
 
-    if (session.translationProvider === 'none') {
+    if (session.outputMode === 'correct-only') {
+      // Sermon mode: correct the chunk, never translate it. Per-sentence
+      // translation with context happens later via /api/sermon/translate —
+      // see server/lib/sermon-translate.ts.
+      translatedText = '';
+      if (session.translationProvider === 'ollama') {
+        sendDebug(session, `Chunk #${chunkIndex}: correcting via Ollama (${session.ollamaModel})…`);
+        ({ correctedText } = await correctTranscriptWithOllama(
+          rawText, session.targetLanguage, session.ollamaModel, session.ollamaBaseUrl,
+          session.glossary || undefined, session.previousTranscript || undefined, signal,
+        ));
+      } else if (session.translationProvider === 'claude') {
+        const hasAnthropicKey = !!(session.anthropicApiKey || process.env.ANTHROPIC_API_KEY);
+        if (!hasAnthropicKey) sendDebug(session, `Chunk #${chunkIndex}: ✗ No Anthropic API key`);
+        else sendDebug(session, `Chunk #${chunkIndex}: correcting via Claude Haiku…`);
+        ({ correctedText } = await correctTranscriptWithClaude(
+          rawText, session.targetLanguage, session.anthropicApiKey,
+          session.glossary || undefined, session.previousTranscript || undefined, signal,
+        ));
+      } else {
+        sendDebug(session, `Chunk #${chunkIndex}: correcting via GPT-4o-mini…`);
+        ({ correctedText } = await correctTranscript(
+          rawText, session.targetLanguage, session.openaiApiKey || undefined,
+          session.glossary || undefined, session.previousTranscript || undefined, signal,
+        ));
+      }
+    } else if (session.translationProvider === 'none') {
       sendDebug(session, `Chunk #${chunkIndex}: translation disabled — using raw text`);
       correctedText = rawText;
       translatedText = '';
@@ -329,6 +349,7 @@ export function setupChunkTranscriptionWebSocket(wss: WebSocketServer): void {
               sourceLanguage: message.sourceLanguage || 'en',
               detectSpeakers: message.detectSpeakers ?? false,
               engine: (message.engine as TranscriptionEngine) || 'openai',
+              outputMode: (message.outputMode as OutputMode) || 'translate',
               translationProvider: (message.translationProvider as TranslationProvider) || 'openai',
               openaiApiKey: message.openaiApiKey || '',
               anthropicApiKey: message.anthropicApiKey || '',
@@ -351,6 +372,7 @@ export function setupChunkTranscriptionWebSocket(wss: WebSocketServer): void {
               if (message.sourceLanguage) session.sourceLanguage = message.sourceLanguage;
               if (message.detectSpeakers !== undefined) session.detectSpeakers = message.detectSpeakers;
               if (message.engine) session.engine = message.engine;
+              if (message.outputMode) session.outputMode = message.outputMode;
               if (message.translationProvider) session.translationProvider = message.translationProvider;
               if (message.openaiApiKey !== undefined) session.openaiApiKey = message.openaiApiKey;
               if (message.anthropicApiKey !== undefined) session.anthropicApiKey = message.anthropicApiKey;

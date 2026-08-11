@@ -1,4 +1,5 @@
-import { Settings, Sun, Moon } from 'lucide-react';
+import { Settings, Sun, Moon, BookOpenText, Mic } from 'lucide-react';
+import { Link, useLocation } from 'wouter';
 
 interface HeaderProps {
   onThemeToggle?: () => void;
@@ -7,6 +8,9 @@ interface HeaderProps {
 }
 
 export default function Header({ onThemeToggle, onSettingsOpen, isDark }: HeaderProps) {
+  const [location] = useLocation();
+  const inSermonMode = location === '/sermon';
+
   return (
     <header className="sticky top-0 z-50 bg-background border-b border-border">
       <div className="flex items-center justify-between h-12 px-4">
@@ -15,6 +19,15 @@ export default function Header({ onThemeToggle, onSettingsOpen, isDark }: Header
           <h1 className="text-base font-semibold tracking-tight text-foreground">CTT.AY</h1>
         </div>
         <div className="flex items-center gap-1">
+          <Link
+            href={inSermonMode ? '/' : '/sermon'}
+            className="text-muted-foreground hover:text-foreground p-2 rounded-md transition-colors"
+            aria-label={inSermonMode ? 'Live modus' : 'Preekmodus'}
+            title={inSermonMode ? 'Terug naar live modus' : 'Preekmodus (dual-pane vertaaleditor)'}
+            data-testid="link-sermon-mode-toggle"
+          >
+            {inSermonMode ? <Mic className="w-4 h-4" /> : <BookOpenText className="w-4 h-4" />}
+          </Link>
           {onThemeToggle && (
             <button
               onClick={onThemeToggle}

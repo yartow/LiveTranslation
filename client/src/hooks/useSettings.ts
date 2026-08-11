@@ -7,6 +7,8 @@ export type SpeechMode = 'monologue' | 'dialogue';
 export type DisplayContent = 'original' | 'translation' | 'both';
 export type TextDisplay = 'subtitle' | 'stream';
 export type LocalWhisperModel = 'tiny' | 'small' | 'medium';
+// Sermon mode never offers 'none' — a correction/translation call is always required there.
+export type SermonTranslationProvider = 'openai' | 'claude' | 'ollama';
 
 export interface DeviceProfile {
   id: string;
@@ -55,6 +57,15 @@ export interface AppSettings {
   // device profiles
   deviceProfiles: DeviceProfile[];
   activeDeviceProfileId: string | null;
+  // sermon mode — see client/src/pages/SermonMode.tsx
+  sermonMaxLatencySecs: number;
+  sermonStabilityMs: number;
+  sermonContextBefore: number;
+  sermonContextAfter: number;
+  sermonTranslationProvider: SermonTranslationProvider;
+  sermonModel: string;
+  sermonCorrectionProvider: SermonTranslationProvider;
+  sermonAutoTranslate: boolean;
 }
 
 const PREFS_KEY = 'cttay_prefs';
@@ -86,12 +97,21 @@ const defaultSettings: AppSettings = {
   assemblyTurnSilenceMs: 700,
   deviceProfiles: [],
   activeDeviceProfileId: null,
+  sermonMaxLatencySecs: 6,
+  sermonStabilityMs: 1200,
+  sermonContextBefore: 2,
+  sermonContextAfter: 1,
+  sermonTranslationProvider: 'openai',
+  sermonModel: 'gpt-4o-mini',
+  sermonCorrectionProvider: 'openai',
+  sermonAutoTranslate: true,
 };
 
 const VALID_TRANSCRIPTION: TranscriptionProvider[] = ['whisper', 'browser', 'transformers', 'mlx'];
 const VALID_TRANSLATION: TranslationProvider[] = ['openai', 'claude', 'ollama', 'none'];
 const VALID_IMPROVEMENT: ImprovementProvider[] = ['openai', 'claude'];
 const VALID_LOCAL_MODEL: LocalWhisperModel[] = ['tiny', 'small', 'medium'];
+const VALID_SERMON_PROVIDER: SermonTranslationProvider[] = ['openai', 'claude', 'ollama'];
 
 function clamp(v: number, min: number, max: number): number {
   return Math.max(min, Math.min(max, v));
@@ -157,6 +177,40 @@ function loadSettings(): AppSettings {
     merged.deviceProfiles = [];
   }
 
+  // Sermon mode range/enum validation
+  if (typeof merged.sermonMaxLatencySecs !== 'number') {
+    merged.sermonMaxLatencySecs = defaultSettings.sermonMaxLatencySecs;
+  } else {
+    merged.sermonMaxLatencySecs = clamp(merged.sermonMaxLatencySecs, 3, 20);
+  }
+  if (typeof merged.sermonStabilityMs !== 'number') {
+    merged.sermonStabilityMs = defaultSettings.sermonStabilityMs;
+  } else {
+    merged.sermonStabilityMs = clamp(merged.sermonStabilityMs, 300, 5000);
+  }
+  if (typeof merged.sermonContextBefore !== 'number') {
+    merged.sermonContextBefore = defaultSettings.sermonContextBefore;
+  } else {
+    merged.sermonContextBefore = clamp(Math.round(merged.sermonContextBefore), 0, 5);
+  }
+  if (typeof merged.sermonContextAfter !== 'number') {
+    merged.sermonContextAfter = defaultSettings.sermonContextAfter;
+  } else {
+    merged.sermonContextAfter = clamp(Math.round(merged.sermonContextAfter), 0, 3);
+  }
+  if (!VALID_SERMON_PROVIDER.includes(merged.sermonTranslationProvider)) {
+    merged.sermonTranslationProvider = defaultSettings.sermonTranslationProvider;
+  }
+  if (!VALID_SERMON_PROVIDER.includes(merged.sermonCorrectionProvider)) {
+    merged.sermonCorrectionProvider = defaultSettings.sermonCorrectionProvider;
+  }
+  if (typeof merged.sermonModel !== 'string' || !merged.sermonModel.trim() || merged.sermonModel.length > 80) {
+    merged.sermonModel = defaultSettings.sermonModel;
+  }
+  if (typeof merged.sermonAutoTranslate !== 'boolean') {
+    merged.sermonAutoTranslate = defaultSettings.sermonAutoTranslate;
+  }
+
   return merged;
 }
 
@@ -194,6 +248,14 @@ export function useSettings() {
           assemblyTurnSilenceMs: next.assemblyTurnSilenceMs,
           deviceProfiles: next.deviceProfiles,
           activeDeviceProfileId: next.activeDeviceProfileId,
+          sermonMaxLatencySecs: next.sermonMaxLatencySecs,
+          sermonStabilityMs: next.sermonStabilityMs,
+          sermonContextBefore: next.sermonContextBefore,
+          sermonContextAfter: next.sermonContextAfter,
+          sermonTranslationProvider: next.sermonTranslationProvider,
+          sermonModel: next.sermonModel,
+          sermonCorrectionProvider: next.sermonCorrectionProvider,
+          sermonAutoTranslate: next.sermonAutoTranslate,
         }));
       } catch {}
 

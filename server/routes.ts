@@ -11,6 +11,7 @@ import {
 import { correctAndTranslateWithClaude, retroactiveCorrectionWithClaude } from './lib/anthropic';
 import { correctAndTranslateWithOllama, retroactiveCorrectionWithOllama } from './lib/ollama';
 import { transcribeWithMlx } from './lib/mlx-whisper';
+import { translateSegments, type TranslateItemInput, type SermonTranslationProvider } from './lib/sermon-translate';
 import fs from 'fs';
 import ffmpeg from 'fluent-ffmpeg';
 
@@ -103,6 +104,35 @@ function parseProvider(value: unknown): TranslationProvider | null {
     return value as TranslationProvider;
   }
   return null;
+}
+
+// Sermon mode never accepts 'none' — a correction/translation call is always
+// required (see client/src/hooks/useSettings.ts's SermonTranslationProvider).
+const VALID_SERMON_TRANSLATION_PROVIDERS = new Set(['openai', 'claude', 'ollama']);
+const SERMON_MAX_ITEMS = 100;
+const SERMON_MAX_TEXT_LEN = 2000;
+const SERMON_MAX_CONTEXT_SENTENCES = 5;
+
+function parseSermonItems(value: unknown): TranslateItemInput[] | null {
+  if (!Array.isArray(value) || value.length === 0 || value.length > SERMON_MAX_ITEMS) return null;
+
+  const items: TranslateItemInput[] = [];
+  for (const raw of value) {
+    if (!raw || typeof raw !== 'object') return null;
+    const { id, text, before, after } = raw as Record<string, unknown>;
+
+    if (typeof id !== 'string' || !id) return null;
+    if (typeof text !== 'string' || !text.trim() || text.length > SERMON_MAX_TEXT_LEN) return null;
+
+    const beforeArr = before === undefined ? [] : before;
+    const afterArr = after === undefined ? [] : after;
+    if (!Array.isArray(beforeArr) || !Array.isArray(afterArr)) return null;
+    if (beforeArr.length > SERMON_MAX_CONTEXT_SENTENCES || afterArr.length > SERMON_MAX_CONTEXT_SENTENCES) return null;
+    if (!beforeArr.every((s) => typeof s === 'string') || !afterArr.every((s) => typeof s === 'string')) return null;
+
+    items.push({ id, text, before: beforeArr as string[], after: afterArr as string[] });
+  }
+  return items;
 }
 
 export async function registerRoutes(app: Express): Promise<Server> {
@@ -277,6 +307,56 @@ export async function registerRoutes(app: Express): Promise<Server> {
       console.error('Retroactive correction error:', error);
       res.status(500).json({
         error: 'Failed to perform retroactive correction',
+        details: error instanceof Error ? error.message : 'Unknown error',
+      });
+    }
+  });
+
+  // Sermon mode: translate a batch of dirty segments in one request (see
+  // client/src/hooks/useTranslationQueue.ts). Deliberately batched rather
+  // than one call per segment — the rateLimiter below is shared with the
+  // other translation endpoints, and a client-side fan-out of dozens of
+  // dirty segments after a bulk edit would trip it immediately.
+  app.post('/api/sermon/translate', rateLimiter, async (req, res) => {
+    try {
+      const {
+        targetLanguage, translationProvider, model,
+        openaiApiKey, anthropicApiKey, ollamaBaseUrl, ollamaModel,
+        glossary, items,
+      } = req.body;
+
+      if (typeof translationProvider !== 'string' || !VALID_SERMON_TRANSLATION_PROVIDERS.has(translationProvider)) {
+        return res.status(400).json({ error: 'Invalid translationProvider — must be openai, claude, or ollama' });
+      }
+      const parsedItems = parseSermonItems(items);
+      if (!parsedItems) {
+        return res.status(400).json({
+          error: 'Invalid items — expected a non-empty array of at most 100 { id, text, before?, after? } objects',
+        });
+      }
+
+      // Aborts in-flight provider calls if the client disconnects (e.g. the
+      // translator navigates away mid-Refresh) rather than leaking them.
+      const controller = new AbortController();
+      req.on('close', () => controller.abort());
+
+      const results = await translateSegments(parsedItems, {
+        targetLanguage: targetLanguage || 'en',
+        translationProvider: translationProvider as SermonTranslationProvider,
+        model: model || undefined,
+        openaiApiKey: openaiApiKey || undefined,
+        anthropicApiKey: anthropicApiKey || undefined,
+        ollamaBaseUrl: ollamaBaseUrl || undefined,
+        ollamaModel: ollamaModel || undefined,
+        glossaryOverride: glossary || undefined,
+        signal: controller.signal,
+      });
+
+      res.json({ results });
+    } catch (error) {
+      console.error('Sermon translate error:', error);
+      res.status(500).json({
+        error: 'Failed to translate sermon segments',
         details: error instanceof Error ? error.message : 'Unknown error',
       });
     }

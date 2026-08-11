@@ -9,11 +9,16 @@ export interface ChunkTranscriptionEvents {
   onAudioLevel?: (rms: number) => void;
 }
 
-export type TranslationProvider = 'openai' | 'claude' | 'none';
+export type TranslationProvider = 'openai' | 'claude' | 'ollama' | 'none';
 // Which service actually runs the speech-to-text step. 'mlx' is the local
 // mlx-whisper sidecar (Apple Silicon only) — same wire protocol as 'openai',
 // just routed to a different engine server-side.
 export type TranscriptionEngine = 'openai' | 'mlx';
+// 'translate' is the existing behaviour (correct + translate each chunk).
+// 'correct-only' is sermon mode's ASR path: correct punctuation/homophones
+// but never translate — translation happens later, per-sentence, with
+// context (see server/lib/sermon-translate.ts).
+export type OutputMode = 'translate' | 'correct-only';
 
 // Circular ring buffer keeping the last `capacity` float32 samples for overlap.
 class OverlapBuffer {
@@ -132,6 +137,10 @@ export class ChunkBasedTranscription {
   private sermonContext: string;
   private debugMode: boolean;
   private previousTranscript: string = '';
+  // 'correct-only' skips the translation step server-side and returns
+  // corrected-but-untranslated text via onTranslation(text, '', chunkIndex).
+  // Used by sermon mode — see server/lib/chunk-transcription.ts.
+  private outputMode: OutputMode = 'translate';
 
   // Audio pipeline config (runtime-adjustable)
   private normalizationGain: number = 1.0;
@@ -268,6 +277,7 @@ export class ChunkBasedTranscription {
       glossary: this.glossary,
       sermonContext: this.sermonContext,
       debugMode: this.debugMode,
+      outputMode: this.outputMode,
     };
   }
 
@@ -493,6 +503,16 @@ export class ChunkBasedTranscription {
   setUseVAD(enabled: boolean): void {
     this.useVAD = enabled;
     this.vadSilenceMs = 0;
+  }
+
+  // Set BEFORE start() to take effect on the initial 'start' handshake
+  // (that's how sermon mode uses it); also sendable mid-session for symmetry
+  // with the other runtime setters, though no caller currently needs that.
+  setOutputMode(mode: OutputMode): void {
+    this.outputMode = mode;
+    if (this.ws?.readyState === WebSocket.OPEN) {
+      this.ws.send(JSON.stringify({ type: 'config', outputMode: mode }));
+    }
   }
 
   setPreviousTranscript(text: string): void {
