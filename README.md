@@ -68,13 +68,26 @@ All API keys are entered in the in-app Settings (⚙︎ icon). Keys are stored o
 | Provider | Cost | What it does |
 |---|---|---|
 | **OpenAI Whisper** | ~$0.006/min | Highest accuracy transcription |
+| **MLX Whisper** | Free (Apple Silicon only) | Local Whisper via mlx-whisper sidecar; fastest option on Mac |
 | **Local Whisper** | Free (after model download) | On-device Transformers.js inference |
 | **Browser Speech API** | Free | Transcription via the browser — Chrome/Edge only |
 | **OpenAI GPT-4o-mini** | ~$0.001/request | Fast translation + grammar correction |
 | **Claude** | Free tier available | High-quality translation |
+| **Ollama (local)** | Free | Translation via a local Ollama model — fully offline |
 | **None** | Free | Raw transcription only, no translation or correction |
 
 **Fully free mode:** Browser Speech API + None translation. No API keys needed. Works best in Chrome or Edge on a desktop.
+
+### Ollama setup
+
+1. Install [Ollama](https://ollama.com) and pull your model:
+   ```bash
+   ollama pull qwen2.5:14b
+   ```
+2. Start Ollama (it runs as a background service on `http://localhost:11434`).
+3. In CTT.AY Settings, set **Translation provider → Ollama (local)**, enter the base URL (`http://localhost:11434`) and model name (`qwen2.5:14b`).
+
+Any model available in Ollama that supports the chat/JSON completion API works — `qwen2.5:7b`, `llama3.1:8b`, `mistral:7b`, etc. Smaller models are faster but less accurate for Dutch theological content.
 
 ---
 
@@ -89,13 +102,24 @@ cp .env.example .env
 # 2. Install dependencies
 npm install
 
-# 3. Start the dev server (reads .env automatically)
+# 3a. Dev mode — API keys auto-fill in the browser from your .env
 npm run dev
+
+# 3b. Production mode — keys must be entered in the in-app Settings panel
+npm run build && npm run start
 ```
 
 Open [http://localhost:5001](http://localhost:5001).
 
-The `.env.example` file documents all available variables. At minimum, set `OPENAI_API_KEY` if you want Whisper transcription, or leave keys empty to use Browser Speech + None for free.
+### Dev mode vs production mode
+
+| | Dev (`npm run dev`) | Production (`npm run build && npm start`) |
+|---|---|---|
+| API keys | Auto-filled from `.env` — no need to type them in the browser | Must be entered in the Settings panel each session |
+| Build | Vite HMR — live reload on file changes | Optimised static bundle |
+| Port | 5001 (default) | 5000 (default) or `$PORT` |
+
+In dev mode, the server exposes a `/api/dev-config` endpoint that returns `OPENAI_API_KEY` and `ANTHROPIC_API_KEY` from your `.env`. The browser reads these on startup and pre-fills the Settings fields. This endpoint returns **403 in production** — keys are never exposed in deployed builds.
 
 ---
 

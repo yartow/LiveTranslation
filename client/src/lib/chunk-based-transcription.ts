@@ -125,6 +125,8 @@ export class ChunkBasedTranscription {
   private engine: TranscriptionEngine;
   private translationProvider: TranslationProvider;
   private openaiApiKey: string;
+  private ollamaBaseUrl: string;
+  private ollamaModel: string;
   private anthropicApiKey: string;
   private glossary: string;
   private sermonContext: string;
@@ -162,6 +164,8 @@ export class ChunkBasedTranscription {
     this.translationProvider = 'openai';
     this.openaiApiKey = '';
     this.anthropicApiKey = '';
+    this.ollamaBaseUrl = 'http://localhost:11434';
+    this.ollamaModel = 'qwen2.5:14b';
     this.glossary = '';
     this.sermonContext = '';
     this.debugMode = false;
@@ -259,6 +263,8 @@ export class ChunkBasedTranscription {
       translationProvider: this.translationProvider,
       openaiApiKey: this.openaiApiKey,
       anthropicApiKey: this.anthropicApiKey,
+      ollamaBaseUrl: this.ollamaBaseUrl,
+      ollamaModel: this.ollamaModel,
       glossary: this.glossary,
       sermonContext: this.sermonContext,
       debugMode: this.debugMode,
@@ -508,6 +514,8 @@ export class ChunkBasedTranscription {
     anthropicApiKey?: string,
     glossary?: string,
     sermonContext?: string,
+    ollamaBaseUrl?: string,
+    ollamaModel?: string,
   ): void {
     this.sourceLanguage = sourceLanguage;
     this.targetLanguage = targetLanguage;
@@ -516,6 +524,8 @@ export class ChunkBasedTranscription {
     if (openaiApiKey !== undefined) this.openaiApiKey = openaiApiKey;
     if (anthropicApiKey !== undefined) this.anthropicApiKey = anthropicApiKey;
     if (glossary !== undefined) this.glossary = glossary;
+    if (ollamaBaseUrl !== undefined) this.ollamaBaseUrl = ollamaBaseUrl;
+    if (ollamaModel !== undefined) this.ollamaModel = ollamaModel;
     if (sermonContext !== undefined) this.sermonContext = sermonContext;
 
     if (this.ws?.readyState === WebSocket.OPEN) {
@@ -527,6 +537,8 @@ export class ChunkBasedTranscription {
         translationProvider: this.translationProvider,
         openaiApiKey: this.openaiApiKey,
         anthropicApiKey: this.anthropicApiKey,
+        ollamaBaseUrl: this.ollamaBaseUrl,
+        ollamaModel: this.ollamaModel,
         glossary: this.glossary,
         sermonContext: this.sermonContext,
         previousTranscript: this.previousTranscript.slice(-300),

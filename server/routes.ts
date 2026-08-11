@@ -9,6 +9,7 @@ import {
   formatForExport,
 } from './lib/openai';
 import { correctAndTranslateWithClaude, retroactiveCorrectionWithClaude } from './lib/anthropic';
+import { correctAndTranslateWithOllama, retroactiveCorrectionWithOllama } from './lib/ollama';
 import { transcribeWithMlx } from './lib/mlx-whisper';
 import fs from 'fs';
 import ffmpeg from 'fluent-ffmpeg';
@@ -18,8 +19,8 @@ const upload = multer({
   limits: { fileSize: 25 * 1024 * 1024 },
 });
 
-const VALID_TRANSLATION_PROVIDERS = new Set(['openai', 'claude', 'none']);
-type TranslationProvider = 'openai' | 'claude' | 'none';
+const VALID_TRANSLATION_PROVIDERS = new Set(['openai', 'claude', 'ollama', 'none']);
+type TranslationProvider = 'openai' | 'claude' | 'ollama' | 'none';
 
 // Simple per-IP rate limiter: 60 requests per minute on translation endpoints.
 interface RateBucket { count: number; resetAt: number }
@@ -58,9 +59,14 @@ async function runCorrectAndTranslate(
   anthropicApiKey?: string,
   glossary?: string,
   sermonContext?: string,
+  ollamaModel?: string,
+  ollamaBaseUrl?: string,
 ): Promise<{ correctedText: string; translatedText: string }> {
   if (provider === 'claude') {
     return correctAndTranslateWithClaude(text, targetLanguage, detectSpeakers, anthropicApiKey || '', glossary, sermonContext);
+  }
+  if (provider === 'ollama') {
+    return correctAndTranslateWithOllama(text, targetLanguage, detectSpeakers, ollamaModel || 'qwen2.5:14b', ollamaBaseUrl || 'http://localhost:11434', glossary, sermonContext);
   }
   if (provider === 'none') {
     return { correctedText: text, translatedText: '' };
@@ -77,9 +83,14 @@ async function runRetroactiveCorrection(
   anthropicApiKey?: string,
   glossary?: string,
   sermonContext?: string,
+  ollamaModel?: string,
+  ollamaBaseUrl?: string,
 ): Promise<{ correctedText: string; translatedText: string }> {
   if (provider === 'claude') {
     return retroactiveCorrectionWithClaude(accumulatedText, targetLanguage, detectSpeakers, anthropicApiKey || '', glossary, sermonContext);
+  }
+  if (provider === 'ollama') {
+    return retroactiveCorrectionWithOllama(accumulatedText, targetLanguage, detectSpeakers, ollamaModel || 'qwen2.5:14b', ollamaBaseUrl || 'http://localhost:11434', glossary, sermonContext);
   }
   if (provider === 'none') {
     return { correctedText: accumulatedText, translatedText: '' };
@@ -177,7 +188,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
   // Text-only translation — used by browser SpeechRecognition mode and re-translation
   app.post('/api/translate', rateLimiter, async (req, res) => {
     try {
-      const { text, targetLanguage, detectSpeakers, translationProvider, openaiApiKey, anthropicApiKey, glossary, sermonContext } = req.body;
+      const { text, targetLanguage, detectSpeakers, translationProvider, openaiApiKey, anthropicApiKey, glossary, sermonContext, ollamaModel, ollamaBaseUrl } = req.body;
 
       if (!text) return res.status(400).json({ error: 'No text provided' });
 
@@ -193,6 +204,8 @@ export async function registerRoutes(app: Express): Promise<Server> {
         anthropicApiKey || undefined,
         glossary || undefined,
         sermonContext || undefined,
+        ollamaModel || undefined,
+        ollamaBaseUrl || undefined,
       );
 
       res.json({ correctedText, translatedText });
@@ -207,7 +220,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
   app.post('/api/retranslate', rateLimiter, async (req, res) => {
     try {
-      const { originalText, targetLanguage, detectSpeakers, translationProvider, openaiApiKey, anthropicApiKey, glossary, sermonContext } = req.body;
+      const { originalText, targetLanguage, detectSpeakers, translationProvider, openaiApiKey, anthropicApiKey, glossary, sermonContext, ollamaModel, ollamaBaseUrl } = req.body;
 
       if (!originalText) return res.status(400).json({ error: 'No text provided' });
 
@@ -223,6 +236,8 @@ export async function registerRoutes(app: Express): Promise<Server> {
         anthropicApiKey || undefined,
         glossary || undefined,
         sermonContext || undefined,
+        ollamaModel || undefined,
+        ollamaBaseUrl || undefined,
       );
 
       res.json({ correctedText, translatedText });
@@ -237,7 +252,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
   app.post('/api/retroactive-correct', rateLimiter, async (req, res) => {
     try {
-      const { accumulatedText, targetLanguage, detectSpeakers, translationProvider, openaiApiKey, anthropicApiKey, glossary, sermonContext } = req.body;
+      const { accumulatedText, targetLanguage, detectSpeakers, translationProvider, openaiApiKey, anthropicApiKey, glossary, sermonContext, ollamaModel, ollamaBaseUrl } = req.body;
 
       if (!accumulatedText) return res.status(400).json({ error: 'No text provided' });
 
@@ -253,6 +268,8 @@ export async function registerRoutes(app: Express): Promise<Server> {
         anthropicApiKey || undefined,
         glossary || undefined,
         sermonContext || undefined,
+        ollamaModel || undefined,
+        ollamaBaseUrl || undefined,
       );
 
       res.json({ correctedText, translatedText });
@@ -290,6 +307,18 @@ export async function registerRoutes(app: Express): Promise<Server> {
         details: error instanceof Error ? error.message : 'Unknown error',
       });
     }
+  });
+
+  // Dev-only: expose server-side API keys so the browser can auto-fill them.
+  // Returns 403 in production so keys are never leaked in deployed builds.
+  app.get('/api/dev-config', (req, res) => {
+    if (process.env.NODE_ENV !== 'development') {
+      return res.status(403).json({ error: 'Not available in production' });
+    }
+    res.json({
+      openaiApiKey: process.env.OPENAI_API_KEY || '',
+      anthropicApiKey: process.env.ANTHROPIC_API_KEY || '',
+    });
   });
 
   const httpServer = createServer(app);

@@ -1,6 +1,7 @@
 import { WebSocket as WsWebSocket, WebSocketServer } from 'ws';
 import { transcribeAudio, correctAndTranslateText } from './openai';
 import { correctAndTranslateWithClaude } from './anthropic';
+import { correctAndTranslateWithOllama } from './ollama';
 import { transcribeWithMlx } from './mlx-whisper';
 import { tmpdir } from 'os';
 import { join } from 'path';
@@ -9,7 +10,7 @@ import { existsSync } from 'fs';
 import { randomUUID } from 'crypto';
 import ffmpeg from 'fluent-ffmpeg';
 
-type TranslationProvider = 'openai' | 'claude' | 'none';
+type TranslationProvider = 'openai' | 'claude' | 'ollama' | 'none';
 type TranscriptionEngine = 'openai' | 'mlx';
 
 interface ChunkSession {
@@ -21,6 +22,8 @@ interface ChunkSession {
   translationProvider: TranslationProvider;
   openaiApiKey: string;
   anthropicApiKey: string;
+  ollamaBaseUrl: string;
+  ollamaModel: string;
   glossary: string;
   sermonContext: string;
   debugMode: boolean;
@@ -248,6 +251,12 @@ async function processChunk(
       sendDebug(session, `Chunk #${chunkIndex}: translation disabled — using raw text`);
       correctedText = rawText;
       translatedText = '';
+    } else if (session.translationProvider === 'ollama') {
+      ({ correctedText, translatedText } = await correctAndTranslateWithOllama(
+        rawText, session.targetLanguage, session.detectSpeakers,
+        session.ollamaModel, session.ollamaBaseUrl,
+        session.glossary || undefined, session.sermonContext || undefined, signal,
+      ));
     } else if (session.translationProvider === 'claude') {
       const hasAnthropicKey = !!(session.anthropicApiKey || process.env.ANTHROPIC_API_KEY);
       if (!hasAnthropicKey) sendDebug(session, `Chunk #${chunkIndex}: ✗ No Anthropic API key`);
@@ -323,6 +332,8 @@ export function setupChunkTranscriptionWebSocket(wss: WebSocketServer): void {
               translationProvider: (message.translationProvider as TranslationProvider) || 'openai',
               openaiApiKey: message.openaiApiKey || '',
               anthropicApiKey: message.anthropicApiKey || '',
+              ollamaBaseUrl: message.ollamaBaseUrl || 'http://localhost:11434',
+              ollamaModel: message.ollamaModel || 'qwen2.5:14b',
               glossary: message.glossary || '',
               sermonContext: message.sermonContext || '',
               debugMode: message.debugMode ?? false,
@@ -343,6 +354,8 @@ export function setupChunkTranscriptionWebSocket(wss: WebSocketServer): void {
               if (message.translationProvider) session.translationProvider = message.translationProvider;
               if (message.openaiApiKey !== undefined) session.openaiApiKey = message.openaiApiKey;
               if (message.anthropicApiKey !== undefined) session.anthropicApiKey = message.anthropicApiKey;
+              if (message.ollamaBaseUrl !== undefined) session.ollamaBaseUrl = message.ollamaBaseUrl;
+              if (message.ollamaModel !== undefined) session.ollamaModel = message.ollamaModel;
               if (message.glossary !== undefined) session.glossary = message.glossary;
               if (message.sermonContext !== undefined) session.sermonContext = message.sermonContext;
               if (message.previousTranscript !== undefined) session.previousTranscript = message.previousTranscript;
