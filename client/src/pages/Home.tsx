@@ -72,6 +72,24 @@ function splitLastTwo(text: string): [string, string] {
 
 export default function Home() {
   const { settings, updateSettings } = useSettings();
+
+  // In development, auto-fill API keys from server env vars so you don't have
+  // to retype them every reload. The endpoint returns 403 in production.
+  useEffect(() => {
+    if (import.meta.env.DEV) {
+      fetch('/api/dev-config')
+        .then(r => r.ok ? r.json() : null)
+        .then(data => {
+          if (!data) return;
+          const updates: Record<string, string> = {};
+          if (data.openaiApiKey && !settings.openaiApiKey) updates.openaiApiKey = data.openaiApiKey;
+          if (data.anthropicApiKey && !settings.anthropicApiKey) updates.anthropicApiKey = data.anthropicApiKey;
+          if (Object.keys(updates).length) updateSettings(updates);
+        })
+        .catch(() => {});
+    }
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
   const [sourceLanguage, setSourceLanguage] = useState(() => settings.defaultSourceLanguage || 'en');
   const [targetLanguage, setTargetLanguage] = useState(() => settings.defaultTargetLanguage || 'nl');
   const [isRecording, setIsRecording] = useState(false);
@@ -186,6 +204,8 @@ export default function Home() {
           s.anthropicApiKey,
           s.theologicalGlossary,
           sermonContextRef.current,
+          s.ollamaBaseUrl,
+          s.ollamaModel,
         );
       }
 
@@ -202,6 +222,8 @@ export default function Home() {
             translationProvider: s.translationProvider,
             openaiApiKey: s.openaiApiKey,
             anthropicApiKey: s.anthropicApiKey,
+            ollamaBaseUrl: s.ollamaBaseUrl,
+            ollamaModel: s.ollamaModel,
             glossary: s.theologicalGlossary || undefined,
             sermonContext: sermonContextRef.current || undefined,
           }),
@@ -292,6 +314,8 @@ export default function Home() {
           translationProvider: s.translationProvider === 'none' ? 'none' : s.improvementProvider,
           openaiApiKey: s.openaiApiKey,
           anthropicApiKey: s.anthropicApiKey,
+          ollamaBaseUrl: s.ollamaBaseUrl,
+          ollamaModel: s.ollamaModel,
           glossary: s.theologicalGlossary || undefined,
           sermonContext: sermonContextRef.current || undefined,
         }),

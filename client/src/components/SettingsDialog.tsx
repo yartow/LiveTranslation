@@ -359,6 +359,44 @@ export default function SettingsDialog({ isOpen, onClose, settings, onUpdate, we
                 </div>
               </div>
 
+              {/* Ollama — local LLM */}
+              <div className="flex items-start gap-3 rounded-md border border-border p-3">
+                <RadioGroupItem value="ollama" id="tr-ollama" className="mt-0.5" />
+                <div className="flex-1 min-w-0">
+                  <Label htmlFor="tr-ollama" className="font-medium cursor-pointer">
+                    Ollama (local){' '}
+                    <span className="text-xs font-normal text-green-600 dark:text-green-400">free · offline</span>
+                  </Label>
+                  <p className="text-xs text-muted-foreground mt-0.5">
+                    Translate using a local model via Ollama. Requires Ollama running on your machine.
+                  </p>
+                  {settings.translationProvider === 'ollama' && (
+                    <div className="mt-2 space-y-2">
+                      <div>
+                        <Label className="text-xs text-muted-foreground">Ollama base URL</Label>
+                        <input
+                          type="text"
+                          value={settings.ollamaBaseUrl}
+                          onChange={(e) => onUpdate({ ollamaBaseUrl: e.target.value })}
+                          placeholder="http://localhost:11434"
+                          className="mt-1 w-full rounded-md border border-border bg-background px-2 py-1 text-xs text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-1 focus:ring-ring"
+                        />
+                      </div>
+                      <div>
+                        <Label className="text-xs text-muted-foreground">Model name</Label>
+                        <input
+                          type="text"
+                          value={settings.ollamaModel}
+                          onChange={(e) => onUpdate({ ollamaModel: e.target.value })}
+                          placeholder="qwen2.5:14b"
+                          className="mt-1 w-full rounded-md border border-border bg-background px-2 py-1 text-xs text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-1 focus:ring-ring"
+                        />
+                      </div>
+                    </div>
+                  )}
+                </div>
+              </div>
+
               {/* None — always available */}
               <div className="flex items-start gap-3 rounded-md border border-border p-3">
                 <RadioGroupItem value="none" id="tr-none" className="mt-0.5" />

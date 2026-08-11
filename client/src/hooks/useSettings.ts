@@ -1,7 +1,7 @@
 import { useState, useCallback } from 'react';
 
 export type TranscriptionProvider = 'whisper' | 'browser' | 'transformers' | 'mlx';
-export type TranslationProvider = 'openai' | 'claude' | 'none';
+export type TranslationProvider = 'openai' | 'claude' | 'ollama' | 'none';
 export type ImprovementProvider = 'openai' | 'claude';
 export type SpeechMode = 'monologue' | 'dialogue';
 export type DisplayContent = 'original' | 'translation' | 'both';
@@ -39,6 +39,9 @@ export interface AppSettings {
   defaultSourceLanguage: string;
   defaultTargetLanguage: string;
   debugMode: boolean;
+  // local Ollama
+  ollamaBaseUrl: string;
+  ollamaModel: string;
   // audio pipeline
   useTranscriptAsWhisperContext: boolean;
   chunkOverlapMs: number;
@@ -71,6 +74,8 @@ const defaultSettings: AppSettings = {
   defaultSourceLanguage: 'en',
   defaultTargetLanguage: 'nl',
   debugMode: false,
+  ollamaBaseUrl: 'http://localhost:11434',
+  ollamaModel: 'qwen2.5:14b',
   useTranscriptAsWhisperContext: true,
   chunkOverlapMs: 500,
   useVADChunking: false,
@@ -84,7 +89,7 @@ const defaultSettings: AppSettings = {
 };
 
 const VALID_TRANSCRIPTION: TranscriptionProvider[] = ['whisper', 'browser', 'transformers', 'mlx'];
-const VALID_TRANSLATION: TranslationProvider[] = ['openai', 'claude', 'none'];
+const VALID_TRANSLATION: TranslationProvider[] = ['openai', 'claude', 'ollama', 'none'];
 const VALID_IMPROVEMENT: ImprovementProvider[] = ['openai', 'claude'];
 const VALID_LOCAL_MODEL: LocalWhisperModel[] = ['tiny', 'small', 'medium'];
 
@@ -177,6 +182,8 @@ export function useSettings() {
           defaultSourceLanguage: next.defaultSourceLanguage,
           defaultTargetLanguage: next.defaultTargetLanguage,
           debugMode: next.debugMode,
+          ollamaBaseUrl: next.ollamaBaseUrl,
+          ollamaModel: next.ollamaModel,
           useTranscriptAsWhisperContext: next.useTranscriptAsWhisperContext,
           chunkOverlapMs: next.chunkOverlapMs,
           useVADChunking: next.useVADChunking,
