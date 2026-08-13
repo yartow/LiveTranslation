@@ -1,9 +1,10 @@
-import { useCallback, useEffect, useRef } from 'react';
+import { useCallback, useEffect } from 'react';
 import {
   type SegmentStoreState, type SegmentAction, selectDirtyIds, selectTranslatable, selectContext,
 } from '@/lib/sermon/segment-store';
 import { hashText } from '@/lib/sermon/segment-model';
-import { translateItems, type TranslateRequestOptions } from '@/lib/sermon/translate-client';
+import { findBibleRef } from '@/lib/sermon/bible-ref';
+import { translateItems, type TranslateRequestOptions, type ReadingCandidate } from '@/lib/sermon/translate-client';
 
 export interface TranslationRuntimeConfig extends TranslateRequestOptions {
   stabilityMs: number;
@@ -27,41 +28,88 @@ const CONFIRM_ABOVE_DIRTY_COUNT = 50;
  * into the segment reducer, it never holds segment data of its own, so the
  * reference-stability guarantees in segment-store.ts are untouched by
  * anything in here.
+ *
+ * `stateRef` is owned by the caller (SermonMode.tsx) and kept in sync with
+ * `state` during render rather than in an effect, so it can never lag a
+ * commit behind — see the header comment there for why that used to matter.
  */
 export function useTranslationQueue(
-  state: SegmentStoreState,
+  stateRef: React.MutableRefObject<SegmentStoreState>,
   dispatch: React.Dispatch<SegmentAction>,
   configRef: React.MutableRefObject<TranslationRuntimeConfig>,
   autoTranslateRef: React.MutableRefObject<boolean>,
+  flushersRef: React.MutableRefObject<Map<string, () => void>>,
 ) {
-  const stateRef = useRef(state);
-  useEffect(() => { stateRef.current = state; }, [state]);
-
   const runBatch = useCallback(async (ids: string[]) => {
     if (ids.length === 0) return;
+    // Flush any edit still sitting in a SourceCell's debounce window before
+    // reading segment text — otherwise a Refresh triggered right after a
+    // keystroke (e.g. Cmd+Enter) would translate the pre-edit text. See
+    // SourceCell.tsx's commitPending/flushersRef registration.
+    for (const id of ids) flushersRef.current.get(id)?.();
     const cfg = configRef.current;
     const snapshot = stateRef.current;
 
+    // Scripture (spec "Bijbelcitaten"): a segment whose own text resolves a
+    // Bible reference (bible-ref.ts) starts a new reading; a segment with no
+    // reference of its own inherits the store's ongoing activeReading, if
+    // any, as its check candidate — see server/lib/scripture.ts for the
+    // verbatim/paraphrase/ended adjudication this feeds into.
+    // scriptureOverride (CLEAR_SCRIPTURE) skips detection entirely.
     const items = ids
       .filter(id => snapshot.byId[id])
       .map(id => {
         const seg = snapshot.byId[id];
         const ctx = selectContext(snapshot, id, cfg.contextBefore, cfg.contextAfter);
+
+        let readingCandidate: ReadingCandidate | undefined;
+        let referenceHint: string | undefined;
+        let ownRef = false;
+
+        if (!seg.scriptureOverride) {
+          const ref = findBibleRef(seg.sourceText);
+          if (ref) {
+            referenceHint = ref.canonicalEn;
+            if (ref.verseStart !== null) {
+              readingCandidate = { bookNumber: ref.bookNumber, chapter: ref.chapter, verse: ref.verseStart };
+              ownRef = true;
+            }
+          } else if (snapshot.activeReading) {
+            readingCandidate = {
+              bookNumber: snapshot.activeReading.bookNumber,
+              chapter: snapshot.activeReading.chapter,
+              verse: snapshot.activeReading.nextVerse,
+            };
+          }
+        }
+
         return {
-          id,
-          text: seg.sourceText,
-          before: ctx.before,
-          after: ctx.after,
-          requestHash: hashText(seg.sourceText),
+          id, text: seg.sourceText, before: ctx.before, after: ctx.after,
+          requestHash: hashText(seg.sourceText), readingCandidate, referenceHint, ownRef,
         };
       });
     if (items.length === 0) return;
+
+    // A freshly recognized reference starts (or replaces) the active
+    // reading immediately — this doesn't wait on the translate call below,
+    // since the reading exists in the sermon regardless of whether that
+    // call succeeds. If a batch somehow contains more than one new
+    // reference, the last one dispatched wins, matching "a fresh reference
+    // replaces the previous one" (segment-store.ts's SET_ACTIVE_READING).
+    for (const item of items) {
+      if (item.ownRef && item.readingCandidate) {
+        dispatch({
+          type: 'SET_ACTIVE_READING', bookNumber: item.readingCandidate.bookNumber,
+          chapter: item.readingCandidate.chapter, verse: item.readingCandidate.verse,
+        });
+      }
+    }
 
     dispatch({ type: 'MARK_TRANSLATING', ids: items.map(i => i.id) });
 
     try {
       const results = await translateItems(
-        items.map(({ id, text, before, after }) => ({ id, text, before, after })),
+        items.map(({ id, text, before, after, readingCandidate, referenceHint }) => ({ id, text, before, after, readingCandidate, referenceHint })),
         cfg,
       );
       const byId = new Map(results.map(r => [r.id, r]));
@@ -69,10 +117,40 @@ export function useTranslationQueue(
         const result = byId.get(item.id);
         if (!result) {
           dispatch({ type: 'SET_ERROR', id: item.id, error: 'No response for this segment', requestHash: item.requestHash });
-        } else if (result.status === 'ok') {
-          dispatch({ type: 'APPLY_TRANSLATION', id: item.id, translation: result.translation, requestHash: item.requestHash });
-        } else {
+          continue;
+        }
+        if (result.status === 'error') {
           dispatch({ type: 'SET_ERROR', id: item.id, error: result.error, requestHash: item.requestHash });
+          continue;
+        }
+
+        // isThisStillTheActiveReading guards against a stale-order response
+        // clobbering a reading that started later, in a different segment,
+        // while this call was in flight — only advance/clear the store's
+        // activeReading if it still matches what THIS item was checked
+        // against (or this item is the one that started it).
+        const current = stateRef.current.activeReading;
+        const isThisStillTheActiveReading = !!item.readingCandidate && (
+          item.ownRef ||
+          (!!current && current.bookNumber === item.readingCandidate.bookNumber && current.chapter === item.readingCandidate.chapter)
+        );
+
+        if (result.scripture?.verbatim && result.scripture.text && result.scripture.reference && result.scripture.version) {
+          dispatch({
+            type: 'APPLY_SCRIPTURE', id: item.id, text: result.scripture.text,
+            reference: result.scripture.reference, version: result.scripture.version, requestHash: item.requestHash,
+          });
+          if (isThisStillTheActiveReading && item.readingCandidate && typeof result.scripture.verseEnd === 'number') {
+            dispatch({
+              type: 'SET_ACTIVE_READING', bookNumber: item.readingCandidate.bookNumber,
+              chapter: item.readingCandidate.chapter, verse: result.scripture.verseEnd + 1,
+            });
+          }
+        } else {
+          dispatch({ type: 'APPLY_TRANSLATION', id: item.id, translation: result.translation, requestHash: item.requestHash, warnings: result.warnings });
+          if (isThisStillTheActiveReading && result.scripture?.readingEnded) {
+            dispatch({ type: 'CLEAR_ACTIVE_READING' });
+          }
         }
       }
     } catch (err) {
@@ -81,7 +159,7 @@ export function useTranslationQueue(
         dispatch({ type: 'SET_ERROR', id: item.id, error: message, requestHash: item.requestHash });
       }
     }
-  }, [dispatch, configRef]);
+  }, [dispatch, configRef, stateRef, flushersRef]);
 
   const refreshAll = useCallback(() => {
     const dirty = selectDirtyIds(stateRef.current);
@@ -91,7 +169,7 @@ export function useTranslationQueue(
       if (!ok) return;
     }
     runBatch(dirty);
-  }, [runBatch]);
+  }, [runBatch, stateRef]);
 
   const refreshOne = useCallback((id: string | null) => {
     if (id) runBatch([id]);
@@ -108,7 +186,7 @@ export function useTranslationQueue(
       if (ids.length > 0) runBatch(ids);
     }, 400);
     return () => clearInterval(interval);
-  }, [runBatch, autoTranslateRef, configRef]);
+  }, [runBatch, autoTranslateRef, configRef, stateRef]);
 
   return { refreshAll, refreshOne };
 }

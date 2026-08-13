@@ -12,6 +12,8 @@ import { correctAndTranslateWithClaude, retroactiveCorrectionWithClaude } from '
 import { correctAndTranslateWithOllama, retroactiveCorrectionWithOllama } from './lib/ollama';
 import { transcribeWithMlx } from './lib/mlx-whisper';
 import { translateSegments, type TranslateItemInput, type SermonTranslationProvider } from './lib/sermon-translate';
+import { getGlossaryStatus, reloadGlossary } from './lib/glossary-store';
+import { isSafeGlossaryName } from './lib/glossary-file';
 import fs from 'fs';
 import ffmpeg from 'fluent-ffmpeg';
 
@@ -109,9 +111,37 @@ function parseProvider(value: unknown): TranslationProvider | null {
 // Sermon mode never accepts 'none' — a correction/translation call is always
 // required (see client/src/hooks/useSettings.ts's SermonTranslationProvider).
 const VALID_SERMON_TRANSLATION_PROVIDERS = new Set(['openai', 'claude', 'ollama']);
+const VALID_BIBLE_VERSIONS = new Set(['KJV', 'ESV', 'NASB', 'NKJV']);
 const SERMON_MAX_ITEMS = 100;
 const SERMON_MAX_TEXT_LEN = 2000;
 const SERMON_MAX_CONTEXT_SENTENCES = 5;
+const SERMON_MAX_REFERENCE_HINT_LEN = 60;
+
+// null = absent (caller should fall back to the server default selection);
+// 'invalid' = present but structurally unsafe — the caller must 400. Kept
+// separate from throwing so a malicious/malformed name never even reaches
+// isSafeGlossaryName's fs-touching sibling resolveGlossaryPath().
+function parseGlossaryName(value: unknown, kind: 'csv' | 'md'): string | null | 'invalid' {
+  if (value === undefined || value === null || value === '') return null;
+  if (typeof value !== 'string' || !isSafeGlossaryName(value, kind)) return 'invalid';
+  return value;
+}
+
+// bookNumber 1-66 (the canonical Protestant-canon count — see
+// scripts/build-bible-data.ts's books.json), chapter/verse positive
+// integers. Resolution of the reference itself (book-name parsing) happens
+// entirely client-side (client/src/lib/sermon/bible-ref.ts) — this only
+// validates the shape of what the client already resolved, never re-parses text.
+function parseReadingCandidate(value: unknown): TranslateItemInput['readingCandidate'] | null | 'invalid' {
+  if (value === undefined || value === null) return null;
+  if (typeof value !== 'object') return 'invalid';
+  const { bookNumber, chapter, verse } = value as Record<string, unknown>;
+  const isPositiveInt = (n: unknown): n is number => typeof n === 'number' && Number.isInteger(n) && n > 0;
+  if (!isPositiveInt(bookNumber) || bookNumber > 66) return 'invalid';
+  if (!isPositiveInt(chapter) || chapter > 999) return 'invalid';
+  if (!isPositiveInt(verse) || verse > 999) return 'invalid';
+  return { bookNumber, chapter, verse };
+}
 
 function parseSermonItems(value: unknown): TranslateItemInput[] | null {
   if (!Array.isArray(value) || value.length === 0 || value.length > SERMON_MAX_ITEMS) return null;
@@ -119,7 +149,7 @@ function parseSermonItems(value: unknown): TranslateItemInput[] | null {
   const items: TranslateItemInput[] = [];
   for (const raw of value) {
     if (!raw || typeof raw !== 'object') return null;
-    const { id, text, before, after } = raw as Record<string, unknown>;
+    const { id, text, before, after, readingCandidate, referenceHint } = raw as Record<string, unknown>;
 
     if (typeof id !== 'string' || !id) return null;
     if (typeof text !== 'string' || !text.trim() || text.length > SERMON_MAX_TEXT_LEN) return null;
@@ -130,7 +160,16 @@ function parseSermonItems(value: unknown): TranslateItemInput[] | null {
     if (beforeArr.length > SERMON_MAX_CONTEXT_SENTENCES || afterArr.length > SERMON_MAX_CONTEXT_SENTENCES) return null;
     if (!beforeArr.every((s) => typeof s === 'string') || !afterArr.every((s) => typeof s === 'string')) return null;
 
-    items.push({ id, text, before: beforeArr as string[], after: afterArr as string[] });
+    const parsedCandidate = parseReadingCandidate(readingCandidate);
+    if (parsedCandidate === 'invalid') return null;
+
+    if (referenceHint !== undefined && (typeof referenceHint !== 'string' || referenceHint.length > SERMON_MAX_REFERENCE_HINT_LEN)) return null;
+
+    items.push({
+      id, text, before: beforeArr as string[], after: afterArr as string[],
+      readingCandidate: parsedCandidate ?? undefined,
+      referenceHint: referenceHint || undefined,
+    });
   }
   return items;
 }
@@ -323,6 +362,8 @@ export async function registerRoutes(app: Express): Promise<Server> {
         targetLanguage, translationProvider, model,
         openaiApiKey, anthropicApiKey, ollamaBaseUrl, ollamaModel,
         glossary, items,
+        glossaryCsv, disambiguationPrompt, bibleVersion, deityCapitals, glossaryWarnings,
+        scriptureEnabled, esvApiKey, scriptureFallback,
       } = req.body;
 
       if (typeof translationProvider !== 'string' || !VALID_SERMON_TRANSLATION_PROVIDERS.has(translationProvider)) {
@@ -331,8 +372,19 @@ export async function registerRoutes(app: Express): Promise<Server> {
       const parsedItems = parseSermonItems(items);
       if (!parsedItems) {
         return res.status(400).json({
-          error: 'Invalid items — expected a non-empty array of at most 100 { id, text, before?, after? } objects',
+          error: 'Invalid items — expected a non-empty array of at most 100 { id, text, before?, after?, readingCandidate?, referenceHint? } objects',
         });
+      }
+      const parsedGlossaryCsv = parseGlossaryName(glossaryCsv, 'csv');
+      if (parsedGlossaryCsv === 'invalid') {
+        return res.status(400).json({ error: 'Invalid glossaryCsv — must be a plain filename ending in .csv' });
+      }
+      const parsedDisambiguationPrompt = parseGlossaryName(disambiguationPrompt, 'md');
+      if (parsedDisambiguationPrompt === 'invalid') {
+        return res.status(400).json({ error: 'Invalid disambiguationPrompt — must be a plain filename ending in .md' });
+      }
+      if (scriptureFallback !== undefined && scriptureFallback !== 'kjv' && scriptureFallback !== 'none') {
+        return res.status(400).json({ error: 'Invalid scriptureFallback — must be "kjv" or "none"' });
       }
 
       // Aborts in-flight provider calls if the client disconnects (e.g. the
@@ -349,6 +401,14 @@ export async function registerRoutes(app: Express): Promise<Server> {
         ollamaBaseUrl: ollamaBaseUrl || undefined,
         ollamaModel: ollamaModel || undefined,
         glossaryOverride: glossary || undefined,
+        glossaryCsv: parsedGlossaryCsv || undefined,
+        disambiguationPrompt: parsedDisambiguationPrompt || undefined,
+        bibleVersion: VALID_BIBLE_VERSIONS.has(bibleVersion) ? bibleVersion : undefined,
+        deityCapitals: deityCapitals === true,
+        glossaryWarningsEnabled: glossaryWarnings !== false,
+        scriptureEnabled: scriptureEnabled !== false,
+        esvApiKey: esvApiKey || undefined,
+        scriptureFallback: scriptureFallback === 'none' ? 'none' : 'kjv',
         signal: controller.signal,
       });
 
@@ -359,6 +419,44 @@ export async function registerRoutes(app: Express): Promise<Server> {
         error: 'Failed to translate sermon segments',
         details: error instanceof Error ? error.message : 'Unknown error',
       });
+    }
+  });
+
+  // Glossary status/reload — both use the same response shape. A missing or
+  // corrupt glossary is a normal 200 with loaded:false, NOT a 400/500: the
+  // app must keep working (translating without a glossary) rather than
+  // treat an absent file as an error. 400 is reserved for a structurally
+  // unsafe filename, which is rejected before any filesystem access.
+  app.get('/api/sermon/glossary/status', rateLimiter, (req, res) => {
+    try {
+      const csv = parseGlossaryName(req.query.csv, 'csv');
+      if (csv === 'invalid') return res.status(400).json({ error: 'Invalid csv — must be a plain filename ending in .csv' });
+      const prompt = parseGlossaryName(req.query.prompt, 'md');
+      if (prompt === 'invalid') return res.status(400).json({ error: 'Invalid prompt — must be a plain filename ending in .md' });
+
+      // GlossaryDiagnostics only ever carries basenames (see glossary-store.ts),
+      // never resolved/absolute paths, so this is safe to return unconditionally.
+      res.json(getGlossaryStatus({ csv: csv || undefined, prompt: prompt || undefined }));
+    } catch (error) {
+      console.error('Sermon glossary status error:', error);
+      res.status(500).json({ error: 'Failed to read glossary status', details: error instanceof Error ? error.message : 'Unknown error' });
+    }
+  });
+
+  app.post('/api/sermon/glossary/reload', rateLimiter, (req, res) => {
+    try {
+      const { csv, prompt } = req.body ?? {};
+      const parsedCsv = parseGlossaryName(csv, 'csv');
+      if (parsedCsv === 'invalid') return res.status(400).json({ error: 'Invalid csv — must be a plain filename ending in .csv' });
+      const parsedPrompt = parseGlossaryName(prompt, 'md');
+      if (parsedPrompt === 'invalid') return res.status(400).json({ error: 'Invalid prompt — must be a plain filename ending in .md' });
+
+      const selection = { csv: parsedCsv || undefined, prompt: parsedPrompt || undefined };
+      reloadGlossary(selection);
+      res.json(getGlossaryStatus(selection));
+    } catch (error) {
+      console.error('Sermon glossary reload error:', error);
+      res.status(500).json({ error: 'Failed to reload glossary', details: error instanceof Error ? error.message : 'Unknown error' });
     }
   });
 

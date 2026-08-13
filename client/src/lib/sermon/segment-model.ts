@@ -12,7 +12,21 @@ export type SegmentStatus =
   | 'TRANSLATED'   // translatedText matches the current sourceText
   | 'EDITED'       // sourceText changed since the last translation (dirty, human-driven)
   | 'ERROR'        // last translation attempt failed
-  | 'PROVISIONAL'; // emitted early by the cap-flush before a sentence boundary arrived
+  | 'PROVISIONAL'  // emitted early by the cap-flush before a sentence boundary arrived
+  | 'SCRIPTURE';   // translatedText is an exact quoted Bible verse (ESV/KJV), not a model translation — see server/lib/scripture.ts
+
+/** Mirrors server/lib/glossary-check.ts's GlossaryWarning — client/server share no code, see sermon-prompt.ts's header comment. */
+export interface GlossaryWarning {
+  term: string;
+  expected: string;
+}
+
+/** Set on a SCRIPTURE segment — the exact verse text substituted in, and where it came from. See CLAUDE.md "Scripture pipeline". */
+export interface ScriptureInfo {
+  reference: string; // e.g. "John 3:16" or "John 3:16-18"
+  version: 'ESV' | 'KJV';
+  verses: string;
+}
 
 export interface Segment {
   /** Stable, unique, never changes once assigned. */
@@ -38,6 +52,12 @@ export interface Segment {
   /** Bumped only by non-user writes (provisional updates, completions) — see segment-store.ts. */
   sourceRevision: number;
   error?: string;
+  /** Non-blocking glossary-adherence warnings from the last translation, or undefined when there are none. Cleared on any edit/override/error — see segment-store.ts. */
+  glossaryWarnings?: GlossaryWarning[];
+  /** Set when status is SCRIPTURE — the verse reference/version/text that was substituted. Cleared on any edit — see segment-store.ts. */
+  scripture?: ScriptureInfo;
+  /** True once the human has told this row "not scripture" (CLEAR_SCRIPTURE) — future refreshes translate it normally even if a Bible reference is still detected in its text. Reset to false on the next edit, so correcting the reference re-enables detection. */
+  scriptureOverride?: boolean;
 }
 
 /**

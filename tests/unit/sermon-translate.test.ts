@@ -1,10 +1,24 @@
-import { describe, it, expect, vi } from 'vitest';
+import { describe, it, expect, vi, beforeAll, afterAll } from 'vitest';
 import { translateSegments, type TranslateItemInput, type TranslateOptions } from '../../server/lib/sermon-translate.js';
 
 const baseOpts: TranslateOptions = {
   targetLanguage: 'en',
   translationProvider: 'openai',
 };
+
+// These tests exercise the provider-dispatch layer, not the glossary — point
+// GLOSSARY_DIR at a directory with no files so translateSegments falls back
+// to bundle:null deterministically, regardless of what happens to be on
+// disk in data/ (gitignored, not present in CI) for whoever runs this suite.
+let previousGlossaryDir: string | undefined;
+beforeAll(() => {
+  previousGlossaryDir = process.env.GLOSSARY_DIR;
+  process.env.GLOSSARY_DIR = '/nonexistent/no-glossary-here';
+});
+afterAll(() => {
+  if (previousGlossaryDir === undefined) delete process.env.GLOSSARY_DIR;
+  else process.env.GLOSSARY_DIR = previousGlossaryDir;
+});
 
 describe('translateSegments', () => {
   it('translates each item independently and returns ok results', async () => {
@@ -82,4 +96,149 @@ describe('translateSegments', () => {
     expect(capturedUserMessage).toContain('<TE_VERTALEN>\nSpecifieke zin.\n</TE_VERTALEN>');
     expect(capturedUserMessage).toContain('<CONTEXT_VOOR>');
   });
+});
+
+describe('translateSegments — glossary warnings', () => {
+  it('attaches a warning when a glossary term is present in the source but missing from the translation, and omits the key otherwise', async () => {
+    const { join } = await import('path');
+    const { _resetGlossaryForTests } = await import('../../server/lib/glossary-store.js');
+    const fixturesDir = join(__dirname, '..', 'fixtures', 'glossary');
+    const prevDir = process.env.GLOSSARY_DIR;
+    process.env.GLOSSARY_DIR = fixturesDir;
+    _resetGlossaryForTests();
+
+    try {
+      const opts: TranslateOptions = { ...baseOpts, glossaryCsv: 'mini.csv', disambiguationPrompt: 'mini.md' };
+      const items: TranslateItemInput[] = [
+        { id: 'miss', text: 'Hij is de Heiland.', before: [], after: [] }, // Heiland -> Savior, translation below omits it
+        { id: 'hit', text: 'Hij is de Heiland.', before: [], after: [] },
+      ];
+
+      // callModel doesn't see the item id, so distinguish the two calls by
+      // order — Promise.all preserves the items array's call order per item.
+      let call = 0;
+      const callModelOrdered = vi.fn(async () => {
+        call++;
+        return call === 1 ? 'He is the Redeemer.' : 'He is the Savior.';
+      });
+
+      const results = await translateSegments(items, opts, { callModel: callModelOrdered });
+      const byId = new Map(results.map(r => [r.id, r]));
+
+      const missResult = byId.get('miss') as { warnings?: unknown };
+      expect(missResult.warnings).toEqual([{ term: 'Heiland', expected: 'Savior' }]);
+
+      const hitResult = byId.get('hit') as { warnings?: unknown };
+      expect(hitResult.warnings).toBeUndefined(); // omitted, not an empty array — keeps existing toEqual() assertions elsewhere passing
+    } finally {
+      if (prevDir === undefined) delete process.env.GLOSSARY_DIR; else process.env.GLOSSARY_DIR = prevDir;
+      _resetGlossaryForTests();
+    }
+  });
+});
+
+describe('translateSegments — scripture (Bijbelcitaten AC11/AC12)', () => {
+  const JOHN_3_16 = 'Want alzo lief heeft God de wereld gehad, dat Hij Zijn eniggeboren Zoon gegeven heeft, opdat een iegelijk die in Hem gelooft, niet verderve, maar het eeuwige leven hebbe.';
+
+  async function withBibleFixture<T>(fn: () => Promise<T>): Promise<T> {
+    const { join } = await import('path');
+    const { _resetBibleStoreForTests } = await import('../../server/lib/bible-store.js');
+    const { _resetBibleBooksForTests } = await import('../../server/lib/bible-books.js');
+    const prevDir = process.env.BIBLE_DIR;
+    process.env.BIBLE_DIR = join(__dirname, '..', 'fixtures', 'bible');
+    _resetBibleStoreForTests();
+    _resetBibleBooksForTests();
+    try {
+      return await fn();
+    } finally {
+      if (prevDir === undefined) delete process.env.BIBLE_DIR; else process.env.BIBLE_DIR = prevDir;
+      _resetBibleStoreForTests();
+      _resetBibleBooksForTests();
+    }
+  }
+
+  it('a verbatim reading substitutes the verse text and never calls the model (AC11)', () => withBibleFixture(async () => {
+    const items: TranslateItemInput[] = [
+      { id: 'a', text: JOHN_3_16, before: [], after: [], readingCandidate: { bookNumber: 43, chapter: 3, verse: 16 } },
+    ];
+    const callModel = vi.fn(async () => 'should never be called');
+
+    const results = await translateSegments(items, baseOpts, { callModel });
+
+    expect(callModel).not.toHaveBeenCalled();
+    expect(results[0]).toMatchObject({
+      id: 'a', status: 'ok', translation: expect.stringContaining('For God so loved the world'),
+      scripture: { verbatim: true, readingEnded: false, version: 'KJV' },
+    });
+  }));
+
+  it('a paraphrase is translated normally, with the verse text passed as <VERSTEKST_ESV> guidance (AC12)', () => withBibleFixture(async () => {
+    const paraphrase = 'Want alzo lief heeft God de wereld gehad dat Hij zijn Zoon gaf zodat iedereen die gelooft niet verloren gaat';
+    const items: TranslateItemInput[] = [
+      { id: 'a', text: paraphrase, before: [], after: [], readingCandidate: { bookNumber: 43, chapter: 3, verse: 16 } },
+    ];
+    let capturedUserMessage = '';
+    const callModel = vi.fn(async (_system: string, userMessage: string) => {
+      capturedUserMessage = userMessage;
+      return 'His own paraphrase, translated.';
+    });
+
+    const results = await translateSegments(items, baseOpts, { callModel });
+
+    expect(callModel).toHaveBeenCalledTimes(1);
+    expect(capturedUserMessage).toContain('<VERSTEKST_ESV>');
+    expect(capturedUserMessage).toContain('For God so loved the world');
+    expect(capturedUserMessage).toContain(`<TE_VERTALEN>\n${paraphrase}\n</TE_VERTALEN>`);
+    expect(results[0]).toMatchObject({ id: 'a', status: 'ok', translation: 'His own paraphrase, translated.' });
+    expect((results[0] as { scripture?: unknown }).scripture).toBeUndefined();
+  }));
+
+  it('an unrelated sentence is translated normally and flags readingEnded so the client stops checking further segments', () => withBibleFixture(async () => {
+    const items: TranslateItemInput[] = [
+      { id: 'a', text: 'En dit is waarom wij vanavond hier bijeen zijn.', before: [], after: [], readingCandidate: { bookNumber: 43, chapter: 3, verse: 16 } },
+    ];
+    const callModel = vi.fn(async () => 'And this is why we are gathered here tonight.');
+
+    const results = await translateSegments(items, baseOpts, { callModel });
+
+    expect(callModel).toHaveBeenCalledTimes(1);
+    expect(results[0]).toMatchObject({ id: 'a', status: 'ok', scripture: { verbatim: false, readingEnded: true } });
+  }));
+
+  it('scriptureEnabled:false ignores a readingCandidate entirely', () => withBibleFixture(async () => {
+    const items: TranslateItemInput[] = [
+      { id: 'a', text: JOHN_3_16, before: [], after: [], readingCandidate: { bookNumber: 43, chapter: 3, verse: 16 } },
+    ];
+    const callModel = vi.fn(async () => 'Translated normally.');
+
+    const results = await translateSegments(items, { ...baseOpts, scriptureEnabled: false }, { callModel });
+
+    expect(callModel).toHaveBeenCalledTimes(1);
+    expect(results[0]).toMatchObject({ id: 'a', status: 'ok', translation: 'Translated normally.' });
+    expect((results[0] as { scripture?: unknown }).scripture).toBeUndefined();
+  }));
+
+  it('scriptureFallback:"none" declines a KJV-sourced verbatim hit and falls through to a normal translation, flagged readingEnded', () => withBibleFixture(async () => {
+    const items: TranslateItemInput[] = [
+      { id: 'a', text: JOHN_3_16, before: [], after: [], readingCandidate: { bookNumber: 43, chapter: 3, verse: 16 } },
+    ];
+    const callModel = vi.fn(async () => 'Model-translated instead of substituted.');
+
+    const results = await translateSegments(items, { ...baseOpts, scriptureFallback: 'none' }, { callModel });
+
+    expect(callModel).toHaveBeenCalledTimes(1);
+    expect(results[0]).toMatchObject({
+      id: 'a', status: 'ok', translation: 'Model-translated instead of substituted.',
+      scripture: { verbatim: false, readingEnded: true },
+    });
+  }));
+
+  it('an item with no readingCandidate is unaffected by the scripture pipeline', () => withBibleFixture(async () => {
+    const items: TranslateItemInput[] = [{ id: 'a', text: 'Gewone preekzin, geen citaat.', before: [], after: [] }];
+    const callModel = vi.fn(async () => 'Ordinary sermon sentence, not a quote.');
+
+    const results = await translateSegments(items, baseOpts, { callModel });
+
+    expect(results[0]).toEqual({ id: 'a', status: 'ok', translation: 'Ordinary sermon sentence, not a quote.' });
+  }));
 });

@@ -6,7 +6,10 @@
 
 import { client as openaiClient } from './openai';
 import { makeClient as ollamaClient } from './ollama';
-import { buildSystemPrompt, buildUserMessage, getGlossaryContext } from './sermon-prompt';
+import { buildSystemPrompt, buildUserMessage, getFileGlossaryContext } from './sermon-prompt';
+import { getGlossaryBundle } from './glossary-store';
+import { checkGlossaryAdherence, type GlossaryWarning } from './glossary-check';
+import { adjudicateScripture, type ReadingCandidate } from './scripture';
 import { Semaphore } from './semaphore';
 
 export type SermonTranslationProvider = 'openai' | 'claude' | 'ollama';
@@ -16,10 +19,25 @@ export interface TranslateItemInput {
   text: string;
   before: string[];
   after: string[];
+  /** A detected/continuing Bible reading to check `text` against — see client/src/lib/sermon/bible-ref.ts and server/lib/scripture.ts. Absent when no reference applies to this segment. */
+  readingCandidate?: ReadingCandidate;
+  /** How to render a spoken reference announcement in English (e.g. "John 3:16") — passed through to the prompt as a rendering hint only, see sermon-prompt.ts. */
+  referenceHint?: string;
+}
+
+/** Mirrors the outcome of server/lib/scripture.ts's adjudicateScripture for one item — see that module for the full verbatim/paraphrase/ended semantics. */
+export interface ScriptureResultInfo {
+  verbatim: boolean;
+  /** True when this segment was checked against an ongoing reading and the match dropped below threshold (or scripture substitution is policy-disabled) — tells the client to stop treating subsequent segments as a continuation of that reading. */
+  readingEnded: boolean;
+  text?: string;
+  reference?: string;
+  version?: 'ESV' | 'KJV';
+  verseEnd?: number;
 }
 
 export type TranslateItemResult =
-  | { id: string; status: 'ok'; translation: string }
+  | { id: string; status: 'ok'; translation: string; warnings?: GlossaryWarning[]; scripture?: ScriptureResultInfo }
   | { id: string; status: 'error'; error: string };
 
 export interface TranslateOptions {
@@ -30,8 +48,20 @@ export interface TranslateOptions {
   anthropicApiKey?: string;
   ollamaBaseUrl?: string;
   ollamaModel?: string;
-  /** Free-text glossary from client settings — the v1 glossary seam, see sermon-prompt.ts. */
+  /** Free-text glossary from client settings — the v1 fallback, used only when no file glossary is loaded. See sermon-prompt.ts's getFileGlossaryContext. */
   glossaryOverride?: string;
+  /** Basenames selecting which files server/lib/glossary-store.ts loads — server-default selection is used when omitted. */
+  glossaryCsv?: string;
+  disambiguationPrompt?: string;
+  bibleVersion?: string;
+  deityCapitals?: boolean;
+  /** Non-blocking per-segment glossary-adherence check — on by default. */
+  glossaryWarningsEnabled?: boolean;
+  /** Master switch for the whole Bible-quote pipeline — on by default; when false, every item's readingCandidate is ignored and translation proceeds as if it were never sent. */
+  scriptureEnabled?: boolean;
+  esvApiKey?: string;
+  /** What to do for a verbatim reading when the ESV API doesn't return text (no key, request failed) — 'kjv' (default) substitutes the bundled public-domain KJV instead; 'none' skips substitution entirely (falls through to a normal model translation) rather than ever surfacing KJV wording. */
+  scriptureFallback?: 'kjv' | 'none';
   signal?: AbortSignal;
 }
 
@@ -54,22 +84,87 @@ export async function translateSegments(
   opts: TranslateOptions,
   deps: TranslateDeps = {},
 ): Promise<TranslateItemResult[]> {
-  const glossaryContext = getGlossaryContext(opts.glossaryOverride);
+  // Bundle lookup + prompt build happen once per batch, outside the per-item
+  // map below — not per item — so a Refresh across dozens of segments still
+  // does a single bundle cache read and a single (memoized) prompt build.
+  const bundle = getGlossaryBundle({ csv: opts.glossaryCsv, prompt: opts.disambiguationPrompt });
+  const glossaryContext = getFileGlossaryContext({
+    bundle,
+    bibleVersion: opts.bibleVersion ?? 'KJV',
+    deityCapitals: opts.deityCapitals ?? false,
+    fallbackGlossary: opts.glossaryOverride,
+  });
   const systemPrompt = buildSystemPrompt(opts.targetLanguage, glossaryContext);
   const callModel = deps.callModel ?? callModelDefault;
+  const warningsEnabled = opts.glossaryWarningsEnabled !== false && !!bundle;
+
+  const scriptureEnabled = opts.scriptureEnabled !== false;
 
   return Promise.all(items.map(async (item): Promise<TranslateItemResult> => {
     await semaphore.acquire();
     try {
       const timeout = AbortSignal.timeout(ITEM_TIMEOUT_MS);
       const combinedSignal = opts.signal ? AbortSignal.any([timeout, opts.signal]) : timeout;
-      const userMessage = buildUserMessage({ before: item.before, target: item.text, after: item.after });
+
+      // Scripture adjudication happens BEFORE the model call — a verbatim
+      // reading substitutes the exact verse text directly and skips the
+      // model entirely (spec "Bijbelcitaten" Layer 1); a paraphrase instead
+      // adds Layer-2 guidance to the prompt below; "ended" and a policy-
+      // declined verbatim both fall through to an ordinary translation, the
+      // latter flagged readingEnded so the client stops checking subsequent
+      // segments against this reading.
+      let scriptureGuidance: string | undefined;
+      let scriptureInfo: ScriptureResultInfo | undefined;
+
+      if (scriptureEnabled && item.readingCandidate) {
+        const verdict = await adjudicateScripture(item.text, item.readingCandidate, {
+          esvApiKey: opts.esvApiKey,
+          signal: combinedSignal,
+        });
+
+        if (verdict.kind === 'verbatim') {
+          const fallbackDeclined = verdict.version === 'KJV' && opts.scriptureFallback === 'none';
+          if (!fallbackDeclined) {
+            return {
+              id: item.id, status: 'ok', translation: verdict.text,
+              scripture: {
+                verbatim: true, readingEnded: false, text: verdict.text,
+                reference: verdict.reference, version: verdict.version, verseEnd: verdict.verseEnd,
+              },
+            };
+          }
+          scriptureInfo = { verbatim: false, readingEnded: true };
+        } else if (verdict.kind === 'paraphrase') {
+          // Bundled/ESV verse text is trusted operator-grade data (unlike
+          // the glossary, it needs no sanitizeGlossary-style fencing or
+          // injection-keyword filtering) but is embedded into the prompt as
+          // <VERSTEKST_ESV>, so a literal ``` sequence — vanishingly
+          // unlikely in Bible prose, but free to guard against — must not
+          // be able to close that block early. Mirrors the same guard on
+          // the glossary's disambiguation doc (CLAUDE.md "Security notes").
+          scriptureGuidance = verdict.guidance.replace(/```+/g, "'");
+        } else {
+          scriptureInfo = { verbatim: false, readingEnded: true };
+        }
+      }
+
+      const userMessage = buildUserMessage({
+        before: item.before, target: item.text, after: item.after,
+        scriptureGuidance, referenceHint: item.referenceHint,
+      });
 
       const translation = await callModel(systemPrompt, userMessage, opts, combinedSignal);
       if (typeof translation !== 'string' || !translation.trim()) {
         return { id: item.id, status: 'error', error: 'Empty translation response' };
       }
-      return { id: item.id, status: 'ok', translation };
+
+      const result: TranslateItemResult = { id: item.id, status: 'ok', translation };
+      if (scriptureInfo) result.scripture = scriptureInfo;
+      if (warningsEnabled && bundle) {
+        const warnings = checkGlossaryAdherence(item.text, translation, bundle.checkIndex);
+        if (warnings.length > 0) result.warnings = warnings;
+      }
+      return result;
     } catch (err) {
       return { id: item.id, status: 'error', error: classifyError(err) };
     } finally {

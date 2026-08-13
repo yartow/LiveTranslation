@@ -1,24 +1,23 @@
-import { useEffect, useMemo, useReducer, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from 'react';
 import Header from '@/components/Header';
 import SermonToolbar from '@/components/sermon/SermonToolbar';
 import SegmentGrid from '@/components/sermon/SegmentGrid';
 import SettingsDialog from '@/components/SettingsDialog';
 import { useToast } from '@/hooks/use-toast';
 import { useSettings } from '@/hooks/useSettings';
-import { segmentReducer, initState, selectDirtyIds } from '@/lib/sermon/segment-store';
+import { segmentReducer, initState, selectDirtyIds, type SegmentAction } from '@/lib/sermon/segment-store';
 import { isRefreshAllChord, isRefreshOneChord, type KeyChord } from '@/lib/sermon/hotkeys';
 import { useTranslationQueue, type TranslationRuntimeConfig } from '@/hooks/useTranslationQueue';
 import { useSermonIngest } from '@/hooks/useSermonIngest';
 import type { IngestConfig } from '@/lib/sermon/ingest-buffer';
+import { isMacPlatform } from '@/lib/platform';
 
-// Sermon mode is its own page/route (/sermon) rather than a mode of Home.tsx
-// — Home's TranscriptionSegment model is chunk-level, id-less, and flattened
-// to one element by every correction path, so it can't carry the per-
-// sentence identity this feature depends on. See the plan doc for the full
-// rationale. This does mean recording/audio-level plumbing is duplicated
-// rather than shared with Home.tsx — accepted as known debt for v1.
-
-const isMacPlatform = typeof navigator !== 'undefined' && /mac/i.test(navigator.platform || (navigator as unknown as { userAgentData?: { platform?: string } }).userAgentData?.platform || '');
+// Sermon mode is its own page/route ("/", see App.tsx) rather than a mode of
+// Home.tsx — Home's TranscriptionSegment model is chunk-level, id-less, and
+// flattened to one element by every correction path, so it can't carry the
+// per-sentence identity this feature depends on. See the plan doc for the
+// full rationale. This does mean recording/audio-level plumbing is
+// duplicated rather than shared with Home.tsx — accepted as known debt for v1.
 
 export default function SermonMode() {
   const { settings, updateSettings } = useSettings();
@@ -26,6 +25,28 @@ export default function SermonMode() {
 
   const sessionIdRef = useRef(`s${Date.now().toString(36)}`);
   const [state, dispatch] = useReducer(segmentReducer, sessionIdRef.current, initState);
+
+  // A ref mirror of `state`, kept authoritative two ways: (1) every action
+  // dispatched through applyAction below applies the same pure reducer to it
+  // synchronously, so code that flushes a pending edit and immediately reads
+  // segment text in the same synchronous tick (see useTranslationQueue.ts's
+  // runBatch) sees the edit right away — a plain `useReducer` dispatch alone
+  // only takes effect on the next render, one tick later. (2) it's also
+  // reassigned from `state` on every render as a fallback, so it can never
+  // drift even if some future code path dispatches through the raw reducer
+  // dispatch instead of applyAction.
+  const stateRef = useRef(state);
+  stateRef.current = state;
+
+  const applyAction = useCallback((action: SegmentAction) => {
+    stateRef.current = segmentReducer(stateRef.current, action);
+    dispatch(action);
+  }, [dispatch]);
+
+  // Registry of per-segment "flush the pending debounced source edit now"
+  // callbacks, populated by SourceCell. A manual Refresh (button or hotkey)
+  // calls these before reading segment text — see useTranslationQueue.ts.
+  const flushersRef = useRef(new Map<string, () => void>());
 
   const activeSegmentIdRef = useRef<string | null>(null);
   const [isDark, setIsDark] = useState(true);
@@ -51,6 +72,14 @@ export default function SermonMode() {
     ollamaBaseUrl: settings.ollamaBaseUrl,
     ollamaModel: settings.ollamaModel,
     glossary: settings.theologicalGlossary,
+    glossaryCsv: settings.sermonGlossaryEnabled ? settings.sermonGlossaryCsv : undefined,
+    disambiguationPrompt: settings.sermonGlossaryEnabled ? settings.sermonDisambiguationPrompt : undefined,
+    bibleVersion: settings.sermonBibleVersion,
+    deityCapitals: settings.sermonDeityCapitals,
+    glossaryWarnings: settings.sermonGlossaryWarnings,
+    scriptureEnabled: settings.sermonScriptureEnabled,
+    esvApiKey: settings.esvApiKey,
+    scriptureFallback: settings.sermonScriptureFallback,
     stabilityMs: settings.sermonStabilityMs,
     contextBefore: settings.sermonContextBefore,
     contextAfter: settings.sermonContextAfter,
@@ -63,10 +92,11 @@ export default function SermonMode() {
     ingestConfigRef.current = { maxLatencyMs: settings.sermonMaxLatencySecs * 1000 };
   }, [settings.sermonMaxLatencySecs]);
 
-  const { refreshAll, refreshOne } = useTranslationQueue(state, dispatch, translationConfigRef, autoTranslateRef);
+  const { refreshAll, refreshOne } = useTranslationQueue(stateRef, applyAction, translationConfigRef, autoTranslateRef, flushersRef);
 
   const { isRecording, isProcessing, start, stop } = useSermonIngest({
-    dispatch,
+    dispatch: applyAction,
+    stateRef,
     ingestConfigRef,
     sourceLanguage: settings.defaultSourceLanguage || 'nl',
     targetLanguage: settings.defaultTargetLanguage || 'en',
@@ -123,7 +153,13 @@ export default function SermonMode() {
         onOpenSettings={() => setIsSettingsOpen(true)}
         isMac={isMacPlatform}
       />
-      <SegmentGrid state={state} dispatch={dispatch} activeSegmentIdRef={activeSegmentIdRef} onRefreshOne={refreshOne} />
+      <SegmentGrid
+        state={state}
+        dispatch={applyAction}
+        activeSegmentIdRef={activeSegmentIdRef}
+        onRefreshOne={refreshOne}
+        flushersRef={flushersRef}
+      />
       <SettingsDialog
         isOpen={isSettingsOpen}
         onClose={() => setIsSettingsOpen(false)}

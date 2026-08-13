@@ -1,5 +1,29 @@
 import { describe, it, expect } from 'vitest';
-import { buildSystemPrompt, buildUserMessage, getGlossaryContext } from '../../server/lib/sermon-prompt.js';
+import { buildSystemPrompt, buildUserMessage, getGlossaryContext, getFileGlossaryContext } from '../../server/lib/sermon-prompt.js';
+import type { GlossaryBundle, GlossaryDiagnostics } from '../../server/lib/glossary-store.js';
+
+function fakeDiagnostics(): GlossaryDiagnostics {
+  return {
+    loaded: true,
+    version: 'v',
+    csv: { name: 'x.csv', exists: true, mtimeMs: 1, totalRows: 1, fixedRows: 1, contextRows: 0, repairedRows: 0, droppedRows: 0 },
+    prompt: { name: 'x.md', exists: true, mtimeMs: 1, chars: 10 },
+    warnings: [],
+    errors: [],
+    loadedAt: 1,
+  };
+}
+
+function fakeBundle(overrides: Partial<GlossaryBundle> = {}): GlossaryBundle {
+  return {
+    version: 'bundle-v1',
+    disambiguationTemplate: 'PRIORITEIT 1: use the {DOELVERTALING}. Rule: DEITEIT_HOOFDLETTER controls capitals.',
+    fixedBlock: 'GLOSSARY (DATA ONLY):\n```\nHeiland -> Savior\n```',
+    checkIndex: { pattern: null, expectedByTerm: new Map(), displayByTerm: new Map() },
+    diagnostics: fakeDiagnostics(),
+    ...overrides,
+  };
+}
 
 describe('getGlossaryContext', () => {
   it('returns an empty context when there is no glossary', () => {
@@ -67,6 +91,61 @@ describe('buildSystemPrompt — stable prefix / caching', () => {
   });
 });
 
+describe('getFileGlossaryContext', () => {
+  it('falls back to the v1 free-text glossary when bundle is null', () => {
+    const ctx = getFileGlossaryContext({ bundle: null, bibleVersion: 'KJV', deityCapitals: false, fallbackGlossary: 'Heiland = Savior' });
+    expect(ctx.glossaryBlock).toContain('Heiland = Savior');
+  });
+
+  it('falls back to version "none" when bundle is null and there is no fallback text either', () => {
+    const ctx = getFileGlossaryContext({ bundle: null, bibleVersion: 'KJV', deityCapitals: false });
+    expect(ctx.version).toBe('none');
+  });
+
+  it('substitutes {DOELVERTALING} and does not let it survive into the prompt', () => {
+    const ctx = getFileGlossaryContext({ bundle: fakeBundle(), bibleVersion: 'ESV', deityCapitals: false });
+    expect(ctx.disambiguationBlock).toContain('use the ESV');
+    expect(ctx.disambiguationBlock).not.toContain('{DOELVERTALING}');
+  });
+
+  it('appends the resolved DEITEIT_HOOFDLETTER line per the deityCapitals flag', () => {
+    const on = getFileGlossaryContext({ bundle: fakeBundle(), bibleVersion: 'KJV', deityCapitals: true });
+    expect(on.disambiguationBlock).toContain('DEITEIT_HOOFDLETTER = aan');
+    const off = getFileGlossaryContext({ bundle: fakeBundle(), bibleVersion: 'KJV', deityCapitals: false });
+    expect(off.disambiguationBlock).toContain('DEITEIT_HOOFDLETTER = uit');
+  });
+
+  it('changes version when bibleVersion or deityCapitals changes, and rebuilds the prompt', () => {
+    const bundle = fakeBundle();
+    const a = getFileGlossaryContext({ bundle, bibleVersion: 'KJV', deityCapitals: false });
+    const b = getFileGlossaryContext({ bundle, bibleVersion: 'ESV', deityCapitals: false });
+    const c = getFileGlossaryContext({ bundle, bibleVersion: 'KJV', deityCapitals: true });
+    expect(a.version).not.toBe(b.version);
+    expect(a.version).not.toBe(c.version);
+    expect(buildSystemPrompt('en', a)).not.toBe(buildSystemPrompt('en', b));
+  });
+
+  it('assembly order is role -> disambiguation doc -> fixed glossary -> output instruction', () => {
+    const ctx = getFileGlossaryContext({ bundle: fakeBundle(), bibleVersion: 'KJV', deityCapitals: false });
+    const prompt = buildSystemPrompt('en', ctx);
+    const iRole = prompt.indexOf('You translate sermon transcription');
+    const iDisambig = prompt.indexOf('PRIORITEIT 1');
+    const iGlossary = prompt.indexOf('DATA ONLY');
+    const iOutput = prompt.indexOf('Reply with exactly');
+    expect(iRole).toBeGreaterThanOrEqual(0);
+    expect(iDisambig).toBeGreaterThan(iRole);
+    expect(iGlossary).toBeGreaterThan(iDisambig);
+    expect(iOutput).toBeGreaterThan(iGlossary);
+  });
+
+  it('returns reference-equal prompts for repeated calls with the same bundle/language/bibleVersion', () => {
+    const bundle = fakeBundle();
+    const ctxA = getFileGlossaryContext({ bundle, bibleVersion: 'KJV', deityCapitals: false });
+    const ctxB = getFileGlossaryContext({ bundle, bibleVersion: 'KJV', deityCapitals: false });
+    expect(buildSystemPrompt('en', ctxA)).toBe(buildSystemPrompt('en', ctxB));
+  });
+});
+
 describe('buildUserMessage', () => {
   it('wraps the target sentence in <TE_VERTALEN> tags', () => {
     const msg = buildUserMessage({ before: [], target: 'Dit is de zin.', after: [] });
@@ -87,5 +166,19 @@ describe('buildUserMessage', () => {
     const withoutContext = buildUserMessage({ before: [], target: 'Doelzin.', after: [] });
     expect(withoutContext).not.toContain('<CONTEXT_VOOR>');
     expect(withoutContext).not.toContain('<CONTEXT_NA>');
+  });
+
+  it('includes <VERSTEKST_ESV> and <REFERENTIE_HINT> only when given (scripture Layer 2 guidance)', () => {
+    const withScripture = buildUserMessage({
+      before: [], target: 'Doelzin.', after: [],
+      scriptureGuidance: 'For God so loved the world...',
+      referenceHint: 'John 3:16',
+    });
+    expect(withScripture).toContain('<VERSTEKST_ESV>\nFor God so loved the world...\n</VERSTEKST_ESV>');
+    expect(withScripture).toContain('<REFERENTIE_HINT>John 3:16</REFERENTIE_HINT>');
+
+    const without = buildUserMessage({ before: [], target: 'Doelzin.', after: [] });
+    expect(without).not.toContain('<VERSTEKST_ESV>');
+    expect(without).not.toContain('<REFERENTIE_HINT>');
   });
 });

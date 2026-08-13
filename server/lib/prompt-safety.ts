@@ -20,3 +20,24 @@ export function sanitizeGlossary(raw: string): string {
     .filter(line => !INJECTION_RE.test(line)) // drop injection attempts
     .join('\n');
 }
+
+/** True if `line` (already trimmed) looks like an attempt to inject instructions rather than data. */
+export function looksLikeInjection(line: string): boolean {
+  return INJECTION_RE.test(line);
+}
+
+/**
+ * Sanitizes a single glossary field (a CSV cell, not a whole line) for
+ * embedding into an LLM prompt: collapses embedded newlines/tabs to a single
+ * space (a stray newline inside a CSV field must not create a fake new
+ * glossary row), neutralizes backticks and literal ``` fences, trims, and
+ * caps length. Deliberately does NOT apply the injection-keyword filter —
+ * that operates on the term itself (the whole rendered "NL → EN" line, done
+ * by the caller), not on arbitrary field text: a Notitie column legitimately
+ * starting with "Niet ..." or "Let op ..." must survive.
+ */
+export function sanitizeGlossaryField(raw: string, maxLen: number): string {
+  const collapsed = raw.replace(/[\r\n\t]+/g, ' ').replace(/```+/g, "'").replace(/`+/g, "'");
+  const trimmed = collapsed.trim();
+  return trimmed.length > maxLen ? trimmed.slice(0, maxLen).trim() : trimmed;
+}

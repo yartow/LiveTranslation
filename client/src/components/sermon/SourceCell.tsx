@@ -6,6 +6,11 @@ interface SourceCellProps {
   segment: Segment;
   dispatch: React.Dispatch<SegmentAction>;
   activeSegmentIdRef: React.MutableRefObject<string | null>;
+  /** Registry of per-segment "flush the pending debounced edit now" callbacks
+   *  — a manual Refresh calls these before reading segment text, so it never
+   *  translates what was on screen a moment ago instead of what the human
+   *  just typed. See useTranslationQueue.ts's runBatch. */
+  flushersRef: React.MutableRefObject<Map<string, () => void>>;
 }
 
 const EDIT_DEBOUNCE_MS = 150;
@@ -16,10 +21,14 @@ const EDIT_DEBOUNCE_MS = 150;
 // caret. Text only gets pushed into the DOM element imperatively, and only
 // when sourceRevision changes (a non-user write — see segment-store.ts) AND
 // the field isn't the one currently focused.
-export default function SourceCell({ segment, dispatch, activeSegmentIdRef }: SourceCellProps) {
+export default function SourceCell({ segment, dispatch, activeSegmentIdRef, flushersRef }: SourceCellProps) {
   const ref = useRef<HTMLTextAreaElement>(null);
   const revisionRef = useRef(segment.sourceRevision);
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // Latest typed value not yet dispatched into the store — read by
+  // commitPending() so a flush can dispatch it immediately instead of
+  // waiting out the debounce.
+  const pendingRef = useRef<string | null>(null);
 
   const autoGrow = useCallback(() => {
     const el = ref.current;
@@ -30,25 +39,59 @@ export default function SourceCell({ segment, dispatch, activeSegmentIdRef }: So
 
   useLayoutEffect(() => { autoGrow(); }, [autoGrow]);
 
+  // Only advance revisionRef when the DOM write actually happens. Advancing
+  // it unconditionally (even on the early-return-because-focused branch)
+  // used to mark a skipped write as "consumed" — the store's sourceText would
+  // move on but the focused textarea would keep stale text with no future
+  // effect run able to reconcile them, since the effect's deps wouldn't
+  // change again on their own. handleBlur below catches up once focus moves
+  // away.
   useEffect(() => {
     if (segment.sourceRevision === revisionRef.current) return;
-    revisionRef.current = segment.sourceRevision;
     const el = ref.current;
     if (!el || document.activeElement === el) return;
+    revisionRef.current = segment.sourceRevision;
     el.value = segment.sourceText;
     autoGrow();
   }, [segment.sourceRevision, segment.sourceText, autoGrow]);
 
+  const commitPending = useCallback(() => {
+    if (debounceRef.current) { clearTimeout(debounceRef.current); debounceRef.current = null; }
+    const value = pendingRef.current;
+    pendingRef.current = null;
+    if (value !== null) dispatch({ type: 'EDIT_SOURCE', id: segment.id, sourceText: value, now: Date.now() });
+  }, [dispatch, segment.id]);
+
+  // Register so refreshOne/refreshAll can flush this row before building a
+  // translation batch. On unmount, flush rather than discard — a segment
+  // scrolled out of view (e.g. by APPEND_SEGMENT unmounting/remounting rows)
+  // must never silently lose an edit still sitting in the debounce window.
+  useEffect(() => {
+    flushersRef.current.set(segment.id, commitPending);
+    return () => {
+      flushersRef.current.delete(segment.id);
+      commitPending();
+    };
+  }, [segment.id, commitPending, flushersRef]);
+
   const handleInput = useCallback((e: React.FormEvent<HTMLTextAreaElement>) => {
     autoGrow();
-    const value = e.currentTarget.value;
+    pendingRef.current = e.currentTarget.value;
     if (debounceRef.current) clearTimeout(debounceRef.current);
-    debounceRef.current = setTimeout(() => {
-      dispatch({ type: 'EDIT_SOURCE', id: segment.id, sourceText: value, now: Date.now() });
-    }, EDIT_DEBOUNCE_MS);
-  }, [autoGrow, dispatch, segment.id]);
+    debounceRef.current = setTimeout(commitPending, EDIT_DEBOUNCE_MS);
+  }, [autoGrow, commitPending]);
 
-  useEffect(() => () => { if (debounceRef.current) clearTimeout(debounceRef.current); }, []);
+  const handleBlur = useCallback(() => {
+    commitPending();
+    // If a provisional/ASR update arrived while this field was focused, the
+    // sync effect above skipped writing it into the DOM (see its guard) —
+    // catch up now that we're not fighting the user's cursor anymore.
+    if (ref.current && segment.sourceRevision !== revisionRef.current) {
+      revisionRef.current = segment.sourceRevision;
+      ref.current.value = segment.sourceText;
+      autoGrow();
+    }
+  }, [commitPending, segment.sourceRevision, segment.sourceText, autoGrow]);
 
   const isDirtyVisual = segment.status === 'EDITED';
   const isProvisional = segment.status === 'PROVISIONAL';
@@ -76,6 +119,7 @@ export default function SourceCell({ segment, dispatch, activeSegmentIdRef }: So
         defaultValue={segment.sourceText}
         onInput={handleInput}
         onFocus={() => { activeSegmentIdRef.current = segment.id; }}
+        onBlur={handleBlur}
         data-segment-id={segment.id}
         data-testid={`source-${segment.id}`}
         rows={1}

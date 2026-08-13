@@ -1,5 +1,5 @@
 import { useState, useRef, useCallback, useLayoutEffect } from 'react';
-import { Lock, Pencil } from 'lucide-react';
+import { BookOpen, Lock, Pencil } from 'lucide-react';
 import type { Segment } from '@/lib/sermon/segment-model';
 import type { SegmentAction } from '@/lib/sermon/segment-store';
 
@@ -53,13 +53,16 @@ export default function TargetCell({ segment, dispatch, activeSegmentIdRef }: Ta
     );
   }
 
-  const isStale = segment.status !== 'TRANSLATED' && !segment.manualOverride;
+  const isScripture = segment.status === 'SCRIPTURE';
+  // A SCRIPTURE segment is exact quoted verse text, not a model translation —
+  // it should never read as "stale" the way a not-yet-(re)translated row does.
+  const isStale = segment.status !== 'TRANSLATED' && !isScripture && !segment.manualOverride;
 
   return (
     <div
       className={
         'group relative w-full px-3 py-2 pr-7 text-sm leading-relaxed rounded-md border-l-2 min-h-[2.25rem] ' +
-        (segment.manualOverride ? 'border-blue-400' : 'border-transparent') +
+        (segment.manualOverride ? 'border-blue-400' : isScripture ? 'border-indigo-400' : 'border-transparent') +
         (isStale ? ' opacity-60' : '')
       }
       data-segment-id={segment.id}
@@ -69,6 +72,16 @@ export default function TargetCell({ segment, dispatch, activeSegmentIdRef }: Ta
     >
       {segment.manualOverride && (
         <Lock className="inline-block w-3 h-3 mr-1 mb-0.5 text-blue-500" aria-label="Handmatig aangepast" />
+      )}
+      {isScripture && !segment.manualOverride && segment.scripture && (
+        <span
+          className="inline-flex items-center gap-1 mr-1.5 mb-0.5 align-middle text-[10px] font-medium text-indigo-500 dark:text-indigo-400"
+          title={`${segment.scripture.reference} (${segment.scripture.version}) — exacte verstekst, geen model-vertaling`}
+          data-testid={`scripture-reference-${segment.id}`}
+        >
+          <BookOpen className="w-3 h-3" />
+          {segment.scripture.reference} · {segment.scripture.version}
+        </span>
       )}
       {segment.translatedText || <span className="text-muted-foreground italic">…</span>}
       <button

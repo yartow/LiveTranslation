@@ -96,4 +96,64 @@ describe('POST /api/sermon/translate — validation', () => {
       .send({ translationProvider: 'not-a-provider', items: [validItem] });
     expect(res.status).toBe(400);
   });
+
+  it('400 when glossaryCsv is a traversal attempt — rejected before any provider call', async () => {
+    const res = await request(server)
+      .post('/api/sermon/translate')
+      .send({ translationProvider: 'openai', items: [validItem], glossaryCsv: '../../../etc/passwd' });
+    expect(res.status).toBe(400);
+    expect(JSON.stringify(res.body)).not.toContain('root:');
+  });
+
+  it('400 when disambiguationPrompt has the wrong extension', async () => {
+    const res = await request(server)
+      .post('/api/sermon/translate')
+      .send({ translationProvider: 'openai', items: [validItem], disambiguationPrompt: 'notes.txt' });
+    expect(res.status).toBe(400);
+  });
+
+  it('400 when an item\'s readingCandidate has a bookNumber out of the 1-66 range', async () => {
+    const res = await request(server)
+      .post('/api/sermon/translate')
+      .send({
+        translationProvider: 'openai',
+        items: [{ ...validItem, readingCandidate: { bookNumber: 67, chapter: 1, verse: 1 } }],
+      });
+    expect(res.status).toBe(400);
+  });
+
+  it('400 when an item\'s readingCandidate has a non-integer chapter/verse', async () => {
+    const res = await request(server)
+      .post('/api/sermon/translate')
+      .send({
+        translationProvider: 'openai',
+        items: [{ ...validItem, readingCandidate: { bookNumber: 43, chapter: 3.5, verse: 16 } }],
+      });
+    expect(res.status).toBe(400);
+  });
+
+  it('400 when referenceHint exceeds the length cap', async () => {
+    const res = await request(server)
+      .post('/api/sermon/translate')
+      .send({ translationProvider: 'openai', items: [{ ...validItem, referenceHint: 'x'.repeat(61) }] });
+    expect(res.status).toBe(400);
+  });
+
+  it('400 when scriptureFallback is not "kjv" or "none"', async () => {
+    const res = await request(server)
+      .post('/api/sermon/translate')
+      .send({ translationProvider: 'openai', items: [validItem], scriptureFallback: 'esv-only' });
+    expect(res.status).toBe(400);
+  });
+
+  it('a well-formed readingCandidate/referenceHint pass validation (fails later only for lack of a real provider key)', async () => {
+    const res = await request(server)
+      .post('/api/sermon/translate')
+      .send({
+        translationProvider: 'openai',
+        items: [{ ...validItem, readingCandidate: { bookNumber: 43, chapter: 3, verse: 16 }, referenceHint: 'John 3:16' }],
+      });
+    // Not a 400 — validation passed; it may still fail downstream (no API key in this test env).
+    expect(res.status).not.toBe(400);
+  });
 });

@@ -4,6 +4,7 @@ import { setupVite, serveStatic, log } from "./vite";
 import { WebSocketServer } from 'ws';
 import { setupStreamingWebSocket } from './lib/assemblyai-streaming';
 import { setupChunkTranscriptionWebSocket } from './lib/chunk-transcription';
+import { initGlossary } from './lib/glossary-store';
 
 if (!process.env.OPENAI_API_KEY) {
   console.warn("Warning: OPENAI_API_KEY is not set — translation will fail");
@@ -61,6 +62,13 @@ app.use((req, res, next) => {
 
   next();
 });
+
+// initGlossary() never throws (see glossary-store.ts) but this stays
+// belt-and-braces per repo style — a boot-time failure here must never
+// prevent the server from starting.
+try { initGlossary(); } catch (e) {
+  console.warn('Glossary init failed — sermon mode will translate without a file glossary:', e);
+}
 
 (async () => {
   const server = await registerRoutes(app);

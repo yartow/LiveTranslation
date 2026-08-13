@@ -9,7 +9,8 @@ interface HeaderProps {
 
 export default function Header({ onThemeToggle, onSettingsOpen, isDark }: HeaderProps) {
   const [location] = useLocation();
-  const inSermonMode = location === '/sermon';
+  // Preekmodus is now the app's default route ("/"); live/subtitle mode lives at "/live".
+  const inLiveMode = location === '/live';
 
   return (
     <header className="sticky top-0 z-50 bg-background border-b border-border">
@@ -20,13 +21,14 @@ export default function Header({ onThemeToggle, onSettingsOpen, isDark }: Header
         </div>
         <div className="flex items-center gap-1">
           <Link
-            href={inSermonMode ? '/' : '/sermon'}
-            className="text-muted-foreground hover:text-foreground p-2 rounded-md transition-colors"
-            aria-label={inSermonMode ? 'Live modus' : 'Preekmodus'}
-            title={inSermonMode ? 'Terug naar live modus' : 'Preekmodus (dual-pane vertaaleditor)'}
+            href={inLiveMode ? '/' : '/live'}
+            className="flex items-center gap-1.5 text-muted-foreground hover:text-foreground px-2.5 py-2 rounded-md transition-colors text-sm"
+            aria-label={inLiveMode ? 'Preekmodus' : 'Live modus'}
+            title={inLiveMode ? 'Naar preekmodus (dual-pane vertaaleditor)' : 'Naar live modus (ondertitels)'}
             data-testid="link-sermon-mode-toggle"
           >
-            {inSermonMode ? <Mic className="w-4 h-4" /> : <BookOpenText className="w-4 h-4" />}
+            {inLiveMode ? <BookOpenText className="w-4 h-4" /> : <Mic className="w-4 h-4" />}
+            <span className="hidden sm:inline">{inLiveMode ? 'Preekmodus' : 'Live modus'}</span>
           </Link>
           {onThemeToggle && (
             <button

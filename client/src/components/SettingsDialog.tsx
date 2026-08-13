@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import LanguageSelector from '@/components/LanguageSelector';
 import {
   Dialog,
@@ -20,7 +20,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/select';
-import type { AppSettings, TranscriptionProvider, TranslationProvider, ImprovementProvider, LocalWhisperModel, DeviceProfile, SermonTranslationProvider } from '@/hooks/useSettings';
+import type { AppSettings, TranscriptionProvider, TranslationProvider, ImprovementProvider, LocalWhisperModel, DeviceProfile, SermonTranslationProvider, SermonBibleVersion, SermonScriptureFallback } from '@/hooks/useSettings';
 import { maskKey } from '@/lib/mask-key';
 
 interface SettingsDialogProps {
@@ -142,6 +142,186 @@ function ApiKeyField({ label, placeholder, description, value, onChange, keyPref
       )}
 
       <p className="text-xs text-muted-foreground">{description}</p>
+    </div>
+  );
+}
+
+// Mirrors server/lib/glossary-store.ts's GlossaryDiagnostics + the
+// stale/available fields getGlossaryStatus() adds — kept as a local type
+// rather than imported since client and server share no code (see
+// server/lib/sermon-prompt.ts's header comment for why).
+interface GlossaryStatus {
+  loaded: boolean;
+  version: string;
+  csv: { name: string; exists: boolean; totalRows: number; fixedRows: number; contextRows: number; repairedRows: number; droppedRows: number };
+  prompt: { name: string; exists: boolean; chars: number };
+  warnings: string[];
+  errors: string[];
+  estimatedTokens: number;
+  stale: boolean;
+  available: { csv: string[]; md: string[] };
+}
+
+interface GlossaryPanelProps {
+  settings: AppSettings;
+  onUpdate: (updates: Partial<AppSettings>) => void;
+  isOpen: boolean;
+}
+
+function GlossaryPanel({ settings, onUpdate, isOpen }: GlossaryPanelProps) {
+  const [status, setStatus] = useState<GlossaryStatus | null>(null);
+  const [isReloading, setIsReloading] = useState(false);
+  const [showWarnings, setShowWarnings] = useState(false);
+  const [fetchError, setFetchError] = useState('');
+
+  const fetchStatus = useCallback(async () => {
+    try {
+      const params = new URLSearchParams({ csv: settings.sermonGlossaryCsv, prompt: settings.sermonDisambiguationPrompt });
+      const res = await fetch(`/api/sermon/glossary/status?${params}`);
+      if (!res.ok) throw new Error(`status ${res.status}`);
+      setStatus(await res.json());
+      setFetchError('');
+    } catch {
+      setFetchError('Kon woordenlijst-status niet ophalen.');
+    }
+  }, [settings.sermonGlossaryCsv, settings.sermonDisambiguationPrompt]);
+
+  useEffect(() => {
+    if (isOpen) fetchStatus();
+  }, [isOpen, fetchStatus]);
+
+  async function handleReload() {
+    setIsReloading(true);
+    try {
+      const res = await fetch('/api/sermon/glossary/reload', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ csv: settings.sermonGlossaryCsv, prompt: settings.sermonDisambiguationPrompt }),
+      });
+      if (res.ok) setStatus(await res.json());
+    } finally {
+      setIsReloading(false);
+    }
+  }
+
+  if (!settings.sermonGlossaryEnabled) return null;
+
+  return (
+    <div className="space-y-3">
+      <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+        <div className="space-y-1">
+          <Label className="text-xs font-medium">CSV-bestand</Label>
+          <Select value={settings.sermonGlossaryCsv} onValueChange={(v) => onUpdate({ sermonGlossaryCsv: v })}>
+            <SelectTrigger className="h-8 text-xs" data-testid="select-glossary-csv">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              {(status?.available.csv ?? [settings.sermonGlossaryCsv]).map((name) => (
+                <SelectItem key={name} value={name}>{name}</SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        </div>
+        <div className="space-y-1">
+          <Label className="text-xs font-medium">Disambiguatie-prompt</Label>
+          <Select value={settings.sermonDisambiguationPrompt} onValueChange={(v) => onUpdate({ sermonDisambiguationPrompt: v })}>
+            <SelectTrigger className="h-8 text-xs" data-testid="select-glossary-prompt">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              {(status?.available.md ?? [settings.sermonDisambiguationPrompt]).map((name) => (
+                <SelectItem key={name} value={name}>{name}</SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        </div>
+      </div>
+
+      <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+        <div className="space-y-1">
+          <Label className="text-xs font-medium">Doelvertaling</Label>
+          <Select value={settings.sermonBibleVersion} onValueChange={(v) => onUpdate({ sermonBibleVersion: v as SermonBibleVersion })}>
+            <SelectTrigger className="h-8 text-xs" data-testid="select-bible-version">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="KJV">KJV</SelectItem>
+              <SelectItem value="ESV">ESV</SelectItem>
+              <SelectItem value="NASB">NASB</SelectItem>
+              <SelectItem value="NKJV">NKJV</SelectItem>
+            </SelectContent>
+          </Select>
+        </div>
+        <div className="flex items-center justify-between">
+          <Label htmlFor="glossary-deity-capitals" className="text-xs font-medium cursor-pointer">
+            Hoofdletters voor God (He/Him/His)
+          </Label>
+          <Switch
+            id="glossary-deity-capitals"
+            checked={settings.sermonDeityCapitals}
+            onCheckedChange={(checked) => onUpdate({ sermonDeityCapitals: checked })}
+          />
+        </div>
+      </div>
+
+      <div className="flex items-center justify-between">
+        <Label htmlFor="glossary-warnings" className="text-xs font-medium cursor-pointer">
+          Woordenlijst-waarschuwingen tonen
+        </Label>
+        <Switch
+          id="glossary-warnings"
+          checked={settings.sermonGlossaryWarnings}
+          onCheckedChange={(checked) => onUpdate({ sermonGlossaryWarnings: checked })}
+        />
+      </div>
+
+      <div className="rounded-md border border-border bg-muted/40 px-3 py-2 space-y-1.5">
+        {fetchError && <p className="text-xs text-destructive">{fetchError}</p>}
+        {!fetchError && !status && <p className="text-xs text-muted-foreground">Status laden…</p>}
+        {status && !status.loaded && (
+          <p className="text-xs text-amber-500">
+            Geen woordenlijst geladen — er wordt vertaald zónder woordenlijst.
+            {status.errors[0] ? ` (${status.errors[0]})` : ''}
+          </p>
+        )}
+        {status && status.loaded && (
+          <>
+            <p className="text-xs text-muted-foreground">
+              {status.csv.fixedRows} vaste termen · {status.csv.contextRows} contextafhankelijk
+              {status.csv.repairedRows > 0 ? ` · ${status.csv.repairedRows} rijen hersteld` : ''}
+              {' · ~'}{status.estimatedTokens} tokens
+            </p>
+            {status.stale && (
+              <p className="text-xs text-amber-500">Bestand is gewijzigd op schijf sinds het laatst geladen is — herladen aanbevolen.</p>
+            )}
+            {status.warnings.length > 0 && (
+              <div>
+                <button
+                  type="button"
+                  className="text-xs text-amber-500 underline decoration-dotted"
+                  onClick={() => setShowWarnings((v) => !v)}
+                >
+                  ⚠ {status.warnings.length} inconsistenties {showWarnings ? '▴' : '▾'}
+                </button>
+                {showWarnings && (
+                  <ul className="mt-1 space-y-0.5 text-xs text-muted-foreground list-disc list-inside">
+                    {status.warnings.map((w, i) => <li key={i}>{w}</li>)}
+                  </ul>
+                )}
+              </div>
+            )}
+          </>
+        )}
+        <Button variant="outline" size="sm" onClick={handleReload} disabled={isReloading}>
+          {isReloading ? 'Herladen…' : 'Herladen'}
+        </Button>
+      </div>
+
+      <p className="text-xs text-muted-foreground italic">
+        Bestanden moeten in de glossary-map van de server staan (standaard <code>data/</code>,
+        instelbaar via de <code>GLOSSARY_DIR</code> omgevingsvariabele) — geen vrij pad, om te
+        voorkomen dat willekeurige bestanden op de server gelezen kunnen worden.
+      </p>
     </div>
   );
 }
@@ -826,7 +1006,7 @@ export default function SettingsDialog({ isOpen, onClose, settings, onUpdate, we
               Preekmodus
             </h3>
             <p className="text-xs text-muted-foreground">
-              Instellingen voor de dual-pane preekvertaler (<code>/sermon</code>). Bracket-size en
+              Instellingen voor de dual-pane preekvertaler. Bracket-size en
               stabiliteit werken direct door op een lopende sessie — geen herstart nodig.
             </p>
 
@@ -972,6 +1152,80 @@ export default function SettingsDialog({ isOpen, onClose, settings, onUpdate, we
               Preekmodus forceert tijdens opnemen voice-activity-detection chunking met overlap 0
               (i.p.v. de audio-instellingen hierboven) — zo landen chunkgrenzen tussen woorden.
             </p>
+          </section>
+
+          {/* ── Preekmodus — woordenlijst ── */}
+          <section className="space-y-4">
+            <div className="flex items-center justify-between border-b border-border pb-1">
+              <h3 className="text-sm font-semibold text-foreground">
+                Preekmodus — woordenlijst
+              </h3>
+              <Switch
+                checked={settings.sermonGlossaryEnabled}
+                onCheckedChange={(checked) => onUpdate({ sermonGlossaryEnabled: checked })}
+              />
+            </div>
+            <p className="text-xs text-muted-foreground">
+              Bestandsgebaseerde theologische woordenlijst + disambiguatie-instructie, opgebouwd
+              als stabiel vertaalprefix (zie de "Theological Glossary" hierboven voor de vrije-tekst
+              variant, gebruikt zolang deze woordenlijst uit staat of niet geladen kan worden).
+            </p>
+            <GlossaryPanel settings={settings} onUpdate={onUpdate} isOpen={isOpen} />
+          </section>
+
+          {/* ── Preekmodus — Schriftcitaten ── */}
+          <section className="space-y-4">
+            <div className="flex items-center justify-between border-b border-border pb-1">
+              <h3 className="text-sm font-semibold text-foreground">
+                Preekmodus — Schriftcitaten
+              </h3>
+              <Switch
+                checked={settings.sermonScriptureEnabled}
+                onCheckedChange={(checked) => onUpdate({ sermonScriptureEnabled: checked })}
+                data-testid="switch-scripture-enabled"
+              />
+            </div>
+            <p className="text-xs text-muted-foreground">
+              Herkent een Bijbelreferentie ("Johannes 3:16") in de brontekst en vervangt een
+              woordelijk voorgelezen vers door de exacte Engelse verstekst i.p.v. een
+              model-vertaling — gemarkeerd als <code>SCRIPTURE</code> in de segmentrij. Parafraseert
+              de prediker het vers, dan wordt zíjn formulering gewoon vertaald.
+            </p>
+
+            {settings.sermonScriptureEnabled && (
+              <>
+                <ApiKeyField
+                  label="ESV API Key"
+                  placeholder="uw ESV API-sleutel"
+                  description="Voorkeursbron voor de verstekst — gratis voor niet-commercieel gebruik via api.esv.org. Zonder sleutel (of bij een mislukte lookup) wordt teruggevallen op de gebundelde King James Version."
+                  value={settings.esvApiKey}
+                  onChange={(v) => onUpdate({ esvApiKey: v })}
+                />
+
+                <div className="space-y-1">
+                  <Label className="text-xs font-medium">Als ESV niet beschikbaar is</Label>
+                  <Select
+                    value={settings.sermonScriptureFallback}
+                    onValueChange={(v) => onUpdate({ sermonScriptureFallback: v as SermonScriptureFallback })}
+                  >
+                    <SelectTrigger className="h-8 text-xs" data-testid="select-scripture-fallback">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="kjv">Terugvallen op King James Version (aanbevolen)</SelectItem>
+                      <SelectItem value="none">Niet vervangen — gewoon vertalen als model-tekst</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
+
+                <p className="text-xs text-muted-foreground italic">
+                  Scripture quotations marked ESV are from the ESV® Bible (The Holy Bible, English
+                  Standard Version®), copyright © 2001 by Crossway, a publishing ministry of Good
+                  News Publishers. Used by permission. All rights reserved. De King James Version
+                  is public domain.
+                </p>
+              </>
+            )}
           </section>
 
           {/* ── Debug Mode ── */}

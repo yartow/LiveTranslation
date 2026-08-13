@@ -9,6 +9,8 @@ export type TextDisplay = 'subtitle' | 'stream';
 export type LocalWhisperModel = 'tiny' | 'small' | 'medium';
 // Sermon mode never offers 'none' — a correction/translation call is always required there.
 export type SermonTranslationProvider = 'openai' | 'claude' | 'ollama';
+export type SermonBibleVersion = 'KJV' | 'ESV' | 'NASB' | 'NKJV';
+export type SermonScriptureFallback = 'kjv' | 'none';
 
 export interface DeviceProfile {
   id: string;
@@ -66,6 +68,17 @@ export interface AppSettings {
   sermonModel: string;
   sermonCorrectionProvider: SermonTranslationProvider;
   sermonAutoTranslate: boolean;
+  // sermon mode — file-based glossary (see server/lib/glossary-store.ts)
+  sermonGlossaryEnabled: boolean;
+  sermonGlossaryCsv: string;
+  sermonDisambiguationPrompt: string;
+  sermonBibleVersion: SermonBibleVersion;
+  sermonDeityCapitals: boolean;
+  sermonGlossaryWarnings: boolean;
+  // sermon mode — Bible-quote pipeline (see server/lib/scripture.ts, CLAUDE.md "Scripture pipeline")
+  sermonScriptureEnabled: boolean;
+  esvApiKey: string; // sessionStorage, like openaiApiKey/anthropicApiKey
+  sermonScriptureFallback: SermonScriptureFallback;
 }
 
 const PREFS_KEY = 'cttay_prefs';
@@ -105,6 +118,15 @@ const defaultSettings: AppSettings = {
   sermonModel: 'gpt-4o-mini',
   sermonCorrectionProvider: 'openai',
   sermonAutoTranslate: true,
+  sermonGlossaryEnabled: true,
+  sermonGlossaryCsv: 'preek_woordenlijst_NL_EN_1.csv',
+  sermonDisambiguationPrompt: 'context_afhankelijke_termen_prompt_v2.md',
+  sermonBibleVersion: 'ESV',
+  sermonDeityCapitals: false,
+  sermonGlossaryWarnings: true,
+  sermonScriptureEnabled: true,
+  esvApiKey: '',
+  sermonScriptureFallback: 'kjv',
 };
 
 const VALID_TRANSCRIPTION: TranscriptionProvider[] = ['whisper', 'browser', 'transformers', 'mlx'];
@@ -112,6 +134,19 @@ const VALID_TRANSLATION: TranslationProvider[] = ['openai', 'claude', 'ollama', 
 const VALID_IMPROVEMENT: ImprovementProvider[] = ['openai', 'claude'];
 const VALID_LOCAL_MODEL: LocalWhisperModel[] = ['tiny', 'small', 'medium'];
 const VALID_SERMON_PROVIDER: SermonTranslationProvider[] = ['openai', 'claude', 'ollama'];
+const VALID_BIBLE_VERSION: SermonBibleVersion[] = ['KJV', 'ESV', 'NASB', 'NKJV'];
+const VALID_SCRIPTURE_FALLBACK: SermonScriptureFallback[] = ['kjv', 'none'];
+
+// A glossary filename must match server/lib/glossary-file.ts's isSafeGlossaryName
+// contract (no path separators, no traversal, correct extension) — validated
+// again server-side since this is only a client-side usability guard.
+function isPlausibleGlossaryFilename(name: unknown, ext: string): name is string {
+  return typeof name === 'string'
+    && name.trim().length > 0
+    && name.length <= 128
+    && !name.includes('/') && !name.includes('\\') && !name.includes('..')
+    && name.toLowerCase().endsWith(ext);
+}
 
 function clamp(v: number, min: number, max: number): number {
   return Math.max(min, Math.min(max, v));
@@ -211,6 +246,37 @@ function loadSettings(): AppSettings {
     merged.sermonAutoTranslate = defaultSettings.sermonAutoTranslate;
   }
 
+  // Sermon mode — file-based glossary validation
+  if (typeof merged.sermonGlossaryEnabled !== 'boolean') {
+    merged.sermonGlossaryEnabled = defaultSettings.sermonGlossaryEnabled;
+  }
+  if (!isPlausibleGlossaryFilename(merged.sermonGlossaryCsv, '.csv')) {
+    merged.sermonGlossaryCsv = defaultSettings.sermonGlossaryCsv;
+  }
+  if (!isPlausibleGlossaryFilename(merged.sermonDisambiguationPrompt, '.md')) {
+    merged.sermonDisambiguationPrompt = defaultSettings.sermonDisambiguationPrompt;
+  }
+  if (!VALID_BIBLE_VERSION.includes(merged.sermonBibleVersion)) {
+    merged.sermonBibleVersion = defaultSettings.sermonBibleVersion;
+  }
+  if (typeof merged.sermonDeityCapitals !== 'boolean') {
+    merged.sermonDeityCapitals = defaultSettings.sermonDeityCapitals;
+  }
+  if (typeof merged.sermonGlossaryWarnings !== 'boolean') {
+    merged.sermonGlossaryWarnings = defaultSettings.sermonGlossaryWarnings;
+  }
+
+  // Sermon mode — Bible-quote pipeline validation
+  if (typeof merged.sermonScriptureEnabled !== 'boolean') {
+    merged.sermonScriptureEnabled = defaultSettings.sermonScriptureEnabled;
+  }
+  if (typeof merged.esvApiKey !== 'string') {
+    merged.esvApiKey = defaultSettings.esvApiKey;
+  }
+  if (!VALID_SCRIPTURE_FALLBACK.includes(merged.sermonScriptureFallback)) {
+    merged.sermonScriptureFallback = defaultSettings.sermonScriptureFallback;
+  }
+
   return merged;
 }
 
@@ -256,6 +322,14 @@ export function useSettings() {
           sermonModel: next.sermonModel,
           sermonCorrectionProvider: next.sermonCorrectionProvider,
           sermonAutoTranslate: next.sermonAutoTranslate,
+          sermonGlossaryEnabled: next.sermonGlossaryEnabled,
+          sermonGlossaryCsv: next.sermonGlossaryCsv,
+          sermonDisambiguationPrompt: next.sermonDisambiguationPrompt,
+          sermonBibleVersion: next.sermonBibleVersion,
+          sermonDeityCapitals: next.sermonDeityCapitals,
+          sermonGlossaryWarnings: next.sermonGlossaryWarnings,
+          sermonScriptureEnabled: next.sermonScriptureEnabled,
+          sermonScriptureFallback: next.sermonScriptureFallback,
         }));
       } catch {}
 
@@ -264,6 +338,7 @@ export function useSettings() {
         sessionStorage.setItem(PREFS_KEY, JSON.stringify({
           openaiApiKey: next.openaiApiKey,
           anthropicApiKey: next.anthropicApiKey,
+          esvApiKey: next.esvApiKey,
         }));
       } catch {}
 

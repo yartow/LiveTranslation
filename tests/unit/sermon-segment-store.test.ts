@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import {
-  initState, segmentReducer, selectDirtyIds, selectTranslatable, selectOrdered, selectContext,
+  initState, segmentReducer, selectDirtyIds, selectTranslatable, selectOrdered, selectContext, canWriteLive,
   type SegmentStoreState,
 } from '../../client/src/lib/sermon/segment-store.js';
 import { hashText } from '../../client/src/lib/sermon/segment-model.js';
@@ -183,9 +183,272 @@ describe('selectContext', () => {
   });
 });
 
+describe('segmentReducer — glossary warnings lifecycle', () => {
+  it('APPLY_TRANSLATION carries warnings onto the segment, and omits the key when there are none', () => {
+    let state = initState('t');
+    state = segmentReducer(state, { type: 'APPEND_SEGMENT', sourceText: 'Zin.', startTime: 0, endTime: 1, now: 0 });
+    const id = state.ids[0];
+    const requestHash = hashText('Zin.');
+
+    const withWarnings = segmentReducer(state, {
+      type: 'APPLY_TRANSLATION', id, translation: 'Sentence.', requestHash,
+      warnings: [{ term: 'Heiland', expected: 'Savior' }],
+    });
+    expect(withWarnings.byId[id].glossaryWarnings).toEqual([{ term: 'Heiland', expected: 'Savior' }]);
+
+    const withoutWarnings = segmentReducer(state, { type: 'APPLY_TRANSLATION', id, translation: 'Sentence.', requestHash });
+    expect(withoutWarnings.byId[id].glossaryWarnings).toBeUndefined();
+  });
+
+  it('EDIT_SOURCE clears a stale warning from the previous translation', () => {
+    let state = seedTranslated(1);
+    const id = state.ids[0];
+    state = segmentReducer(state, {
+      type: 'APPLY_TRANSLATION', id, translation: 'EN Zin 0.', requestHash: hashText('Zin 0.'),
+      warnings: [{ term: 'Heiland', expected: 'Savior' }],
+    });
+    expect(state.byId[id].glossaryWarnings).toHaveLength(1);
+
+    const edited = segmentReducer(state, { type: 'EDIT_SOURCE', id, sourceText: 'Nieuwe zin.', now: 1000 });
+    expect(edited.byId[id].glossaryWarnings).toBeUndefined();
+  });
+
+  it('SET_TARGET_MANUAL clears a stale warning — the human override is authoritative', () => {
+    let state = seedTranslated(1);
+    const id = state.ids[0];
+    state = segmentReducer(state, {
+      type: 'APPLY_TRANSLATION', id, translation: 'EN Zin 0.', requestHash: hashText('Zin 0.'),
+      warnings: [{ term: 'Heiland', expected: 'Savior' }],
+    });
+
+    const overridden = segmentReducer(state, { type: 'SET_TARGET_MANUAL', id, translatedText: 'Hand-fixed.', now: 1000 });
+    expect(overridden.byId[id].glossaryWarnings).toBeUndefined();
+  });
+
+  it('SET_ERROR clears a stale warning', () => {
+    let state = seedTranslated(1);
+    const id = state.ids[0];
+    state = segmentReducer(state, {
+      type: 'APPLY_TRANSLATION', id, translation: 'EN Zin 0.', requestHash: hashText('Zin 0.'),
+      warnings: [{ term: 'Heiland', expected: 'Savior' }],
+    });
+    // Re-dirty it and let a subsequent attempt fail, matching requestHash so SET_ERROR isn't discarded as stale.
+    const edited = segmentReducer(state, { type: 'EDIT_SOURCE', id, sourceText: 'Zin 0.', now: 1000 });
+    const errored = segmentReducer(edited, { type: 'SET_ERROR', id, error: 'boom', requestHash: hashText('Zin 0.') });
+    expect(errored.byId[id].glossaryWarnings).toBeUndefined();
+  });
+});
+
 describe('selectOrdered', () => {
   it('returns segments in append order', () => {
     const state = seedTranslated(3);
     expect(selectOrdered(state).map(s => s.sourceText)).toEqual(['Zin 0.', 'Zin 1.', 'Zin 2.']);
+  });
+});
+
+// Regression: a stop/restart within one page load used to reset
+// useSermonIngest's live-id counter to 0 without clearing the store, so the
+// second session's `live-0` would silently overwrite the first session's
+// already-translated row via APPEND_SEGMENT. useSermonIngest.ts now folds a
+// per-session token into every live id (belt), and this guard refuses the
+// collision outright (suspenders) — see segment-store.ts's APPEND_SEGMENT.
+describe('segmentReducer — duplicate id is refused, not overwritten (regression: stop/restart data loss)', () => {
+  it('APPEND_SEGMENT with an id that already exists is a no-op, preserving the original segment', () => {
+    let state = initState('t');
+    state = segmentReducer(state, {
+      type: 'APPEND_SEGMENT', id: 'live-0-0', sourceText: 'Eerste sessie.', startTime: 0, endTime: 1, now: 0,
+    });
+    state = segmentReducer(state, { type: 'MARK_TRANSLATING', ids: ['live-0-0'] });
+    state = segmentReducer(state, {
+      type: 'APPLY_TRANSLATION', id: 'live-0-0', translation: 'First session.', requestHash: hashText('Eerste sessie.'),
+    });
+
+    const before = state;
+    const after = segmentReducer(state, {
+      type: 'APPEND_SEGMENT', id: 'live-0-0', sourceText: 'Tweede sessie zou dit overschrijven.', startTime: 0, endTime: 1, now: 1000,
+    });
+
+    expect(after).toBe(before); // reducer returned the untouched state — same reference
+    expect(after.byId['live-0-0'].sourceText).toBe('Eerste sessie.');
+    expect(after.byId['live-0-0'].translatedText).toBe('First session.');
+    expect(after.ids).toEqual(['live-0-0']); // no duplicate id pushed
+  });
+});
+
+// Regression: MARK_TRANSLATING can fire (overwriting status to TRANSLATING)
+// *after* a source edit that was already baked into a stale requestHash — a
+// runBatch built from a snapshot taken just before the edit. When the reply
+// then arrives, the hash mismatch used to just discard it with `return
+// state`, leaving the row parked at TRANSLATING forever: selectTranslatable
+// excludes that status, and the UI shows no per-row action for it.
+describe('segmentReducer — a stale reply never leaves a row stuck at TRANSLATING', () => {
+  it('APPLY_TRANSLATION with a stale requestHash recovers a TRANSLATING row to EDITED', () => {
+    let state = seedTranslated(1);
+    const id = state.ids[0];
+    const staleHash = hashText(state.byId[id].sourceText); // hash of the pre-edit text
+
+    state = segmentReducer(state, { type: 'EDIT_SOURCE', id, sourceText: 'Nieuwe tekst.', now: 100 });
+    state = segmentReducer(state, { type: 'MARK_TRANSLATING', ids: [id] });
+    expect(state.byId[id].status).toBe('TRANSLATING');
+
+    const after = segmentReducer(state, {
+      type: 'APPLY_TRANSLATION', id, translation: 'Stale reply.', requestHash: staleHash,
+    });
+    expect(after.byId[id].status).toBe('EDITED'); // recovered, not stuck
+    expect(after.byId[id].translatedText).toBe('EN Zin 0.'); // the stale reply itself is still discarded
+    expect(selectDirtyIds(after)).toEqual([id]); // picked up again by the next refresh/auto-translate
+  });
+
+  it('SET_ERROR with a stale requestHash also recovers a TRANSLATING row to EDITED', () => {
+    let state = seedTranslated(1);
+    const id = state.ids[0];
+    const staleHash = hashText(state.byId[id].sourceText);
+
+    state = segmentReducer(state, { type: 'EDIT_SOURCE', id, sourceText: 'Nieuwe tekst.', now: 100 });
+    state = segmentReducer(state, { type: 'MARK_TRANSLATING', ids: [id] });
+
+    const after = segmentReducer(state, { type: 'SET_ERROR', id, error: 'boom', requestHash: staleHash });
+    expect(after.byId[id].status).toBe('EDITED');
+  });
+
+  it('a non-stale (matching-hash) reply is unaffected by the recovery path', () => {
+    // Sanity check the fix doesn't change behavior for the common, non-racy case.
+    const before = seedTranslated(20);
+    const id12 = before.ids[12];
+    let after = segmentReducer(before, { type: 'EDIT_SOURCE', id: id12, sourceText: 'Gewijzigde zin twaalf.', now: 2000 });
+    after = segmentReducer(after, { type: 'MARK_TRANSLATING', ids: [id12] });
+    after = segmentReducer(after, {
+      type: 'APPLY_TRANSLATION', id: id12, translation: 'Changed sentence twelve.',
+      requestHash: hashText('Gewijzigde zin twaalf.'),
+    });
+    expect(after.byId[id12].status).toBe('TRANSLATED');
+    expect(after.byId[id12].translatedText).toBe('Changed sentence twelve.');
+  });
+});
+
+// canWriteLive is the single predicate shared by the reducer's UPDATE_
+// PROVISIONAL/COMPLETE_PROVISIONAL guard and useSermonIngest.ts's decision to
+// fall back to opening a new segment instead of losing live ASR text to what
+// would otherwise be a silent no-op (the "swallowed completed sentence" bug).
+describe('canWriteLive', () => {
+  it('is false for a missing segment (token-miss)', () => {
+    expect(canWriteLive(undefined)).toBe(false);
+  });
+
+  it('is false for an EDITED segment', () => {
+    let state = initState('t');
+    state = segmentReducer(state, {
+      type: 'APPEND_SEGMENT', sourceText: 'Half een zin', startTime: 0, endTime: 1, status: 'PROVISIONAL', now: 0,
+    });
+    const id = state.ids[0];
+    state = segmentReducer(state, { type: 'EDIT_SOURCE', id, sourceText: 'Mens greep in.', now: 100 });
+    expect(canWriteLive(state.byId[id])).toBe(false);
+  });
+
+  it('is false for a manualOverride segment', () => {
+    let state = seedTranslated(1);
+    const id = state.ids[0];
+    state = segmentReducer(state, { type: 'SET_TARGET_MANUAL', id, translatedText: 'Hand-fixed.', now: 0 });
+    expect(canWriteLive(state.byId[id])).toBe(false);
+  });
+
+  it('is true for an ordinary PROVISIONAL or PENDING segment', () => {
+    let state = initState('t');
+    state = segmentReducer(state, {
+      type: 'APPEND_SEGMENT', sourceText: 'Half een zin', startTime: 0, endTime: 1, status: 'PROVISIONAL', now: 0,
+    });
+    expect(canWriteLive(state.byId[state.ids[0]])).toBe(true);
+  });
+});
+
+// Bijbelcitaten (scripture) — AC11/AC12. See segment-store.ts's APPLY_
+// SCRIPTURE/CLEAR_SCRIPTURE/SET_ACTIVE_READING/CLEAR_ACTIVE_READING.
+describe('segmentReducer — scripture (Bijbelcitaten)', () => {
+  it('APPLY_SCRIPTURE sets status SCRIPTURE, records the verse info, and makes the segment non-dirty (AC11)', () => {
+    let state = initState('t');
+    state = segmentReducer(state, { type: 'APPEND_SEGMENT', sourceText: 'Johannes 3:16.', startTime: 0, endTime: 1, now: 0 });
+    const id = state.ids[0];
+    const requestHash = hashText('Johannes 3:16.');
+
+    state = segmentReducer(state, { type: 'MARK_TRANSLATING', ids: [id] });
+    state = segmentReducer(state, {
+      type: 'APPLY_SCRIPTURE', id, text: 'For God so loved the world...', reference: 'John 3:16', version: 'ESV', requestHash,
+    });
+
+    expect(state.byId[id].status).toBe('SCRIPTURE');
+    expect(state.byId[id].translatedText).toBe('For God so loved the world...');
+    expect(state.byId[id].scripture).toEqual({ reference: 'John 3:16', version: 'ESV', verses: 'For God so loved the world...' });
+    expect(selectDirtyIds(state)).toEqual([]); // not auto-retranslated
+  });
+
+  it('editing the source of a SCRIPTURE segment re-dirties it and clears the stale scripture info (a corrected reference gets a fresh lookup)', () => {
+    let state = initState('t');
+    state = segmentReducer(state, { type: 'APPEND_SEGMENT', sourceText: 'Johannes 3:16.', startTime: 0, endTime: 1, now: 0 });
+    const id = state.ids[0];
+    state = segmentReducer(state, {
+      type: 'APPLY_SCRIPTURE', id, text: 'For God so loved...', reference: 'John 3:16', version: 'ESV', requestHash: hashText('Johannes 3:16.'),
+    });
+
+    const edited = segmentReducer(state, { type: 'EDIT_SOURCE', id, sourceText: 'Johannes 3:17.', now: 100 });
+    expect(edited.byId[id].status).toBe('EDITED');
+    expect(edited.byId[id].scripture).toBeUndefined();
+    expect(selectDirtyIds(edited)).toEqual([id]);
+  });
+
+  it('CLEAR_SCRIPTURE re-dirties the row, clears scripture info, and sets scriptureOverride so it is translated normally next time', () => {
+    let state = initState('t');
+    state = segmentReducer(state, { type: 'APPEND_SEGMENT', sourceText: 'Johannes 3:16.', startTime: 0, endTime: 1, now: 0 });
+    const id = state.ids[0];
+    state = segmentReducer(state, {
+      type: 'APPLY_SCRIPTURE', id, text: 'For God so loved...', reference: 'John 3:16', version: 'ESV', requestHash: hashText('Johannes 3:16.'),
+    });
+
+    const cleared = segmentReducer(state, { type: 'CLEAR_SCRIPTURE', id, now: 200 });
+    expect(cleared.byId[id].status).toBe('EDITED');
+    expect(cleared.byId[id].scripture).toBeUndefined();
+    expect(cleared.byId[id].scriptureOverride).toBe(true);
+    expect(selectDirtyIds(cleared)).toEqual([id]);
+  });
+
+  it('a later edit resets scriptureOverride, re-enabling scripture detection', () => {
+    let state = initState('t');
+    state = segmentReducer(state, { type: 'APPEND_SEGMENT', sourceText: 'Johannes 3:16.', startTime: 0, endTime: 1, now: 0 });
+    const id = state.ids[0];
+    state = segmentReducer(state, { type: 'CLEAR_SCRIPTURE', id, now: 0 });
+    expect(state.byId[id].scriptureOverride).toBe(true);
+
+    const edited = segmentReducer(state, { type: 'EDIT_SOURCE', id, sourceText: 'Johannes 3:17.', now: 100 });
+    expect(edited.byId[id].scriptureOverride).toBe(false);
+  });
+
+  it('SET_ACTIVE_READING / CLEAR_ACTIVE_READING track the store-level reading state', () => {
+    let state = initState('t');
+    expect(state.activeReading).toBeNull();
+
+    state = segmentReducer(state, { type: 'SET_ACTIVE_READING', bookNumber: 43, chapter: 3, verse: 16 });
+    expect(state.activeReading).toEqual({ bookNumber: 43, chapter: 3, nextVerse: 16 });
+
+    // A fresh reference replaces (doesn't merge with) the previous one.
+    state = segmentReducer(state, { type: 'SET_ACTIVE_READING', bookNumber: 45, chapter: 8, verse: 28 });
+    expect(state.activeReading).toEqual({ bookNumber: 45, chapter: 8, nextVerse: 28 });
+
+    state = segmentReducer(state, { type: 'CLEAR_ACTIVE_READING' });
+    expect(state.activeReading).toBeNull();
+  });
+
+  it('a stale APPLY_SCRIPTURE reply recovers a TRANSLATING row to EDITED, same as APPLY_TRANSLATION', () => {
+    let state = initState('t');
+    state = segmentReducer(state, { type: 'APPEND_SEGMENT', sourceText: 'Johannes 3:16.', startTime: 0, endTime: 1, now: 0 });
+    const id = state.ids[0];
+    const staleHash = hashText(state.byId[id].sourceText);
+
+    state = segmentReducer(state, { type: 'EDIT_SOURCE', id, sourceText: 'Johannes 3:17.', now: 100 });
+    state = segmentReducer(state, { type: 'MARK_TRANSLATING', ids: [id] });
+
+    const after = segmentReducer(state, {
+      type: 'APPLY_SCRIPTURE', id, text: 'Stale verse text.', reference: 'John 3:16', version: 'KJV', requestHash: staleHash,
+    });
+    expect(after.byId[id].status).toBe('EDITED'); // recovered, not stuck at TRANSLATING
+    expect(after.byId[id].scripture).toBeUndefined(); // the stale reply was discarded
   });
 });

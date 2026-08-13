@@ -19,7 +19,6 @@ import SessionHistoryDialog from '@/components/SessionHistoryDialog';
 import { ChunkBasedTranscription } from '@/lib/chunk-based-transcription';
 import { BrowserSpeechTranscription } from '@/lib/browser-speech-transcription';
 import { StreamingTranscription } from '@/lib/streaming-transcription';
-import { countSentences } from '@/lib/text-utils';
 import { LocalWhisperTranscription } from '@/lib/local-whisper-transcription';
 import { useAudioQuality } from '@/hooks/useAudioQuality';
 import { saveSession } from '@/lib/session-db';
@@ -107,6 +106,9 @@ export default function Home() {
   const [modelLoadProgress, setModelLoadProgress] = useState(0);
   const [chunkDurationSecs, setChunkDurationSecs] = useState(5);
   const [debugLogs, setDebugLogs] = useState<string[]>([]);
+  const [debugPanelCollapsed, setDebugPanelCollapsed] = useState(true);
+  const [debugPanelHeight, setDebugPanelHeight] = useState(0);
+  const debugPanelRef = useRef<HTMLDivElement>(null);
   const [isImproving, setIsImproving] = useState(false);
   const [lookbackChars, setLookbackChars] = useState(() => settings.defaultLookbackChars);
   useEffect(() => { setLookbackChars(settings.defaultLookbackChars); }, [settings.defaultLookbackChars]);
@@ -121,6 +123,19 @@ export default function Home() {
       .then(a => setWebGpuSupported(a !== null))
       .catch(() => setWebGpuSupported(false));
   }, []);
+
+  // Measure the debug panel (header + body, whichever is currently rendered) so the
+  // text-display container below can reserve exactly that much bottom padding — the
+  // panel used to be a fixed overlay that simply covered the last line of text.
+  useEffect(() => {
+    const el = debugPanelRef.current;
+    if (!el) { setDebugPanelHeight(0); return; }
+    const observer = new ResizeObserver(([entry]) => {
+      setDebugPanelHeight(entry.contentRect.height);
+    });
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, [settings.debugMode, debugLogs.length, debugPanelCollapsed]);
 
   const [subtitleCurrent, setSubtitleCurrent] = useState('');
   const [subtitlePrevious, setSubtitlePrevious] = useState('');
@@ -137,7 +152,6 @@ export default function Home() {
   const pendingRetranslationRef = useRef(false);
   const previousTargetLanguageRef = useRef(targetLanguage);
   const previousDetectSpeakersRef = useRef(detectSpeakers);
-  const lastRetroactiveSentenceCountRef = useRef(0);
   const wakeLockRef = useRef<WakeLockSentinel | null>(null);
   const { toast } = useToast();
 
@@ -350,43 +364,6 @@ export default function Home() {
     localStorage.setItem('theme', next ? 'dark' : 'light');
   };
 
-  const performRetroactiveCorrection = useCallback(async () => {
-    if (transcriptionSegmentsRef.current.length === 0) return;
-
-    const allOriginalText = transcriptionSegmentsRef.current.map(s => s.original).join(' ');
-    const lang = targetLanguageRef.current;
-    const speakers = detectSpeakersRef.current;
-    const s = settingsRef.current;
-
-    try {
-      const response = await fetch('/api/retroactive-correct', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          accumulatedText: allOriginalText,
-          targetLanguage: lang,
-          detectSpeakers: speakers,
-          translationProvider: s.translationProvider,
-          openaiApiKey: s.openaiApiKey,
-          anthropicApiKey: s.anthropicApiKey,
-          glossary: s.theologicalGlossary || undefined,
-          sermonContext: sermonContextRef.current || undefined,
-        }),
-      });
-
-      if (!response.ok) throw new Error('Retroactive correction failed');
-
-      const data = await response.json();
-      transcriptionSegmentsRef.current = [{ original: data.correctedText, translated: data.translatedText }];
-      setOriginalText(data.correctedText);
-      setTranslatedText(data.translatedText);
-      applySubtitlesFromText(data.translatedText);
-    } catch (error) {
-      console.error('Retroactive correction error:', error);
-      toast({ title: 'Retroactive correction failed', description: 'Could not perform coherence check.', variant: 'destructive' });
-    }
-  }, [toast]);
-
   const startRecording = useCallback(async () => {
     // ── Pre-flight API key validation ─────────────────────────────────────────
     if (settings.translationProvider === 'claude' && !settings.anthropicApiKey?.trim()) {
@@ -414,7 +391,6 @@ export default function Home() {
       setSubtitlePrevious('');
       subtitleCurrentRef.current = '';
       transcriptionSegmentsRef.current = [];
-      lastRetroactiveSentenceCountRef.current = 0;
       sessionCostRef.current = 0;
       setSessionCost(0);
       setDebugLogs([]);
@@ -442,8 +418,9 @@ export default function Home() {
           setPreviewText('');
           transcriptionSegmentsRef.current.push({ original, translated });
           const newOriginal = transcriptionSegmentsRef.current.map(s => s.original).join(' ');
+          const newTranslated = transcriptionSegmentsRef.current.map(s => s.translated).join(' ');
           setOriginalText(newOriginal);
-          setTranslatedText(prev => prev + (prev ? ' ' : '') + translated);
+          setTranslatedText(newTranslated);
           setPreviewText('');
           // Keep Whisper context up-to-date for the next chunk
           if (backendRef.current instanceof ChunkBasedTranscription) {
@@ -462,16 +439,6 @@ export default function Home() {
           const whisperCost = s.transcriptionProvider === 'whisper' ? 0.006 * (chunkDurSecs / 60) : 0;
           sessionCostRef.current += chars * llmRate + whisperCost;
           setSessionCost(sessionCostRef.current);
-
-          const allText = transcriptionSegmentsRef.current.map(s => s.original).join(' ');
-          const totalSentences = countSentences(allText);
-          if (
-            totalSentences >= 5 &&
-            Math.floor(totalSentences / 5) > Math.floor(lastRetroactiveSentenceCountRef.current / 5)
-          ) {
-            lastRetroactiveSentenceCountRef.current = totalSentences;
-            performRetroactiveCorrection();
-          }
         },
         onDebug: (message: string) => { addDebugLog(message); },
         onError: (message: string) => {
@@ -604,7 +571,7 @@ export default function Home() {
         variant: 'destructive',
       });
     }
-  }, [sourceLanguage, targetLanguage, detectSpeakers, settings, chunkDurationSecs, toast, performRetroactiveCorrection, addDebugLog]);
+  }, [sourceLanguage, targetLanguage, detectSpeakers, settings, chunkDurationSecs, toast, addDebugLog]);
 
   const stopRecording = useCallback(async () => {
     if (!isRecording) return;
@@ -895,7 +862,16 @@ export default function Home() {
       )}
 
       {/* ── Text display ──────────────────────────────────────────────────── */}
-      <div className="flex-1 overflow-hidden flex flex-col pb-24">
+      {/* Bottom padding reserves space for the fixed action bar PLUS the debug
+          panel (when visible) — see debugPanelHeight above. A static pb-24 used
+          to only account for the action bar, so the debug panel would cover the
+          last line of text. */}
+      <div
+        className="flex-1 overflow-hidden flex flex-col"
+        style={{
+          paddingBottom: `calc(88px + env(safe-area-inset-bottom, 0px)${debugPanelHeight > 0 ? ` + ${debugPanelHeight}px + 12px` : ''})`,
+        }}
+      >
         {showOriginal && (
           <div className={`${showTranslation ? 'flex-1' : 'flex-[1]'} overflow-hidden ${showTranslation ? 'border-b border-border' : ''}`}>
             <TranscriptionDisplay
@@ -930,11 +906,26 @@ export default function Home() {
       </div>
 
       {/* ── Debug overlay ────────────────────────────────────────────────── */}
+      {/* Collapsed by default — only the header bar's height needs reserving
+          most of the time. Whichever state is rendered, debugPanelRef measures
+          it and the text-display container above reserves that much space. */}
       {settings.debugMode && debugLogs.length > 0 && (
-        <div className="fixed bottom-[88px] left-0 right-0 mx-4 z-10">
+        <div
+          ref={debugPanelRef}
+          className="fixed left-0 right-0 mx-4 z-10"
+          style={{ bottom: 'calc(88px + env(safe-area-inset-bottom, 0px))' }}
+        >
           <div className="rounded-lg border border-border bg-background/95 backdrop-blur-sm shadow-lg overflow-hidden">
             <div className="px-3 py-1.5 border-b border-border flex items-center justify-between">
-              <span className="text-xs font-semibold text-muted-foreground">Debug log</span>
+              <button
+                type="button"
+                onClick={() => setDebugPanelCollapsed(c => !c)}
+                className="flex items-center gap-1 text-xs font-semibold text-muted-foreground hover:text-foreground"
+                data-testid="button-debug-panel-toggle"
+              >
+                {debugPanelCollapsed ? <ChevronDown className="w-3 h-3" /> : <ChevronUp className="w-3 h-3" />}
+                Debug log ({debugLogs.length})
+              </button>
               <button
                 type="button"
                 onClick={() => setDebugLogs([])}
@@ -943,17 +934,22 @@ export default function Home() {
                 Clear
               </button>
             </div>
-            <div className="max-h-32 overflow-y-auto px-3 py-2 space-y-0.5">
-              {debugLogs.map((log, i) => (
-                <p key={i} className="text-xs font-mono text-muted-foreground leading-relaxed">{log}</p>
-              ))}
-            </div>
+            {!debugPanelCollapsed && (
+              <div className="max-h-32 overflow-y-auto px-3 py-2 space-y-0.5">
+                {debugLogs.map((log, i) => (
+                  <p key={i} className="text-xs font-mono text-muted-foreground leading-relaxed">{log}</p>
+                ))}
+              </div>
+            )}
           </div>
         </div>
       )}
 
       {/* ── Fixed bottom action bar ───────────────────────────────────────── */}
-      <div className="fixed bottom-0 left-0 right-0 border-t border-border bg-background/95 backdrop-blur-sm px-6 py-4">
+      <div
+        className="fixed bottom-0 left-0 right-0 border-t border-border bg-background/95 backdrop-blur-sm px-6 pt-4"
+        style={{ paddingBottom: 'calc(1rem + env(safe-area-inset-bottom, 0px))' }}
+      >
         <div className="flex items-center justify-between max-w-sm mx-auto">
           <div className="w-20">
             {quality.level > 0 && (

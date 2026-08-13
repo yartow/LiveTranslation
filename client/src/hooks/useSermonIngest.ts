@@ -1,11 +1,15 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { ChunkBasedTranscription, type ChunkTranscriptionEvents, type TranscriptionEngine } from '@/lib/chunk-based-transcription';
 import { initIngestState, appendChunk, tick as ingestTick, type IngestConfig, type IngestEffect } from '@/lib/sermon/ingest-buffer';
-import type { SegmentAction } from '@/lib/sermon/segment-store';
+import { canWriteLive, type SegmentAction, type SegmentStoreState } from '@/lib/sermon/segment-store';
 import type { SermonTranslationProvider } from '@/hooks/useSettings';
 
 export interface SermonIngestArgs {
   dispatch: React.Dispatch<SegmentAction>;
+  /** Current store state, read synchronously before UPDATE_PROVISIONAL/
+   *  COMPLETE_PROVISIONAL to decide whether the target row would refuse the
+   *  write (see applyEffects below). */
+  stateRef: React.MutableRefObject<SegmentStoreState>;
   ingestConfigRef: React.MutableRefObject<IngestConfig>;
   sourceLanguage: string;
   targetLanguage: string;
@@ -51,6 +55,12 @@ export function useSermonIngest(args: SermonIngestArgs) {
   const ingestStateRef = useRef(initIngestState());
   const tokenToIdRef = useRef(new Map<string, string>());
   const liveSeqRef = useRef(0);
+  // Bumped on every start() and folded into every live id — this is what
+  // stops a stop/restart within the same page load from re-emitting `live-0`
+  // and colliding with (silently overwriting) the previous session's rows.
+  // See the APPEND_SEGMENT duplicate-id guard in segment-store.ts, which is
+  // the defense-in-depth backstop if this ever collides anyway.
+  const liveSessionRef = useRef(0);
   const lastChunkIndexRef = useRef(0);
 
   const approxTiming = useCallback(() => {
@@ -59,11 +69,13 @@ export function useSermonIngest(args: SermonIngestArgs) {
     return { startTime: Math.max(0, end - durationMs), endTime: end };
   }, []);
 
+  const nextLiveId = useCallback(() => `live-${liveSessionRef.current}-${liveSeqRef.current++}`, []);
+
   const applyEffects = useCallback((effects: IngestEffect[], now: number) => {
-    const { dispatch } = argsRef.current;
+    const { dispatch, stateRef } = argsRef.current;
     for (const effect of effects) {
       if (effect.type === 'emit') {
-        const id = `live-${liveSeqRef.current++}`;
+        const id = nextLiveId();
         const { startTime, endTime } = approxTiming();
         if (effect.provisional) tokenToIdRef.current.set(effect.token, id);
         dispatch({
@@ -72,16 +84,44 @@ export function useSermonIngest(args: SermonIngestArgs) {
         });
       } else if (effect.type === 'updateProvisional') {
         const id = tokenToIdRef.current.get(effect.token);
-        if (!id) continue;
+        const seg = id ? stateRef.current.byId[id] : undefined;
+        // The human has taken over this row (edited it) since it was opened,
+        // or it's gone missing (token-miss) — UPDATE_PROVISIONAL would be a
+        // silent no-op in either case (segment-store.ts's canWriteLive guard,
+        // or "no such id"), which used to just drop the live text on the
+        // floor. Open a fresh row for it instead so nothing is lost, and stop
+        // tracking the old token under the row we're no longer allowed to touch.
+        if (!id || !canWriteLive(seg)) {
+          const newId = nextLiveId();
+          const { startTime, endTime } = approxTiming();
+          tokenToIdRef.current.set(effect.token, newId);
+          dispatch({
+            type: 'APPEND_SEGMENT', id: newId, sourceText: effect.text, startTime, endTime,
+            approximateTiming: true, status: 'PROVISIONAL', now,
+          });
+          continue;
+        }
         dispatch({ type: 'UPDATE_PROVISIONAL', id, sourceText: effect.text, endTime: approxTiming().endTime, now });
       } else if (effect.type === 'completeProvisional') {
         const id = tokenToIdRef.current.get(effect.token);
-        if (!id) continue;
-        dispatch({ type: 'COMPLETE_PROVISIONAL', id, sourceText: effect.text, endTime: approxTiming().endTime, now });
+        const seg = id ? stateRef.current.byId[id] : undefined;
         tokenToIdRef.current.delete(effect.token);
+        if (!id || !canWriteLive(seg)) {
+          // Same reasoning as above: COMPLETE_PROVISIONAL would refuse the
+          // write and the completed sentence would vanish. Append it as its
+          // own new segment instead.
+          const newId = nextLiveId();
+          const { startTime, endTime } = approxTiming();
+          dispatch({
+            type: 'APPEND_SEGMENT', id: newId, sourceText: effect.text, startTime, endTime,
+            approximateTiming: true, now,
+          });
+          continue;
+        }
+        dispatch({ type: 'COMPLETE_PROVISIONAL', id, sourceText: effect.text, endTime: approxTiming().endTime, now });
       }
     }
-  }, [approxTiming]);
+  }, [approxTiming, nextLiveId]);
 
   const handleCorrected = useCallback((text: string, chunkIndex: number) => {
     if (!text.trim()) return;
@@ -111,6 +151,7 @@ export function useSermonIngest(args: SermonIngestArgs) {
     ingestStateRef.current = initIngestState();
     tokenToIdRef.current.clear();
     liveSeqRef.current = 0;
+    liveSessionRef.current += 1;
     lastChunkIndexRef.current = 0;
 
     const events: ChunkTranscriptionEvents = {

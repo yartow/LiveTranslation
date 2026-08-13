@@ -77,6 +77,21 @@ English · Spanish · French · German · Dutch · Portuguese · Italian · Chin
 
 ---
 
+## Sermon Mode (`/`)
+
+The app's default view — a UI purpose-built for translating a live sermon sentence-by-sentence with human review, distinct from the streaming-subtitle view (now at `/live`).
+
+- **Segment-based review** — incoming transcript is split into sentences as they arrive; each segment is independently editable and re-translatable without disturbing the others.
+- **Dual-pane layout** — editable source on one side, translation on the other, row-aligned.
+- **Keyboard-driven workflow** — hotkeys for re-translating one segment or all pending segments (e.g. Cmd/Ctrl+Shift+Enter).
+- **File-based theological glossary (optional)** — a CSV of fixed Dutch→English terms plus a markdown doc of context-dependent disambiguation rules, loaded from files in `data/` (directory configurable via `GLOSSARY_DIR` in `.env`). Configure and reload it from Settings → "Preekmodus — woordenlijst". Segments whose translation appears to be missing an expected glossary term show a non-blocking warning icon — it's a hint for the human reviewer, not a blocker.
+- **Scripture quoting (optional)** — detects a spoken Bible reference ("Johannes 3:16") and substitutes the exact English verse text (ESV via API, falling back to the bundled KJV) instead of a model translation when the preacher reads verbatim; a paraphrase is still translated in his own words. Requires a one-time data build — see `scripts/build-bible-data.ts` and `CLAUDE.md`'s "Scripture pipeline". Configure from Settings → "Preekmodus — Schriftcitaten".
+- Uses the same OpenAI / Claude / Ollama translation providers as the main app (see below), configured independently per sermon-mode setting.
+
+Open `http://localhost:PORT/` to use it — live/subtitle mode is at `/live`.
+
+---
+
 ## API Providers & Free Mode
 
 All API keys are entered in the in-app Settings (⚙︎ icon). Keys are stored only in your browser's `sessionStorage` and are never sent to this server's storage — they travel directly to OpenAI or Anthropic with each request.
@@ -133,7 +148,7 @@ Open `http://localhost:PORT` — default `5001`, but **check your `.env`** for a
 |---|---|---|
 | API keys | Auto-filled from `.env` — no need to type them in the browser | Must be entered in the Settings panel each session |
 | Build | Vite HMR — live reload on file changes | Optimised static bundle |
-| Port | 5001 (default) | 5000 (default) or `$PORT` |
+| Port | 5001 (default) or `$PORT` | 5001 (default) or `$PORT` — same default, no dev/prod split |
 
 In dev mode, the server exposes a `/api/dev-config` endpoint that returns `OPENAI_API_KEY` and `ANTHROPIC_API_KEY` from your `.env`. The browser reads these on startup and pre-fills the Settings fields. This endpoint returns **403 in production** — keys are never exposed in deployed builds.
 

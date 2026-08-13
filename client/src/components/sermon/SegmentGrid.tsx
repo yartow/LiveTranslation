@@ -8,6 +8,7 @@ interface SegmentGridProps {
   dispatch: React.Dispatch<SegmentAction>;
   activeSegmentIdRef: React.MutableRefObject<string | null>;
   onRefreshOne: (id: string) => void;
+  flushersRef: React.MutableRefObject<Map<string, () => void>>;
 }
 
 const NEAR_BOTTOM_PX = 80;
@@ -16,7 +17,7 @@ const NEAR_BOTTOM_PX = 80;
 // is already near it AND nothing inside the grid is focused. Otherwise a
 // "N nieuwe segmenten" pill appears instead of yanking the view out from
 // under someone mid-edit or mid-read.
-export default function SegmentGrid({ state, dispatch, activeSegmentIdRef, onRefreshOne }: SegmentGridProps) {
+export default function SegmentGrid({ state, dispatch, activeSegmentIdRef, onRefreshOne, flushersRef }: SegmentGridProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const [pendingNew, setPendingNew] = useState(0);
   const prevCountRef = useRef(state.ids.length);
@@ -59,7 +60,7 @@ export default function SegmentGrid({ state, dispatch, activeSegmentIdRef, onRef
 
   return (
     <div className="relative flex-1 min-h-0">
-      <div ref={containerRef} onScroll={handleScroll} className="h-full overflow-y-auto" data-testid="segment-grid">
+      <div ref={containerRef} onScroll={handleScroll} className="h-full overflow-y-auto pb-14" data-testid="segment-grid">
         {segments.length === 0 && (
           <div className="flex items-center justify-center h-full text-sm text-muted-foreground px-6 text-center">
             Nog geen segmenten. Start de opname om te beginnen.
@@ -72,6 +73,7 @@ export default function SegmentGrid({ state, dispatch, activeSegmentIdRef, onRef
             dispatch={dispatch}
             activeSegmentIdRef={activeSegmentIdRef}
             onRefreshOne={onRefreshOne}
+            flushersRef={flushersRef}
           />
         ))}
       </div>
