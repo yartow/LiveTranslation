@@ -15,6 +15,7 @@ import { translateSegments, type TranslateItemInput, type SermonTranslationProvi
 import { getGlossaryStatus, reloadGlossary } from './lib/glossary-store';
 import { isSafeGlossaryName } from './lib/glossary-file';
 import fs from 'fs';
+import os from 'os';
 import ffmpeg from 'fluent-ffmpeg';
 
 const upload = multer({
@@ -389,8 +390,17 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
       // Aborts in-flight provider calls if the client disconnects (e.g. the
       // translator navigates away mid-Refresh) rather than leaking them.
+      // Deliberately on `res`, not `req`: IncomingMessage is a Readable
+      // stream with emitClose:true, so req's 'close' fires the instant
+      // express.json() finishes reading the body — almost immediately,
+      // long before the response is written — which aborted every single
+      // call here. res only closes prematurely on a real client
+      // disconnect; writableEnded guards against the normal post-response
+      // 'close' that always follows a successful res.json() below.
       const controller = new AbortController();
-      req.on('close', () => controller.abort());
+      res.on('close', () => {
+        if (!res.writableEnded) controller.abort();
+      });
 
       const results = await translateSegments(parsedItems, {
         targetLanguage: targetLanguage || 'en',
@@ -485,6 +495,22 @@ export async function registerRoutes(app: Express): Promise<Server> {
         details: error instanceof Error ? error.message : 'Unknown error',
       });
     }
+  });
+
+  // Listener mode (CLAUDE.md "Listener mode"): the address(es) the operator
+  // reads out to the congregation, shown in SermonToolbar's "Luisteraars"
+  // popover. The MBP's LAN IP changes with the network (home vs. church), so
+  // this is looked up live rather than baked into a QR code or config value.
+  // Not a secret — same non-auth posture as the rest of listener mode.
+  app.get('/api/lan-address', (req, res) => {
+    const port = process.env.PORT || '5001';
+    const addresses: string[] = [];
+    for (const iface of Object.values(os.networkInterfaces())) {
+      for (const addr of iface ?? []) {
+        if (addr.family === 'IPv4' && !addr.internal) addresses.push(addr.address);
+      }
+    }
+    res.json({ addresses, port });
   });
 
   // Dev-only: expose server-side API keys so the browser can auto-fill them.

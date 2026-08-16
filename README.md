@@ -79,9 +79,9 @@ English · Spanish · French · German · Dutch · Portuguese · Italian · Chin
 
 ## Sermon Mode (`/`)
 
-The app's default view — a UI purpose-built for translating a live sermon sentence-by-sentence with human review, distinct from the streaming-subtitle view (now at `/live`).
+The app's default view — a UI purpose-built for translating a live sermon block-by-block with human review, distinct from the streaming-subtitle view (now at `/live`).
 
-- **Segment-based review** — incoming transcript is split into sentences as they arrive; each segment is independently editable and re-translatable without disturbing the others.
+- **Segment-based review** — incoming transcript is grouped into ~5–20 second blocks (configurable, "Max. vertraging" in Settings), each cut on a sentence boundary so a block is never split mid-sentence; each segment is independently editable and re-translatable without disturbing the others.
 - **Dual-pane layout** — editable source on one side, translation on the other, row-aligned.
 - **Keyboard-driven workflow** — hotkeys for re-translating one segment or all pending segments (e.g. Cmd/Ctrl+Shift+Enter).
 - **File-based theological glossary (optional)** — a CSV of fixed Dutch→English terms plus a markdown doc of context-dependent disambiguation rules, loaded from files in `data/` (directory configurable via `GLOSSARY_DIR` in `.env`). Configure and reload it from Settings → "Preekmodus — woordenlijst". Segments whose translation appears to be missing an expected glossary term show a non-blocking warning icon — it's a hint for the human reviewer, not a blocker.

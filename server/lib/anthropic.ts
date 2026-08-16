@@ -139,7 +139,7 @@ CORRECTION RULES:
 1. Fix ASR homophones and near-misses using context (e.g. pray/prey, altar/alter, their/there/they're, word/world, profit/prophet)
 2. Correct spelling of proper nouns and theological terms
 3. Apply the glossary above — replace any transcribed word that sounds like a glossary term with the correct term
-4. Add correct sentence-ending punctuation, commas, and capitalisation
+4. This chunk is an arbitrary slice of continuous speech, cut on a pause — it may begin and end mid-sentence. Add punctuation and capitalisation only where the speech actually calls for it: if the chunk does not end on a finished sentence, leave it with NO terminating . ? or ! — do not invent one just to round it off — and if it does not begin a new sentence, do not capitalise the first word. A pause is not a sentence end; a preacher pauses mid-clause constantly. When in doubt between a comma and a full stop, use the comma — never split one spoken sentence into several short ones.
 5. Remove filler words, stutters, and false starts
 6. Do NOT paraphrase, summarise, reorder, or change the speaker's meaning or word choice beyond fixing the errors above
 7. If this chunk restates the tail of the previous chunk (see context above), drop the repeated words rather than emitting them twice

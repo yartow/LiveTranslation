@@ -245,8 +245,17 @@ CORRECTION RULES — apply all of them aggressively:
  * outputMode:'correct-only'). Cleans up one chunk of raw transcription —
  * punctuation, capitalisation, ASR homophones, filler words — but performs
  * NO translation and NO paraphrasing. Sentence-final punctuation must be
- * reliable here because the client's flush trigger (client/src/lib/sermon/
- * sentence-split.ts) depends entirely on it; see plan §1.
+ * RELIABLE here because the client's flush trigger (client/src/lib/sermon/
+ * sentence-split.ts) depends entirely on it; see plan §1 — but "reliable"
+ * means never hallucinated, not always present. A chunk is cut on a VAD
+ * pause and routinely lands mid-sentence, so rule 4 below deliberately
+ * asks the model to leave a mid-sentence chunk UNPUNCTUATED rather than
+ * invent a period to round it off. Under-punctuating is the safe failure
+ * direction: an unterminated chunk is simply held by ingest-buffer.ts's
+ * flush state machine until a later chunk completes the sentence, with the
+ * cap-flush as the backstop if punctuation never arrives. Over-punctuating
+ * is unrecoverable — sentence-split.ts has no way to un-split a false
+ * boundary, and it's what used to fragment every block into short rows.
  *
  * previousTranscript's tail is included as read-only context so the model
  * can recognise (and drop) a restated word/phrase at the chunk boundary —
@@ -279,7 +288,7 @@ CORRECTION RULES:
 1. Fix ASR homophones and near-misses using context (e.g. pray/prey, altar/alter, their/there/they're, to/too/two, word/world, profit/prophet)
 2. Correct spelling of proper nouns and theological terms
 3. Apply the glossary above — replace any transcribed word that sounds like a glossary term with the correct term
-4. Add correct sentence-ending punctuation (. ? !), commas for natural pauses, capitalisation of sentence starts and proper nouns
+4. This chunk is an arbitrary slice of continuous speech, cut on a pause — it may begin and end mid-sentence. Add punctuation and capitalisation only where the speech actually calls for it: if the chunk does not end on a finished sentence, leave it with NO terminating . ? or ! — do not invent one just to round it off — and if it does not begin a new sentence, do not capitalise the first word. A pause is not a sentence end; a preacher pauses mid-clause constantly. When in doubt between a comma and a full stop, use the comma — never split one spoken sentence into several short ones.
 5. Remove filler words (um, uh, like, you know), stutters, and false starts
 6. Do NOT paraphrase, summarise, reorder, or change the speaker's meaning or word choice beyond fixing the errors above
 7. If this chunk restates the tail of the previous chunk (see context above), drop the repeated words rather than emitting them twice

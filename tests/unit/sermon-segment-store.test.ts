@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import {
   initState, segmentReducer, selectDirtyIds, selectTranslatable, selectOrdered, selectContext, canWriteLive,
+  selectPublishableLines,
   type SegmentStoreState,
 } from '../../client/src/lib/sermon/segment-store.js';
 import { hashText } from '../../client/src/lib/sermon/segment-model.js';
@@ -450,5 +451,80 @@ describe('segmentReducer — scripture (Bijbelcitaten)', () => {
     });
     expect(after.byId[id].status).toBe('EDITED'); // recovered, not stuck at TRANSLATING
     expect(after.byId[id].scripture).toBeUndefined(); // the stale reply was discarded
+  });
+});
+
+// Listener mode (CLAUDE.md "Listener mode") — see useListenerBroadcast.ts,
+// which diffs this selector's output against what it last sent over
+// /ws/sermon-broadcast.
+describe('selectPublishableLines', () => {
+  it('includes only TRANSLATED segments with non-empty text, ordered by index', () => {
+    const state = seedTranslated(3);
+    expect(selectPublishableLines(state)).toEqual([
+      { id: state.ids[0], index: 0, text: 'EN Zin 0.' },
+      { id: state.ids[1], index: 1, text: 'EN Zin 1.' },
+      { id: state.ids[2], index: 2, text: 'EN Zin 2.' },
+    ]);
+  });
+
+  it('excludes PENDING, PROVISIONAL, TRANSLATING, EDITED, and ERROR', () => {
+    let state = initState('t');
+    state = segmentReducer(state, { type: 'APPEND_SEGMENT', sourceText: 'Pending.', startTime: 0, endTime: 1, now: 0 }); // PENDING
+    state = segmentReducer(state, { type: 'APPEND_SEGMENT', sourceText: 'Provisional.', startTime: 1, endTime: 2, status: 'PROVISIONAL', now: 0 });
+    const translatingId = (() => {
+      state = segmentReducer(state, { type: 'APPEND_SEGMENT', sourceText: 'In flight.', startTime: 2, endTime: 3, now: 0 });
+      const id = state.ids[state.ids.length - 1];
+      state = segmentReducer(state, { type: 'MARK_TRANSLATING', ids: [id] });
+      return id;
+    })();
+    const editedId = (() => {
+      state = segmentReducer(state, { type: 'APPEND_SEGMENT', sourceText: 'Was translated.', startTime: 3, endTime: 4, now: 0 });
+      const id = state.ids[state.ids.length - 1];
+      state = segmentReducer(state, { type: 'MARK_TRANSLATING', ids: [id] });
+      state = segmentReducer(state, { type: 'APPLY_TRANSLATION', id, translation: 'Was translated (EN).', requestHash: hashText('Was translated.') });
+      state = segmentReducer(state, { type: 'EDIT_SOURCE', id, sourceText: 'Was translated, edited.', now: 10 });
+      return id;
+    })();
+    const erroredId = (() => {
+      state = segmentReducer(state, { type: 'APPEND_SEGMENT', sourceText: 'Will fail.', startTime: 4, endTime: 5, now: 0 });
+      const id = state.ids[state.ids.length - 1];
+      state = segmentReducer(state, { type: 'MARK_TRANSLATING', ids: [id] });
+      state = segmentReducer(state, { type: 'SET_ERROR', id, error: 'boom', requestHash: hashText('Will fail.') });
+      return id;
+    })();
+
+    expect(selectPublishableLines(state)).toEqual([]);
+    expect(state.byId[translatingId].status).toBe('TRANSLATING');
+    expect(state.byId[editedId].status).toBe('EDITED');
+    expect(state.byId[erroredId].status).toBe('ERROR');
+  });
+
+  it('includes SCRIPTURE segments and manualOverride segments', () => {
+    let state = initState('t');
+    state = segmentReducer(state, { type: 'APPEND_SEGMENT', sourceText: 'Johannes 3:16.', startTime: 0, endTime: 1, now: 0 });
+    const scriptureId = state.ids[0];
+    state = segmentReducer(state, {
+      type: 'APPLY_SCRIPTURE', id: scriptureId, text: 'For God so loved the world...', reference: 'John 3:16', version: 'ESV', requestHash: hashText('Johannes 3:16.'),
+    });
+
+    state = segmentReducer(state, { type: 'APPEND_SEGMENT', sourceText: 'Hand-written.', startTime: 1, endTime: 2, now: 0 });
+    const manualId = state.ids[1];
+    state = segmentReducer(state, { type: 'SET_TARGET_MANUAL', id: manualId, translatedText: 'By hand.', now: 0 });
+
+    const lines = selectPublishableLines(state);
+    expect(lines).toEqual([
+      { id: scriptureId, index: 0, text: 'For God so loved the world...' },
+      { id: manualId, index: 1, text: 'By hand.' },
+    ]);
+  });
+
+  it('excludes a TRANSLATED segment whose translatedText is empty', () => {
+    let state = initState('t');
+    state = segmentReducer(state, { type: 'APPEND_SEGMENT', sourceText: 'Zin.', startTime: 0, endTime: 1, now: 0 });
+    const id = state.ids[0];
+    state = segmentReducer(state, { type: 'MARK_TRANSLATING', ids: [id] });
+    state = segmentReducer(state, { type: 'APPLY_TRANSLATION', id, translation: '', requestHash: hashText('Zin.') });
+    expect(state.byId[id].status).toBe('TRANSLATED');
+    expect(selectPublishableLines(state)).toEqual([]);
   });
 });

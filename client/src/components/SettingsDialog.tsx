@@ -362,12 +362,21 @@ export default function SettingsDialog({ isOpen, onClose, settings, onUpdate, we
 
   return (
     <Dialog open={isOpen} onOpenChange={onClose}>
-      <DialogContent className="w-full max-w-[calc(100vw-2rem)] sm:max-w-2xl max-h-[90vh] overflow-y-auto overflow-x-hidden" data-testid="dialog-settings">
+      <DialogContent className="w-full max-w-[calc(100vw-2rem)] sm:max-w-3xl max-h-[90vh] overflow-y-auto overflow-x-hidden" data-testid="dialog-settings">
         <DialogHeader>
           <DialogTitle>Settings</DialogTitle>
         </DialogHeader>
 
-        <div className="space-y-6 py-2">
+        {/*
+          min-w-0 is load-bearing: DialogContent is `display: grid` (shadcn
+          default), and a CSS grid item's automatic minimum width defaults to
+          its content's min-content size, not 0 — so the long, unbreakable
+          masked API-key strings below (`whitespace-nowrap` <code> elements)
+          were inflating this grid item's column track past the dialog's own
+          max-width, silently clipped by DialogContent's overflow-x-hidden
+          instead of respecting their own flex-1/min-w-0/truncate styling.
+        */}
+        <div className="space-y-6 py-2 min-w-0">
 
           {/* ── API Keys ── */}
           <section className="space-y-4">

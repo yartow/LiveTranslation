@@ -9,6 +9,7 @@ import { segmentReducer, initState, selectDirtyIds, type SegmentAction } from '@
 import { isRefreshAllChord, isRefreshOneChord, type KeyChord } from '@/lib/sermon/hotkeys';
 import { useTranslationQueue, type TranslationRuntimeConfig } from '@/hooks/useTranslationQueue';
 import { useSermonIngest } from '@/hooks/useSermonIngest';
+import { useListenerBroadcast } from '@/hooks/useListenerBroadcast';
 import type { IngestConfig } from '@/lib/sermon/ingest-buffer';
 import { isMacPlatform } from '@/lib/platform';
 
@@ -94,6 +95,11 @@ export default function SermonMode() {
 
   const { refreshAll, refreshOne } = useTranslationQueue(stateRef, applyAction, translationConfigRef, autoTranslateRef, flushersRef);
 
+  // Listener mode (CLAUDE.md "Listener mode") — pushes finished translations
+  // to any connected phones. Reads `state` directly (not stateRef) so it
+  // re-runs its diff on every render, same as the dirtyCount useMemo below.
+  const { listenerCount } = useListenerBroadcast(stateRef, state);
+
   const { isRecording, isProcessing, start, stop } = useSermonIngest({
     dispatch: applyAction,
     stateRef,
@@ -150,6 +156,7 @@ export default function SermonMode() {
         onToggleAutoTranslate={(v) => updateSettings({ sermonAutoTranslate: v })}
         maxLatencySecs={settings.sermonMaxLatencySecs}
         onChangeMaxLatencySecs={(v) => updateSettings({ sermonMaxLatencySecs: v })}
+        listenerCount={listenerCount}
         onOpenSettings={() => setIsSettingsOpen(true)}
         isMac={isMacPlatform}
       />

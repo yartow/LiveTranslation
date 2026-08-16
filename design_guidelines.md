@@ -39,7 +39,7 @@ Defined in `tailwind.config.ts`: `lg` = 9px, `md` = 6px, `sm` = 3px (`--radius: 
 
 **Mobile container:** full width, no max-width constraint on the primary transcription view (`max-w-sm mx-auto` is used specifically to center the bottom control row's icon buttons around the record button, not the page as a whole).
 
-**Dialog sizing:** `w-full max-w-[calc(100vw-2rem)] sm:max-w-2xl` — overrides shadcn's `max-w-lg` default so dialogs (Settings, Export) use available width on mobile while staying readable on desktop. Apply this to any new `Dialog`/`DialogContent`.
+**Dialog sizing:** `w-full max-w-[calc(100vw-2rem)] sm:max-w-3xl` — overrides shadcn's `max-w-lg` default so dialogs (Settings, Export) use available width on mobile while staying readable on desktop. Apply this to any new `Dialog`/`DialogContent`. Note `DialogContent` is `display: grid` (shadcn default): a grid item's automatic minimum width defaults to its content's min-content size, so an unbreakable long string inside (e.g. a masked API key) can silently inflate the dialog past its max-width, clipped by `overflow-x-hidden` instead of truncating — give the content wrapper `min-w-0` to prevent this (see `SettingsDialog.tsx`).
 
 Structural pattern seen throughout `Home.tsx` and `SermonMode.tsx`:
 - A **sticky/fixed header row** (`border-b border-border`) for page-level controls (language pair, mode toggles).

@@ -315,7 +315,14 @@ export interface TranslatableConfig {
 export function selectTranslatable(state: SegmentStoreState, cfg: TranslatableConfig, now: number): string[] {
   return state.ids.filter(id => {
     const seg = state.byId[id];
-    if (seg.manualOverride || seg.status === 'TRANSLATING') return false;
+    // ERROR is deliberately excluded from the automatic loop: SET_ERROR never
+    // touches translatedHash, so an errored segment stays dirty forever — if
+    // ERROR were auto-retried, one failed call (e.g. a transient 429) would
+    // get re-queued every tick indefinitely, hammering the server rate
+    // limiter and starving every other segment's translation too. Retrying
+    // an ERROR row is a deliberate human action (the AlertCircle button in
+    // SegmentRow.tsx) or part of a manual "Refresh all" (selectDirtyIds).
+    if (seg.manualOverride || seg.status === 'TRANSLATING' || seg.status === 'ERROR') return false;
     if (!isDirty(seg)) return false;
     return now - seg.lastSourceChangeAt >= cfg.stabilityMs;
   });
@@ -336,4 +343,32 @@ export function selectContext(state: SegmentStoreState, id: string, before: numb
     before: beforeIds.map(i => state.byId[i].sourceText),
     after: afterIds.map(i => state.byId[i].sourceText),
   };
+}
+
+/** English-only line handed to useListenerBroadcast.ts — deliberately has no sourceText field, see listener-hub.ts's header comment for why that matters. */
+export interface PublishableLine {
+  id: string;
+  index: number;
+  text: string;
+}
+
+/**
+ * Segments fit to show a listener: translated (or a verbatim scripture
+ * substitution, or a human's hand-written override) with non-empty text.
+ * Deliberately excludes PENDING/PROVISIONAL (nothing to show yet), TRANSLATING
+ * (mid-flight, could still error), EDITED (dirty — the human is mid-revision
+ * and the on-screen translatedText is now stale against sourceText), and
+ * ERROR. This is the single source of truth for "finished enough to publish"
+ * — see useListenerBroadcast.ts, which diffs this list against what it last
+ * sent to detect edits.
+ */
+export function selectPublishableLines(state: SegmentStoreState): PublishableLine[] {
+  const lines: PublishableLine[] = [];
+  for (const id of state.ids) {
+    const seg = state.byId[id];
+    if (!seg.translatedText.trim()) continue;
+    if (seg.status !== 'TRANSLATED' && seg.status !== 'SCRIPTURE' && !seg.manualOverride) continue;
+    lines.push({ id: seg.id, index: seg.index, text: seg.translatedText });
+  }
+  return lines;
 }

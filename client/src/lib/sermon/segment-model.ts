@@ -1,10 +1,11 @@
 // Sermon-mode segment model. See CLAUDE.md "Sermon mode" and
 // /Users/andrewyong/.claude/plans/aannames-pas-aan-snoopy-fog.md for the full design.
 //
-// A Segment is roughly one sentence. It is the atomic unit of editing and
-// translation in sermon mode — the whole point of this model is that editing
-// one segment's sourceText and re-translating it never touches any other
-// segment's translatedText.
+// A Segment is one or more complete sentences, grouped by ingest-buffer.ts
+// into a block close to sermonMaxLatencySecs long (never split mid-sentence).
+// It is the atomic unit of editing and translation in sermon mode — the
+// whole point of this model is that editing one segment's sourceText and
+// re-translating it never touches any other segment's translatedText.
 
 export type SegmentStatus =
   | 'PENDING'      // transcribed, not yet translated

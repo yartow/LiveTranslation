@@ -1,61 +1,100 @@
 import { describe, it, expect } from 'vitest';
 import { initIngestState, appendChunk, tick, type IngestState } from '../../client/src/lib/sermon/ingest-buffer.js';
 
-describe('appendChunk — AC6: sentence-boundary flush', () => {
-  it('emits exactly the complete sentence and keeps the partial remainder buffered', () => {
+describe('appendChunk — AC6: sentence-boundary flush gated on the block duration', () => {
+  it('does not flush a complete sentence before the block duration is reached, then flushes it once due', () => {
     const state = initIngestState();
-    const { state: after, effects } = appendChunk(state, 'Dit is een zin. En nog', { maxLatencyMs: 6000 }, 0);
+    const cfg = { maxLatencyMs: 6000 };
+    const { state: after, effects } = appendChunk(state, 'Dit is een zin. En nog', cfg, 0);
+    expect(effects).toEqual([]); // boundary exists, but the block hasn't reached maxLatencyMs yet
 
-    expect(effects).toEqual([{ type: 'emit', text: 'Dit is een zin.', provisional: false }]);
-    // remaining buffer is the partial sentence — not yet emitted
-    const stillNothing = tick(after, { maxLatencyMs: 6000 }, 100);
-    expect(stillNothing.effects).toEqual([]);
+    const step = tick(after, cfg, 6000);
+    expect(step.effects).toEqual([{ type: 'emit', text: 'Dit is een zin.', provisional: false }]);
+    // The leftover "En nog" starts a FRESH block clock at the flush time (AC8a), so it is
+    // held, not immediately cut, on the very next evaluation.
+    expect(tick(step.state, cfg, 6100).effects).toEqual([]);
+    // Only once its own full maxLatencyMs has elapsed does it get a provisional cut.
+    const provisional = tick(step.state, cfg, 12000);
+    expect(provisional.effects).toEqual([{ type: 'emit', text: 'En nog', provisional: true, token: 'p0' }]);
   });
 
-  it('emits multiple complete sentences in one flush', () => {
+  it('groups every complete sentence accumulated within one block into a single joined emit', () => {
     const state = initIngestState();
-    const { effects } = appendChunk(state, 'Een. Twee. Drie', { maxLatencyMs: 6000 }, 0);
-    expect(effects).toEqual([
-      { type: 'emit', text: 'Een.', provisional: false },
-      { type: 'emit', text: 'Twee.', provisional: false },
-    ]);
+    const cfg = { maxLatencyMs: 6000 };
+    const { state: after, effects } = appendChunk(state, 'Een. Twee. Drie', cfg, 0);
+    expect(effects).toEqual([]);
+
+    const step = tick(after, cfg, 6000);
+    expect(step.effects).toEqual([{ type: 'emit', text: 'Een. Twee.', provisional: false }]);
   });
 
-  it('accumulates across multiple chunk arrivals before a boundary appears', () => {
+  it('accumulates across multiple chunk arrivals before a boundary appears, then still waits out the block duration', () => {
     let state = initIngestState();
-    ({ state } = appendChunk(state, 'Dit is', { maxLatencyMs: 6000 }, 0));
-    expect(tick(state, { maxLatencyMs: 6000 }, 10).effects).toEqual([]);
-    const step = appendChunk(state, ' een volledige zin.', { maxLatencyMs: 6000 }, 20);
+    const cfg = { maxLatencyMs: 6000 };
+    ({ state } = appendChunk(state, 'Dit is', cfg, 0));
+    expect(tick(state, cfg, 10).effects).toEqual([]);
+    let step = appendChunk(state, ' een volledige zin.', cfg, 20);
+    expect(step.effects).toEqual([]); // boundary now exists, block duration still not reached
+    step = tick(step.state, cfg, 6000);
     expect(step.effects).toEqual([{ type: 'emit', text: 'Dit is een volledige zin.', provisional: false }]);
   });
 });
 
-describe('cap-flush carry-over (AC8a)', () => {
-  it('cuts at the last complete boundary and the leftover keeps its OWN arrival time, not now', () => {
+describe('cap-flush carry-over (AC8a) — the block clock restarts on flush', () => {
+  it('flushes every complete sentence in the block together once due, and the leftover starts a FRESH block clock, not an already-expired one', () => {
     let state = initIngestState();
     const cfg = { maxLatencyMs: 6000 };
 
-    // "Zin een." arrives at t=0, "Zin twee." at t=1000, "Half" (no punctuation) at t=5000.
+    // "Zin een." and "Zin twee." (both complete) plus "Half" (no punctuation) all arrive at t=0.
     ({ state } = appendChunk(state, 'Zin een. Zin twee. Half', cfg, 0));
-    // both complete sentences flush immediately (boundary trigger fires regardless of the cap)
-    // buffer now holds just "Half", with its piece timestamped at t=0 (it arrived in the same chunk).
-    // Re-derive by checking that the cap, measured from t=0, fires at t=6000 — not reset to "now".
     expect(tick(state, cfg, 5999).effects).toEqual([]);
+
+    // At t=6000 the block is due: the two complete sentences flush together as one segment.
     const capped = tick(state, cfg, 6000);
-    expect(capped.effects).toEqual([{ type: 'emit', text: 'Half', provisional: true, token: 'p0' }]);
+    expect(capped.effects).toEqual([{ type: 'emit', text: 'Zin een. Zin twee.', provisional: false }]);
+
+    // "Half" survives the flush with its clock RESTARTED at the flush time — this is the fix
+    // for the bug where a leftover partial used to be cut into its own tiny segment on the
+    // very next tick. It must be held, not cut, immediately after the flush...
+    expect(tick(capped.state, cfg, 6000).effects).toEqual([]);
+    expect(tick(capped.state, cfg, 11999).effects).toEqual([]);
+    // ...and only forced into a provisional cut once its OWN full maxLatencyMs has elapsed.
+    const provisional = tick(capped.state, cfg, 12000);
+    expect(provisional.effects).toEqual([{ type: 'emit', text: 'Half', provisional: true, token: 'p0' }]);
   });
 
-  it('a later-arriving remainder keeps its own age when a prior boundary already flushed', () => {
+  it('a later-arriving remainder keeps its own age when a prior block already flushed', () => {
     let state = initIngestState();
     const cfg = { maxLatencyMs: 6000 };
 
-    ({ state } = appendChunk(state, 'Eerste zin.', cfg, 0)); // flushes immediately, buffer empty
-    ({ state } = appendChunk(state, ' Nieuw stuk zonder punt', cfg, 4000)); // arrives later, no boundary
+    ({ state } = appendChunk(state, 'Eerste zin.', cfg, 0));
+    const flushed = tick(state, cfg, 6000); // block due with only "Eerste zin." buffered
+    expect(flushed.effects).toEqual([{ type: 'emit', text: 'Eerste zin.', provisional: false }]);
+    ({ state } = appendChunk(flushed.state, 'Nieuw stuk zonder punt', cfg, 10000)); // arrives later, no boundary
 
-    // Cap counted from t=4000 (when this piece arrived), not from t=0.
-    expect(tick(state, cfg, 9999).effects).toEqual([]);
-    const capped = tick(state, cfg, 10000);
+    // Cap counted from t=10000 (when this piece arrived), not from t=0.
+    expect(tick(state, cfg, 15999).effects).toEqual([]);
+    const capped = tick(state, cfg, 16000);
     expect(capped.effects[0]).toMatchObject({ type: 'emit', provisional: true, text: 'Nieuw stuk zonder punt' });
+  });
+
+  it('regression: a leftover partial is absorbed into the NEXT block instead of becoming its own segment', () => {
+    // This is the exact shape of the reported bug: a block flushes, leaving a trailing
+    // partial sentence, and more speech arrives before the partial's own deadline — it
+    // must join the next block's joined emit, not have already been cut out on its own.
+    let state = initIngestState();
+    const cfg = { maxLatencyMs: 6000 };
+
+    ({ state } = appendChunk(state, 'Eerste zin. Nog een zin. En een derde', cfg, 0));
+    const capped = tick(state, cfg, 6000);
+    expect(capped.effects).toEqual([{ type: 'emit', text: 'Eerste zin. Nog een zin.', provisional: false }]);
+
+    // More speech completes the leftover well within its own fresh 6s window.
+    ({ state } = appendChunk(capped.state, 'zin.', cfg, 6500));
+    expect(tick(state, cfg, 6600).effects).toEqual([]); // not due yet — held, not cut
+
+    const next = tick(state, cfg, 12000);
+    expect(next.effects).toEqual([{ type: 'emit', text: 'En een derde zin.', provisional: false }]);
   });
 });
 
@@ -104,6 +143,27 @@ describe('AC9: a live config change is honoured on the very next tick', () => {
     // must honour it immediately, with no restart needed.
     const step = tick(state, { maxLatencyMs: 3000 }, 3000);
     expect(step.effects).toEqual([{ type: 'emit', text: 'Nog steeds aan het praten', provisional: true, token: 'p0' }]);
+  });
+});
+
+describe('AC10: short sentences group into one ~maxLatencyMs block instead of one segment each', () => {
+  it('several short, already-punctuated sentences spoken back to back become a single segment', () => {
+    let state = initIngestState();
+    const cfg = { maxLatencyMs: 5000 };
+
+    // Mirrors real short-fragment ASR output arriving in separate chunks, well inside the block window.
+    ({ state } = appendChunk(state, 'De tekst hoort waarschijnlijk per twee zinnen.', cfg, 0));
+    expect(tick(state, cfg, 1000).effects).toEqual([]); // block not due yet — kept buffered, not emitted per-sentence
+
+    ({ state } = appendChunk(state, ' Niet per vijf woorden.', cfg, 1500));
+    expect(tick(state, cfg, 4999).effects).toEqual([]); // still accumulating
+
+    const step = tick(state, cfg, 5000); // block due (anchor at t=0)
+    expect(step.effects).toEqual([{
+      type: 'emit',
+      text: 'De tekst hoort waarschijnlijk per twee zinnen. Niet per vijf woorden.',
+      provisional: false,
+    }]);
   });
 });
 

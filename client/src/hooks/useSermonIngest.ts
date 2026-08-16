@@ -29,8 +29,12 @@ const CAP_TICK_MS = 250;
 // VAD-silence threshold for sermon mode's forced VAD chunking — see the
 // "Gevolg voor chunk-overlap" note in the plan: cutting on silence (rather
 // than a fixed duration) means chunk boundaries land between words, which
-// is what makes chunkOverlapMs:0 safe to use here.
-const SERMON_VAD_SILENCE_MS = 700;
+// is what makes chunkOverlapMs:0 safe to use here. Raised from 700ms to
+// 1100ms alongside the sermonMaxLatencySecs default bump (6s -> 10s,
+// useSettings.ts): fewer, longer chunks means fewer chunk boundaries for
+// the per-chunk correction step to guess sentence-final punctuation across,
+// which is what was fragmenting sermon mode's output into short segments.
+const SERMON_VAD_SILENCE_MS = 1100;
 
 /**
  * Wires ChunkBasedTranscription (outputMode:'correct-only', VAD chunking,

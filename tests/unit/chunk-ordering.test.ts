@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach } from 'vitest';
-import { flushInOrder, type ChunkSessionForTest, type ChunkResult } from '../../server/lib/chunk-transcription.js';
+import { flushInOrder, stripAsteriskArtifacts, type ChunkSessionForTest, type ChunkResult } from '../../server/lib/chunk-transcription.js';
 
 function makeSession(): ChunkSessionForTest & { sent: Array<{ original: string; chunkIndex: number }> } {
   const sent: Array<{ original: string; chunkIndex: number }> = [];
@@ -82,5 +82,28 @@ describe('flushInOrder', () => {
     flushInOrder(s);
     expect(s.sent).toHaveLength(0);
     expect(s.nextExpectedChunk).toBe(0);
+  });
+});
+
+describe('stripAsteriskArtifacts', () => {
+  it('removes a leading asterisk-hallucination run and the space it leaves behind', () => {
+    expect(stripAsteriskArtifacts('*** Er goed uitzien.')).toBe('Er goed uitzien.');
+  });
+
+  it('removes several separate asterisk runs scattered through the text', () => {
+    expect(stripAsteriskArtifacts('*** *** *** *** *** *** Hij lijkt best wel snel te zijn, alleen...'))
+      .toBe('Hij lijkt best wel snel te zijn, alleen...');
+  });
+
+  it('removes a single stray asterisk glued to a word', () => {
+    expect(stripAsteriskArtifacts('Dit is *raar*.')).toBe('Dit is raar.');
+  });
+
+  it('leaves ordinary text with no asterisks untouched', () => {
+    expect(stripAsteriskArtifacts('Dank je wel.')).toBe('Dank je wel.');
+  });
+
+  it('leaves an empty string empty', () => {
+    expect(stripAsteriskArtifacts('')).toBe('');
   });
 });

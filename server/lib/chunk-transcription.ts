@@ -48,6 +48,17 @@ export interface ChunkResult {
   translatedText: string;
 }
 
+// Whisper occasionally hallucinates literal "***" runs in place of unclear
+// or masked-profanity audio (e.g. "*** Er goed uitzien."). Asterisks are
+// never legitimate content in a spoken transcript, so strip them outright
+// rather than let them leak into segments/translations — no correction
+// prompt in this codebase asks the model to insert them (that only happens
+// in the unrelated export-formatting prompt, openai.ts's formatForExport),
+// so any asterisk reaching here came straight from the ASR output itself.
+export function stripAsteriskArtifacts(text: string): string {
+  return text.replace(/\*+/g, '').replace(/[ \t]{2,}/g, ' ').trim();
+}
+
 export interface ChunkSessionForTest {
   clientWs: { readyState: number; send: (msg: string) => void };
   nextExpectedChunk: number;
@@ -302,6 +313,9 @@ async function processChunk(
         signal,
       ));
     }
+
+    correctedText = stripAsteriskArtifacts(correctedText);
+    translatedText = stripAsteriskArtifacts(translatedText);
 
     sendDebug(session, `Chunk #${chunkIndex}: ✓ done`);
     session.pendingResults.set(chunkIndex, { correctedText, translatedText });

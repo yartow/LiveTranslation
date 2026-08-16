@@ -4,6 +4,7 @@ import { setupVite, serveStatic, log } from "./vite";
 import { WebSocketServer } from 'ws';
 import { setupStreamingWebSocket } from './lib/assemblyai-streaming';
 import { setupChunkTranscriptionWebSocket } from './lib/chunk-transcription';
+import { setupListenerWebSockets } from './lib/listener-hub';
 import { initGlossary } from './lib/glossary-store';
 
 if (!process.env.OPENAI_API_KEY) {
@@ -93,6 +94,16 @@ try { initGlossary(); } catch (e) {
   setupChunkTranscriptionWebSocket(wssChunk);
   wssChunk.on('error', (err) => { console.error('Chunk WebSocket server error:', err); });
 
+  // Listener mode (CLAUDE.md "Listener mode") — a separate WebSocketServer
+  // per role (broadcaster vs. listener) rather than one server with a
+  // type-switch on first message, matching the existing per-purpose split
+  // above (plain transcribe vs. chunk-transcribe).
+  const wssSermonBroadcast = new WebSocketServer({ noServer: true, maxPayload: 1 * 1024 * 1024 });
+  const wssSermonListen = new WebSocketServer({ noServer: true, maxPayload: 1 * 1024 * 1024 });
+  setupListenerWebSockets(wssSermonBroadcast, wssSermonListen);
+  wssSermonBroadcast.on('error', (err) => { console.error('Sermon broadcast WebSocket server error:', err); });
+  wssSermonListen.on('error', (err) => { console.error('Sermon listen WebSocket server error:', err); });
+
   server.on('upgrade', (req, socket, head) => {
     const pathname = req.url?.split('?')[0];
     if (pathname === '/ws/transcribe') {
@@ -103,10 +114,47 @@ try { initGlossary(); } catch (e) {
       wssChunk.handleUpgrade(req, socket, head, (ws) => {
         wssChunk.emit('connection', ws, req);
       });
+    } else if (pathname === '/ws/sermon-broadcast') {
+      wssSermonBroadcast.handleUpgrade(req, socket, head, (ws) => {
+        wssSermonBroadcast.emit('connection', ws, req);
+      });
+    } else if (pathname === '/ws/sermon-listen') {
+      wssSermonListen.handleUpgrade(req, socket, head, (ws) => {
+        wssSermonListen.emit('connection', ws, req);
+      });
     }
     // All other upgrade requests (e.g. Vite HMR at /__vite_hmr) are left
     // untouched so Vite's handler (registered below) can claim them.
   });
+
+  // Listener mode (CLAUDE.md "Listener mode"): exposing the server on the LAN
+  // also exposes "/" and "/live" — the operator console, with recording
+  // controls. A listener typing the bare IP with no path would otherwise land
+  // there instead of the intended "/listen" view, and could accidentally
+  // start a recording. Redirect exactly those two paths (never anything
+  // else — assets, /api/*, and /listen itself are all untouched) to
+  // "/listen" for any HTML navigation from a non-loopback address. The
+  // operator's own MBP is always loopback, so this never affects them.
+  // NOT an authentication boundary — see CLAUDE.md. Set
+  // ALLOW_REMOTE_OPERATOR=true to disable (e.g. to run the console itself
+  // from an iPad).
+  function isLoopbackAddress(addr: string | undefined): boolean {
+    if (!addr) return false;
+    const stripped = addr.replace(/^::ffff:/, '');
+    return stripped === '127.0.0.1' || stripped === '::1' || stripped === 'localhost';
+  }
+  if (process.env.ALLOW_REMOTE_OPERATOR !== 'true') {
+    app.use((req, res, next) => {
+      if (
+        (req.path === '/' || req.path === '/live') &&
+        !isLoopbackAddress(req.socket.remoteAddress) &&
+        req.accepts('html')
+      ) {
+        return res.redirect(302, '/listen');
+      }
+      next();
+    });
+  }
 
   // importantly only setup vite in development and after
   // setting up all the other routes so the catch-all route

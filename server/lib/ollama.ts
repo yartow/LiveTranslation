@@ -101,7 +101,7 @@ export async function correctTranscriptWithOllama(
 Tasks:
 1. Fix ASR homophones/near-misses and spelling of proper nouns and theological terms
 2. Apply the glossary above where it applies
-3. Add correct sentence-ending punctuation, commas, capitalisation
+3. This chunk is cut on a pause and may begin/end mid-sentence. Only add sentence-ending punctuation (. ? !) and capitalise the next word if the chunk actually ends/starts a new sentence — if it ends mid-sentence, leave it WITHOUT a period; do not invent one. A pause is not a sentence end. Prefer a comma over a full stop when unsure.
 4. Remove filler words, stutters, false starts
 5. Do NOT paraphrase, summarise, or reorder — only fix errors
 6. Return ONLY valid JSON: { "correctedText": "..." }`,

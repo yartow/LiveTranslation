@@ -1,7 +1,10 @@
-import { Loader2, Mic, RefreshCw, Settings, Square } from 'lucide-react';
+import { useState } from 'react';
+import { Loader2, Mic, RefreshCw, Settings, Square, Users } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Switch } from '@/components/ui/switch';
 import { Label } from '@/components/ui/label';
+import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
+import ListenerAddressPanel from './ListenerAddressPanel';
 
 interface SermonToolbarProps {
   isRecording: boolean;
@@ -13,6 +16,8 @@ interface SermonToolbarProps {
   onToggleAutoTranslate: (value: boolean) => void;
   maxLatencySecs: number;
   onChangeMaxLatencySecs: (value: number) => void;
+  /** Live count of connected /listen sockets — see useListenerBroadcast.ts. */
+  listenerCount: number;
   onOpenSettings: () => void;
   isMac: boolean;
 }
@@ -20,9 +25,10 @@ interface SermonToolbarProps {
 export default function SermonToolbar({
   isRecording, isProcessing, onToggleRecording, dirtyCount, onRefreshAll,
   autoTranslate, onToggleAutoTranslate, maxLatencySecs, onChangeMaxLatencySecs,
-  onOpenSettings, isMac,
+  listenerCount, onOpenSettings, isMac,
 }: SermonToolbarProps) {
   const refreshHint = isMac ? '⌘⇧⏎' : 'Ctrl+Shift+Enter';
+  const [isListenerPopoverOpen, setIsListenerPopoverOpen] = useState(false);
 
   return (
     <div className="flex flex-wrap items-center gap-3 px-3 py-2 border-b border-border bg-background">
@@ -88,6 +94,23 @@ export default function SermonToolbar({
       </div>
 
       <div className="flex-1" />
+
+      <Popover open={isListenerPopoverOpen} onOpenChange={setIsListenerPopoverOpen}>
+        <PopoverTrigger asChild>
+          <Button
+            variant="outline"
+            size="sm"
+            data-testid="button-listeners"
+            title="Adres voor luisteraars"
+          >
+            <Users className="w-3.5 h-3.5" />
+            Luisteraars {listenerCount > 0 && `(${listenerCount})`}
+          </Button>
+        </PopoverTrigger>
+        <PopoverContent align="end" className="w-80">
+          <ListenerAddressPanel open={isListenerPopoverOpen} listenerCount={listenerCount} />
+        </PopoverContent>
+      </Popover>
 
       <button
         onClick={onOpenSettings}

@@ -3,18 +3,34 @@
 // needs synchronous read-modify-write on every incoming chunk of corrected
 // ASR text and on every ~250ms cap-timer tick.
 //
-// Two triggers decide when buffered text becomes a segment:
-//   (a) a complete sentence boundary appears in the buffer — the normal path
-//   (b) cfg.maxLatencyMs has elapsed since the OLDEST unflushed text arrived,
-//       even mid-sentence — a latency ceiling, not a batch size
+// One trigger, cfg.maxLatencyMs, decides when buffered text becomes a
+// segment — it is both the TARGET block duration and the hard ceiling:
+//   (a) a complete sentence boundary exists AND cfg.maxLatencyMs has
+//       elapsed since the block STARTED — flush everything complete in the
+//       buffer as ONE joined segment. A boundary alone is NOT enough to
+//       flush: short sentences keep accumulating into the same block until
+//       the target duration is reached, which is what keeps a sermon's
+//       segments close to cfg.maxLatencyMs long instead of one segment per
+//       ". "-terminated fragment.
+//   (b) cfg.maxLatencyMs has elapsed with NO complete sentence at all —
+//       force a mid-sentence provisional cut so text is never held forever
+//       waiting for punctuation that may not come.
+// Both branches gate on the same clock, so (a) can never starve: whatever
+// isn't flushed by (a) because it never gets a boundary is still bounded by
+// the identical deadline in (b).
 //
-// The tricky requirement from the spec: when the cap fires mid-sentence, we
-// cut at the last complete sentence boundary and the leftover half-sentence
-// carries over to the next batch WITHOUT resetting its clock. That is why
-// the buffer is a list of timestamped `pieces` rather than one string with a
-// single `lastFlushAt` — each surviving piece keeps the arrival time it had
-// when it first appeared, so the cap timer measured against the *oldest*
-// surviving text keeps running across a cap-flush.
+// The block clock RESTARTS on every branch-(a) flush: a leftover
+// half-sentence that survives a flush begins a fresh cfg.maxLatencyMs window
+// rather than inheriting the just-expired one. (An earlier version of this
+// file preserved each piece's original arrival time across a flush so the
+// cap "kept running" — that was correct back when a boundary alone was
+// enough to flush immediately, but once flushing gates on the full block
+// duration it means the leftover text is already overdue the instant it
+// survives a flush, so it gets cut into its own tiny PROVISIONAL segment on
+// the very next tick. That is what turned every block into "block, then a
+// stray 2-3 word fragment". Restarting the clock on flush is what makes a
+// carried-over partial actually wait out a full block before it's forced
+// out mid-sentence.)
 //
 // A provisional segment (emitted only when there is no complete sentence at
 // all after the cap fires) is tracked by an ingest-internal `token`, not a
@@ -26,11 +42,12 @@ import { dedupeOverlap, tail80 } from './overlap-dedupe';
 
 interface Piece {
   text: string;
-  at: number;
 }
 
 export interface IngestState {
   pieces: Piece[];
+  /** When the current block started (first text appended since the last flush/reset), or null while the buffer is empty. See the header comment above: this restarts on every branch-(a) flush. */
+  anchorAt: number | null;
   provisionalToken: string | null;
   provisionalSeq: number;
   recentTail: string;
@@ -52,7 +69,7 @@ export interface IngestStep {
 }
 
 export function initIngestState(): IngestState {
-  return { pieces: [], provisionalToken: null, provisionalSeq: 0, recentTail: '' };
+  return { pieces: [], anchorAt: null, provisionalToken: null, provisionalSeq: 0, recentTail: '' };
 }
 
 function bufferText(state: IngestState): string {
@@ -73,10 +90,9 @@ function needsSpace(pieces: Piece[], nextText: string): boolean {
 
 /**
  * Drops fully-consumed pieces and trims the piece that straddles cut index
- * `k` (measured in the joined buffer string) down to its surviving tail —
- * crucially, the surviving tail KEEPS the original piece's `at`, which is
- * the mechanism that makes the cap timer not reset on a carried-over
- * partial sentence.
+ * `k` (measured in the joined buffer string) down to its surviving tail.
+ * The caller (evaluate's branch (a)) is responsible for restarting
+ * `anchorAt` for whatever survives — see the header comment.
  */
 function trimPiecesTo(pieces: Piece[], k: number): Piece[] {
   const survivors: Piece[] = [];
@@ -89,12 +105,12 @@ function trimPiecesTo(pieces: Piece[], k: number): Piece[] {
       continue;
     }
     if (consumed >= k) {
-      // entirely after the cut — keep whole, same `at`
+      // entirely after the cut — keep whole
       survivors.push(piece);
     } else {
-      // straddles the cut — keep only the tail, same `at`
+      // straddles the cut — keep only the tail
       const localCut = k - consumed;
-      survivors.push({ text: piece.text.slice(localCut), at: piece.at });
+      survivors.push({ text: piece.text.slice(localCut) });
     }
     consumed = pieceEnd;
   }
@@ -103,14 +119,19 @@ function trimPiecesTo(pieces: Piece[], k: number): Piece[] {
 
 function evaluate(state: IngestState, cfg: IngestConfig, now: number): IngestStep {
   const buf = bufferText(state);
-  if (!buf.trim()) return { state, effects: [] };
+  if (!buf.trim()) {
+    return state.anchorAt === null ? { state, effects: [] } : { state: { ...state, anchorAt: null }, effects: [] };
+  }
 
   const lastB = lastBoundary(buf);
-  const anchor = state.pieces[0]?.at ?? null;
-  const capExpired = anchor !== null && now - anchor >= cfg.maxLatencyMs;
+  const capExpired = state.anchorAt !== null && now - state.anchorAt >= cfg.maxLatencyMs;
 
-  // (a) A complete sentence exists — always flush it, regardless of the cap.
-  if (lastB >= 0) {
+  // (a) A complete sentence exists AND the block has reached its target
+  // duration — flush everything complete in the buffer as one joined
+  // segment. If the target hasn't been reached yet, fall through and wait:
+  // more sentences may still accumulate into this same block before the
+  // deadline (or before another appendChunk brings the next one in).
+  if (lastB >= 0 && capExpired) {
     const head = buf.slice(0, lastB);
     const survivingPieces = trimPiecesTo(state.pieces, lastB);
     let sentences = splitSentences(head);
@@ -124,14 +145,18 @@ function evaluate(state: IngestState, cfg: IngestConfig, now: number): IngestSte
       sentences = sentences.slice(1);
       provisionalToken = null;
     }
-    for (const s of sentences) {
-      effects.push({ type: 'emit', text: s, provisional: false });
+    if (sentences.length > 0) {
+      effects.push({ type: 'emit', text: sentences.join(' '), provisional: false });
     }
 
     return {
       state: {
         ...state,
         pieces: survivingPieces,
+        // Restart the block clock: a surviving partial begins a fresh
+        // cfg.maxLatencyMs window rather than inheriting the one that just
+        // expired — see the header comment for why this is the actual fix.
+        anchorAt: survivingPieces.length > 0 ? now : null,
         provisionalToken,
         recentTail: tail80(head),
       },
@@ -140,7 +165,7 @@ function evaluate(state: IngestState, cfg: IngestConfig, now: number): IngestSte
   }
 
   // (b) No complete sentence at all — only act once the cap has expired.
-  if (capExpired) {
+  if (lastB < 0 && capExpired) {
     if (state.provisionalToken == null) {
       const token = `p${state.provisionalSeq}`;
       return {
@@ -164,8 +189,13 @@ export function appendChunk(state: IngestState, rawText: string, cfg: IngestConf
   if (!deduped.trim()) return { state, effects: [] };
 
   const sep = needsSpace(state.pieces, deduped) ? ' ' : '';
-  const pieces = [...state.pieces, { text: sep + deduped, at: now }];
-  return evaluate({ ...state, pieces }, cfg, now);
+  const pieces = [...state.pieces, { text: sep + deduped }];
+  // Anchor the block clock on the first text of a new block only — an
+  // already-running block's clock is untouched by later chunks arriving
+  // into it (that's what makes the block duration ~cfg.maxLatencyMs rather
+  // than restarting on every chunk).
+  const anchorAt = state.anchorAt ?? now;
+  return evaluate({ ...state, pieces, anchorAt }, cfg, now);
 }
 
 /** Re-evaluate the flush triggers with no new text — call this on a ~250ms interval so the cap fires even mid-sentence. */

@@ -110,7 +110,11 @@ const defaultSettings: AppSettings = {
   assemblyTurnSilenceMs: 700,
   deviceProfiles: [],
   activeDeviceProfileId: null,
-  sermonMaxLatencySecs: 6,
+  // 10s target block duration — see ingest-buffer.ts and useSermonIngest.ts's
+  // SERMON_VAD_SILENCE_MS. A 6s default produced short, choppy segments;
+  // an existing localStorage profile keeps its stored value across this
+  // change (the useSettings migration below only clamps, never bumps it).
+  sermonMaxLatencySecs: 10,
   sermonStabilityMs: 1200,
   sermonContextBefore: 2,
   sermonContextAfter: 1,
