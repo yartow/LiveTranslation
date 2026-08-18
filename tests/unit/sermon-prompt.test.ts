@@ -84,6 +84,19 @@ describe('buildSystemPrompt — stable prefix / caching', () => {
     expect(buildSystemPrompt('en', ctx)).not.toBe(buildSystemPrompt('nl', ctx));
   });
 
+  // Regression: sermon mode's ASR correction step deliberately leaves an
+  // uncertain chunk boundary unpunctuated (server/lib/openai.ts's
+  // correctTranscript) to avoid fragmenting segments — see CLAUDE.md "Live
+  // ingest". Without this rule the translation faithfully mirrors that gap,
+  // leaving the listener-facing English unreadable. This asserts the prompt
+  // tells the model to punctuate the ENGLISH rendering regardless, without
+  // relaxing the "translate exactly, never rephrase" rule it sits next to.
+  it('instructs the model to render natural English punctuation even when the source is sparsely punctuated', () => {
+    const prompt = buildSystemPrompt('en', getGlossaryContext(undefined));
+    expect(prompt.toLowerCase()).toContain('punctuat');
+    expect(prompt).toContain('Never clean up, rephrase, shorten, complete, or fix the source sentence');
+  });
+
   it('differs when the glossary differs', () => {
     const a = buildSystemPrompt('en', getGlossaryContext('Heiland = Savior'));
     const b = buildSystemPrompt('en', getGlossaryContext('Genade = Grace'));

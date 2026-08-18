@@ -92,6 +92,18 @@ Open `http://localhost:PORT/` to use it — live/subtitle mode is at `/live`.
 
 ---
 
+## Listener Mode (`/listen`)
+
+Lets people in the room who don't speak Dutch follow the English translation live on their own phone, over the same wifi network as the MBP running the app — no app install, no account.
+
+- Open Settings from the sermon-mode toolbar and click **"Luisteraars"** to see the address to hand out (e.g. `http://192.168.178.42:3000`) — it's read live off the machine's current network, so it's correct whether you're at home or at church.
+- A listener types that address into their phone's browser. Typing just the bare address (no path) takes them straight to the listener view — you don't need to tell them to add `/listen`.
+- The listener screen shows **only the finished English translation**, auto-scrolling as new lines arrive; scrolling up pauses that and shows a "Jump to live" button. A line that gets corrected after it first appears is re-pushed and shown in *italic*.
+- **This is not access control.** Anyone on the same wifi who reaches the server can open the listener view. Don't rely on it to keep the transcript private.
+- Church guest wifi sometimes isolates devices from each other ("AP/client isolation"), which blocks this entirely and can't be worked around in software — test it on the actual venue's wifi ahead of time. If it's isolated, run a personal hotspot from the MBP instead and have listeners join that.
+
+---
+
 ## API Providers & Free Mode
 
 All API keys are entered in the in-app Settings (⚙︎ icon). Keys are stored only in your browser's `sessionStorage` and are never sent to this server's storage — they travel directly to OpenAI or Anthropic with each request.

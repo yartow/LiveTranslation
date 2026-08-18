@@ -45,10 +45,14 @@ client/src/
   pages/
     SermonMode.tsx                — sermon mode UI, the app's default route ("/"), see "Sermon mode" below
     Home.tsx                      — live/subtitle UI, all recording state (route: /live)
-  hooks/useSettings.ts            — AppSettings type + localStorage persistence
+    ListenerMode.tsx              — English-only phone view (route: /listen), see "Listener mode" below
+  hooks/
+    useSettings.ts                — AppSettings type + localStorage persistence
+    useListenerBroadcast.ts       — operator-side publisher for listener mode, see "Listener mode" below
   components/
     SettingsDialog.tsx            — settings modal (incl. GlossaryPanel for sermon mode)
-    sermon/                       — SegmentGrid, SegmentRow, SourceCell, TargetCell, SermonToolbar
+    sermon/                       — SegmentGrid, SegmentRow, SourceCell, TargetCell, SermonToolbar,
+                                       ListenerAddressPanel (the "Luisteraars" popover)
   lib/
     chunk-based-transcription.ts  — shared ChunkTranscriptionEvents interface
     streaming-transcription.ts    — AssemblyAI WebSocket streaming backend
@@ -63,7 +67,7 @@ client/src/
                                        (AUTO-GENERATED — see scripts/build-bible-data.ts)
 
 server/
-  index.ts                        — Express app, WebSocket upgrade registration
+  index.ts                        — Express app, WebSocket upgrade registration, listener-mode redirect guard
   routes.ts                       — REST API endpoints
   python/
     mlx_worker.py                  — mlx-whisper sidecar (JSON-lines over stdin/stdout)
@@ -74,6 +78,7 @@ server/
     assemblyai-streaming.ts       — AssemblyAI streaming WebSocket handler
     chunk-transcription.ts        — Chunk-based Whisper pipeline
     mlx-whisper.ts                 — Manages the mlx_worker.py sidecar process
+    listener-hub.ts               — listener-mode broadcast relay, see "Listener mode" below
     sermon-prompt.ts              — sermon-mode system prompt assembly (role + glossary + output + scripture hints)
     sermon-translate.ts           — sermon-mode batch translation + glossary-adherence + scripture adjudication
     csv-parse.ts                  — generic RFC4180 CSV tokenizer
@@ -125,6 +130,22 @@ Sermons frequently read Scripture aloud verbatim, and that text must appear as t
 **Book-name resolution** also merges the glossary CSV's `Bijbelboek`-category rows (`server/lib/glossary-store.ts`'s `bibleBookAliases`) — an operator can add a spoken NL book-name variant just by editing the CSV, no code change (not yet merged into the client-side parser's own table — see `bible-ref.ts`'s header comment).
 
 A segment's `scripture?: ScriptureInfo` (`segment-model.ts`) is cleared on any edit — the human can also dismiss a false-positive via `CLEAR_SCRIPTURE` (a "not scripture" action on the row), which sets `scriptureOverride` so re-detection stays off until the next edit.
+
+---
+
+## Listener mode (`/listen`)
+
+Lets non-Dutch-speaking listeners follow the sermon translation live on their own phone, over whatever LAN the MBP is on (home wifi or church wifi). The operator reads the address out of SermonToolbar's "Luisteraars" popover (backed by `GET /api/lan-address`); a listener types it into their phone's browser — no app install, no login.
+
+- **Relay, not exposure.** Sermon segments live only in the operator's browser (`SegmentStoreState`, `segment-store.ts`) — nothing about a segment reaches the server except one-shot translate calls. Listener mode adds a small in-memory broadcast hub (`server/lib/listener-hub.ts`) so a second device has something to read from at all.
+- **English only, structurally.** The hub's `ListenerLine` type has exactly four fields — `id`, `index`, `text`, `edited` — no `sourceText` field exists on it. `toListenerLine()` reconstructs every incoming line field-by-field rather than trusting a cast, so even a buggy client sending a full segment object can't leak Dutch through. The actual "only English" guarantee still rests on the client only ever calling `selectPublishableLines()` (`segment-store.ts`) — see `useListenerBroadcast.ts`.
+- **Two WebSocket endpoints**, wired up in `server/index.ts` alongside `/ws/transcribe`/`/ws/chunk-transcribe`:
+  - `/ws/sermon-broadcast` — the operator's `SermonMode.tsx` page (`useListenerBroadcast.ts`) publishes segments once they're `TRANSLATED`/`SCRIPTURE`/manually overridden (`selectPublishableLines`), diffed against what was last sent so the socket stays quiet when nothing changed. A revised line republishes with `edited: true`, which `ListenerMode.tsx` renders in italic.
+  - `/ws/sermon-listen` — a listener's phone (`ListenerMode.tsx`). Gets a full `snapshot` on connect (so joining mid-sermon shows the whole backlog), then incremental `update`s.
+- **One room, not per-session.** The hub is a module-level singleton — this app is built for one preacher on one MBP running one service at a time. A broadcaster reconnect (page reload, HMR) takes over as the current broadcaster and republishes its full known set, so the hub can't drift stale after a takeover.
+- **Bare-IP redirect.** A listener typing just the IP with no path would otherwise land on the operator console (`/`, with recording controls) or `/live`. `server/index.ts` redirects exactly those two paths to `/listen` for any HTML navigation from a non-loopback socket address — checked on `req.socket.remoteAddress`, not a spoofable header. Set `ALLOW_REMOTE_OPERATOR=true` to disable (e.g. to run the console itself from another device).
+- **Not an authentication boundary.** Anyone on the same LAN who can reach the server can read the transcript at `/listen`, and (if `ALLOW_REMOTE_OPERATOR=true`) the operator console too. This is intended for this feature — do not present it as access control.
+- Church guest wifi with AP/client isolation blocks phone→laptop traffic entirely and can't be fixed in code — test on the actual venue's network ahead of time; a personal hotspot from the MBP is the fallback.
 
 ---
 
@@ -264,8 +285,9 @@ interface AppSettings {
 | GET | `/api/sermon/glossary/status` | Sermon mode — file-based glossary load status/diagnostics |
 | POST | `/api/sermon/glossary/reload` | Sermon mode — force a fresh read+parse of the glossary files |
 | GET | `/api/dev-config` | Dev mode only (403 in production) — returns `OPENAI_API_KEY`/`ANTHROPIC_API_KEY` from `.env` so the client can auto-fill Settings |
+| GET | `/api/lan-address` | Listener mode — the MBP's non-internal LAN IPv4 address(es) + port, for the "Luisteraars" popover |
 
-WebSocket: `ws://host/ws/transcribe` — binary PCM16 frames + JSON control messages (`start`, `stop`, `config`).
+WebSocket: `ws://host/ws/transcribe` — binary PCM16 frames + JSON control messages (`start`, `stop`, `config`). Listener mode: `ws://host/ws/sermon-broadcast` (operator publish) and `ws://host/ws/sermon-listen` (listener receive) — see "Listener mode" above.
 
 ---
 
@@ -318,7 +340,7 @@ The collapsible debug-log panel (`settings.debugMode`) is a `fixed` element posi
 
 ## WebSocket upgrade order (server/index.ts)
 
-The `/ws/transcribe` upgrade handler is registered **before** `setupVite()` so Vite's HMR handler cannot intercept it. Do not reorder this.
+The `/ws/transcribe` upgrade handler (and its siblings — `/ws/chunk-transcribe`, `/ws/sermon-broadcast`, `/ws/sermon-listen`) is registered **before** `setupVite()` so Vite's HMR handler cannot intercept it. Do not reorder this. The listener-mode bare-IP redirect middleware (see "Listener mode" above) is also registered before `setupVite()`, for the same reason — it must see the request before Vite's catch-all does.
 
 ---
 
@@ -337,6 +359,7 @@ The `/ws/transcribe` upgrade handler is registered **before** `setupVite()` so V
 | `BIBLE_DIR` | Optional | Directory the Bible-quote pipeline reads built verse data from (see "Scripture pipeline" above). Defaults to `<repo>/data/bible` |
 | `ESV_API_KEY` | Optional | Preferred verse-text source for a verbatim reading (api.esv.org). Falls back to the bundled KJV when unset or the API fails. Client-supplied per-request key (Settings) overrides this |
 | `ESV_CACHE_DIR` | Optional | Disk cache for fetched ESV verses. Defaults to `<repo>/data/bible-cache/esv` |
+| `ALLOW_REMOTE_OPERATOR` | Optional | Set to `true` to disable listener mode's bare-IP redirect (see "Listener mode" above), so `/` and `/live` stay reachable from a non-loopback device |
 
 Client-supplied keys (from Settings) override server env keys per-request.
 
