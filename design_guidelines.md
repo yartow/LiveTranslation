@@ -2,141 +2,93 @@
 
 ## Design Approach
 
-**Selected Framework:** Material Design (Mobile-First)
-**Rationale:** Content-focused utility app requiring exceptional readability, clear visual feedback, and mobile optimization. Material Design's emphasis on content hierarchy, responsive components, and touch-friendly interactions perfectly suits this real-time transcription tool.
+**Component library:** shadcn/ui ("new-york" style) on top of Radix UI primitives, styled with Tailwind CSS. All UI primitives (`Button`, `Dialog`, `Select`, `Switch`, `Card`, etc.) live in `client/src/components/ui/` and should be reused rather than hand-rolled — see CLAUDE.md's design principles.
+
+**Rationale:** A content-focused utility app needing exceptional readability, clear state feedback, and mobile-first, one-handed operation. shadcn/ui gives accessible, unstyled-by-default Radix primitives that compose cleanly with Tailwind, without importing a heavier design framework.
 
 ## Core Design Principles
 
-1. **Readability First:** Large, legible typography for extended reading during sermons
-2. **Minimal Distraction:** Clean interface that doesn't compete with the spiritual/educational content
-3. **Instant Feedback:** Clear visual indicators for recording, processing, and translation states
-4. **One-Handed Operation:** All controls accessible within thumb reach on mobile devices
+1. **Readability first** — large, legible typography for extended reading during sermons.
+2. **Minimal distraction** — clean, flat interface (no drop shadows — see Elevation below) that doesn't compete with the spiritual/educational content.
+3. **Instant feedback** — clear visual indicators for recording, processing, and translation states.
+4. **One-handed, mobile-first operation** — primary controls (record button, export, history) live in a control bar fixed to the bottom of the viewport, within thumb reach; the settings dialog and other secondary controls are reachable from a header.
 
 ## Typography System
 
-**Primary Font:** Roboto (via Google Fonts CDN)
-**Secondary Font:** Roboto Mono (for technical status indicators)
+**Font:** Avenir Next (`--font-sans` / `--font-mono` in `client/src/index.css`, configured in `tailwind.config.ts`), falling back to `-apple-system, BlinkMacSystemFont, sans-serif`.
 
-Hierarchy:
-- App Title: text-xl font-medium (24px)
-- Transcribed Text: text-lg font-normal leading-relaxed (18px, generous line height)
-- Translated Text: text-base font-normal leading-relaxed (16px)
-- Controls/Labels: text-sm font-medium (14px)
-- Status Indicators: text-xs font-mono (12px)
+Use Tailwind's default type scale (`text-xs` through `text-xl`) with `font-medium`/`font-normal` as needed; there is no separate serif family in active use (`--font-serif` exists as a shadcn default but isn't referenced by app UI).
+
+## Color & Theming
+
+All color is driven by HSL CSS custom properties in `client/src/index.css`, mapped into Tailwind's `colors` config (`background`, `foreground`, `card`, `popover`, `primary`, `secondary`, `muted`, `accent`, `destructive`, `border`, `ring`, plus `chart-1..5` and `sidebar*`). Light values live under `:root`, dark values under `.dark` (class-based dark mode, `darkMode: ["class"]` in `tailwind.config.ts`) — never hardcode a hex/RGB color in a component; use the semantic Tailwind classes (`bg-background`, `text-muted-foreground`, `border-border`, etc.) so both themes stay correct automatically.
+
+A small set of literal status colors exist outside the semantic palette for things that are always the same color regardless of theme: `status.online/away/busy/offline` (chart/presence-style indicators) and ad hoc `bg-red-500` / `bg-yellow-400` / `bg-green-500` for the microphone input-level meter and the recording-pulse dot.
+
+**Dark/light theme** — automatic detection with a manual toggle (existing app behavior; do not remove).
+
+## Elevation
+
+The shadow scale in `index.css` (`--shadow-xs` through `--shadow-2xl`) is defined but set to effectively **zero alpha** — this is a deliberately flat design. Separate surfaces with `border` (`border-border`) and background contrast (`bg-card` vs `bg-background`), not with drop shadows. The one intentional exception is `backdrop-blur-sm` + semi-transparent background (`bg-background/95`) on elements that float over scrolling content, e.g. the bottom control bar and the settings/export dialogs.
+
+## Border Radius
+
+Defined in `tailwind.config.ts`: `lg` = 9px, `md` = 6px, `sm` = 3px (`--radius: .5rem` base in `index.css`). Use `rounded-lg` for cards/panels/buttons, `rounded-md` for smaller controls, `rounded-full` for pills/badges/the record button.
 
 ## Layout System
 
-**Spacing Units:** Tailwind units of 2, 4, 6, and 8 (e.g., p-4, mb-6, gap-8)
-**Mobile Container:** Full width with px-4 side padding
-**Content Max Width:** No max-width constraint (full mobile screen usage)
+**Mobile container:** full width, no max-width constraint on the primary transcription view (`max-w-sm mx-auto` is used specifically to center the bottom control row's icon buttons around the record button, not the page as a whole).
 
-Vertical Structure:
-- Header: py-4 (fixed position, minimal height)
-- Control Panel: p-4 (language selector, recording button)
-- Transcription Display: flex-1 (takes remaining viewport height)
-- Bottom Padding: pb-20 (safe area for mobile devices)
+**Dialog sizing:** `w-full max-w-[calc(100vw-2rem)] sm:max-w-3xl` — overrides shadcn's `max-w-lg` default so dialogs (Settings, Export) use available width on mobile while staying readable on desktop. Apply this to any new `Dialog`/`DialogContent`. Note `DialogContent` is `display: grid` (shadcn default): a grid item's automatic minimum width defaults to its content's min-content size, so an unbreakable long string inside (e.g. a masked API key) can silently inflate the dialog past its max-width, clipped by `overflow-x-hidden` instead of truncating — give the content wrapper `min-w-0` to prevent this (see `SettingsDialog.tsx`).
 
-## Component Library
-
-### Header Bar
-- Sticky positioning at top
-- App title centered
-- Minimal height (h-14)
-- Subtle bottom border for separation
-
-### Control Panel
-- Language selector: Full-width dropdown with large touch target (h-12)
-- Record button: Large circular FAB (floating action button), h-16 w-16
-- Position: Centered, prominent placement
-- Visual states: Idle (outline), Recording (filled with pulse animation), Processing (spinner)
-
-### Transcription Display Area
-- Two distinct sections with clear visual separation:
-  1. Original Transcription (top section)
-  2. Translated Text (bottom section)
-- Each section includes:
-  - Small label header (e.g., "Original" / "Translation")
-  - Scrollable text container with generous padding (p-6)
-  - Auto-scroll to latest content
-  - Subtle divider between sections
-
-### Text Containers
-- Rounded corners: rounded-lg
-- Internal padding: p-6
-- Minimum height: min-h-[120px] per section
-- Overflow: Auto-scroll with smooth scrolling behavior
-
-### Recording Indicator
-- Small pill-shaped badge
-- Positioned near top-right of header
-- Pulsing animation when active
-- Text: "Recording" with dot indicator
-
-### Language Selector
-- Native select dropdown with custom styling
-- Common languages: English, Spanish, French, German, Portuguese, Italian, Chinese, Arabic, Hindi
-- Large touch target: h-12
-- Border radius: rounded-lg
-
-## Interaction Patterns
-
-**Recording Flow:**
-1. User taps large circular record button
-2. Button fills, pulses gently
-3. "Recording" badge appears
-4. Text begins appearing in transcription area
-5. Translation appears shortly after with subtle fade-in
-
-**Visual Feedback:**
-- Record button: Scale transform on press (scale-95)
-- Processing state: Gentle rotating spinner overlay
-- New text: Fade-in effect (duration-300)
-- Language change: Brief loading state
-
-## Spacing & Rhythm
-
-**Vertical Spacing:**
-- Between header and controls: mb-6
-- Between control elements: gap-4
-- Between transcription sections: gap-6
-- Text content padding: p-6
-
-**Horizontal Spacing:**
-- Screen edges: px-4
-- Between grouped elements: gap-2
-- Button internal padding: px-6
+Structural pattern seen throughout `Home.tsx` and `SermonMode.tsx`:
+- A **sticky/fixed header row** (`border-b border-border`) for page-level controls (language pair, mode toggles).
+- A **flexible content area** (`flex-1 overflow-hidden`) for the transcription/translation panes or the sermon-mode segment grid.
+- A **fixed bottom control bar** (`fixed bottom-0 left-0 right-0 border-t border-border bg-background/95 backdrop-blur-sm`) holding the record button flanked by secondary actions (export, session history) — this is the actual "thumb reach" control panel, not a floating centered FAB.
 
 ## Icons
 
-**Icon Library:** Material Icons (via CDN)
-**Usage:**
-- Microphone icon for record button
-- Globe icon for language selector
-- Alert icon for error states
+**Icon library:** [lucide-react](https://lucide.dev) exclusively — do not introduce Material Icons or any other icon set. Common icons in use: `Mic`/record state icons, `ArrowLeftRight` (swap languages), `Download` (export), `History` (session history), `AlertCircle`/`AlertTriangle` (error / warning states), `Loader2` (processing, animated via `animate-spin`), `ChevronUp`/`ChevronDown`, `RefreshCw`, `Clock`, `Wand2` (Improve button).
+
+Icons that need a native tooltip must be wrapped in a `<span title="...">` rather than passed a `title` prop directly — Lucide's `LucideProps` doesn't accept one.
+
+## Interaction Patterns
+
+**Recording flow:**
+1. User taps the record button in the fixed bottom bar.
+2. Recording state is reflected via `RecordButton`'s `isRecording`/`isProcessing` props (icon/color change, pulsing red dot elsewhere in the header for "live" status).
+3. Transcribed text streams into the transcription pane; a grey "preview" shows the raw/uncorrected partial before correction+translation resolves.
+4. Translated text appears with a brief fade-in once available.
+
+**Visual feedback:**
+- Processing state: `Loader2` with `animate-spin`.
+- Live/recording indicator: `animate-ping` + solid dot pair (see the header recording badge).
+- New text: fade-in transitions (`transition-colors`/`duration-300`-class utilities), not custom animation code.
+- Audio input level: an 8-bar level meter (green → yellow → red as it approaches/hits clipping) in the bottom control bar.
+
+## RTL Support
+
+Right-to-left layout (Arabic, Farsi) is **per-pane**, not a page-wide `dir` flip: each transcription/translation pane independently receives `isRTL={getLanguageRTL(lang)}` based on its own current language, since source and target languages can each independently be RTL or LTR at the same time.
 
 ## Accessibility
 
-- Minimum touch target: 44x44px for all interactive elements
-- High contrast text (WCAG AA compliant)
-- Clear focus indicators for keyboard navigation
-- ARIA labels for recording states
-- Screen reader announcements for transcription updates
+- Minimum touch target: 44×44px for interactive controls.
+- `aria-label` on icon-only buttons (export, history, retry, refresh) — see any `Button variant="ghost" size="icon"` usage in `Home.tsx`/`SegmentRow.tsx` for the pattern.
+- High-contrast text via the semantic color tokens (both themes are tuned for WCAG AA).
+- Screen-reader-relevant state (errors, glossary warnings) uses `aria-label`, not color alone.
 
 ## Mobile Optimization
 
-- Fixed header to maintain context while scrolling
-- Sticky control panel for easy access
-- Safe area consideration for notched devices (pb-20)
-- Landscape mode: Side-by-side layout for original/translation
-- Portrait mode: Stacked layout (primary use case)
+- Fixed header and fixed bottom control bar keep primary controls reachable while the content area scrolls independently.
+- Safe-area padding for notched devices where the bottom bar meets the viewport edge.
+- Landscape vs. portrait: panes may lay out side-by-side or stacked depending on available width — check the current `flex-col`/`md:flex-row` breakpoints in the component before assuming one or the other.
 
 ## Performance Considerations
 
-- Virtualized scrolling for long transcriptions
-- Debounced text updates to prevent UI jank
-- Lazy loading of translation display
-- Minimal animations (only for state changes)
+- Debounced/batched text updates to avoid UI jank during streaming transcription.
+- Sermon mode's `SegmentRow` is `memo`-ized on object identity so appending or translating one segment does not re-render unrelated rows (see CLAUDE.md's "Sermon mode" section).
+- Minimal animation — reserved for state changes (recording pulse, spinners, fade-in), not decorative motion.
 
-## No Images Required
+## No Decorative Images
 
 This is a functional utility application with no hero images or decorative graphics. Focus remains entirely on text clarity and control accessibility.

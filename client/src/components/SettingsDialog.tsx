@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import LanguageSelector from '@/components/LanguageSelector';
 import {
   Dialog,
@@ -20,7 +20,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/select';
-import type { AppSettings, TranscriptionProvider, TranslationProvider, ImprovementProvider, LocalWhisperModel, DeviceProfile } from '@/hooks/useSettings';
+import type { AppSettings, TranscriptionProvider, TranslationProvider, ImprovementProvider, LocalWhisperModel, DeviceProfile, SermonTranslationProvider, SermonBibleVersion, SermonScriptureFallback } from '@/hooks/useSettings';
 import { maskKey } from '@/lib/mask-key';
 
 interface SettingsDialogProps {
@@ -146,6 +146,189 @@ function ApiKeyField({ label, placeholder, description, value, onChange, keyPref
   );
 }
 
+// Mirrors server/lib/glossary-store.ts's GlossaryDiagnostics + the
+// stale/available fields getGlossaryStatus() adds — kept as a local type
+// rather than imported since client and server share no code (see
+// server/lib/sermon-prompt.ts's header comment for why).
+interface GlossaryStatus {
+  loaded: boolean;
+  version: string;
+  csv: { name: string; exists: boolean; totalRows: number; fixedRows: number; contextRows: number; repairedRows: number; droppedRows: number };
+  prompt: { name: string; exists: boolean; chars: number };
+  warnings: string[];
+  errors: string[];
+  estimatedTokens: number;
+  stale: boolean;
+  available: { csv: string[]; md: string[] };
+}
+
+interface GlossaryPanelProps {
+  settings: AppSettings;
+  onUpdate: (updates: Partial<AppSettings>) => void;
+  isOpen: boolean;
+}
+
+function GlossaryPanel({ settings, onUpdate, isOpen }: GlossaryPanelProps) {
+  const [status, setStatus] = useState<GlossaryStatus | null>(null);
+  const [isReloading, setIsReloading] = useState(false);
+  const [showWarnings, setShowWarnings] = useState(false);
+  const [fetchError, setFetchError] = useState('');
+
+  const fetchStatus = useCallback(async () => {
+    try {
+      const params = new URLSearchParams({ csv: settings.sermonGlossaryCsv, prompt: settings.sermonDisambiguationPrompt });
+      const res = await fetch(`/api/sermon/glossary/status?${params}`);
+      if (!res.ok) throw new Error(`status ${res.status}`);
+      setStatus(await res.json());
+      setFetchError('');
+    } catch {
+      setFetchError('Kon woordenlijst-status niet ophalen.');
+    }
+  }, [settings.sermonGlossaryCsv, settings.sermonDisambiguationPrompt]);
+
+  useEffect(() => {
+    if (isOpen && settings.sermonGlossaryEnabled) fetchStatus();
+  }, [isOpen, settings.sermonGlossaryEnabled, fetchStatus]);
+
+  async function handleReload() {
+    setIsReloading(true);
+    try {
+      const res = await fetch('/api/sermon/glossary/reload', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ csv: settings.sermonGlossaryCsv, prompt: settings.sermonDisambiguationPrompt }),
+      });
+      if (res.ok) { setStatus(await res.json()); setFetchError(''); }
+      else setFetchError('Herladen mislukt.');
+    } catch {
+      setFetchError('Herladen mislukt.');
+    } finally {
+      setIsReloading(false);
+    }
+  }
+
+  if (!settings.sermonGlossaryEnabled) return null;
+
+  return (
+    <div className="space-y-3">
+      <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+        <div className="space-y-1">
+          <Label className="text-xs font-medium">CSV-bestand</Label>
+          <Select value={settings.sermonGlossaryCsv} onValueChange={(v) => onUpdate({ sermonGlossaryCsv: v })}>
+            <SelectTrigger className="h-8 text-xs" data-testid="select-glossary-csv">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              {(status?.available.csv ?? [settings.sermonGlossaryCsv]).map((name) => (
+                <SelectItem key={name} value={name}>{name}</SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        </div>
+        <div className="space-y-1">
+          <Label className="text-xs font-medium">Disambiguatie-prompt</Label>
+          <Select value={settings.sermonDisambiguationPrompt} onValueChange={(v) => onUpdate({ sermonDisambiguationPrompt: v })}>
+            <SelectTrigger className="h-8 text-xs" data-testid="select-glossary-prompt">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              {(status?.available.md ?? [settings.sermonDisambiguationPrompt]).map((name) => (
+                <SelectItem key={name} value={name}>{name}</SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        </div>
+      </div>
+
+      <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+        <div className="space-y-1">
+          <Label className="text-xs font-medium">Doelvertaling</Label>
+          <Select value={settings.sermonBibleVersion} onValueChange={(v) => onUpdate({ sermonBibleVersion: v as SermonBibleVersion })}>
+            <SelectTrigger className="h-8 text-xs" data-testid="select-bible-version">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="KJV">KJV</SelectItem>
+              <SelectItem value="ESV">ESV</SelectItem>
+              <SelectItem value="NASB">NASB</SelectItem>
+              <SelectItem value="NKJV">NKJV</SelectItem>
+            </SelectContent>
+          </Select>
+        </div>
+        <div className="flex items-center justify-between">
+          <Label htmlFor="glossary-deity-capitals" className="text-xs font-medium cursor-pointer">
+            Hoofdletters voor God (He/Him/His)
+          </Label>
+          <Switch
+            id="glossary-deity-capitals"
+            checked={settings.sermonDeityCapitals}
+            onCheckedChange={(checked) => onUpdate({ sermonDeityCapitals: checked })}
+          />
+        </div>
+      </div>
+
+      <div className="flex items-center justify-between">
+        <Label htmlFor="glossary-warnings" className="text-xs font-medium cursor-pointer">
+          Woordenlijst-waarschuwingen tonen
+        </Label>
+        <Switch
+          id="glossary-warnings"
+          checked={settings.sermonGlossaryWarnings}
+          onCheckedChange={(checked) => onUpdate({ sermonGlossaryWarnings: checked })}
+        />
+      </div>
+
+      <div className="rounded-md border border-border bg-muted/40 px-3 py-2 space-y-1.5">
+        {fetchError && <p className="text-xs text-destructive">{fetchError}</p>}
+        {!fetchError && !status && <p className="text-xs text-muted-foreground">Status laden…</p>}
+        {status && !status.loaded && (
+          <p className="text-xs text-amber-500">
+            Geen woordenlijst geladen — er wordt vertaald zónder woordenlijst.
+            {status.errors[0] ? ` (${status.errors[0]})` : ''}
+          </p>
+        )}
+        {status && status.loaded && (
+          <>
+            <p className="text-xs text-muted-foreground">
+              {status.csv.fixedRows} vaste termen · {status.csv.contextRows} contextafhankelijk
+              {status.csv.repairedRows > 0 ? ` · ${status.csv.repairedRows} rijen hersteld` : ''}
+              {' · ~'}{status.estimatedTokens} tokens
+            </p>
+            {status.stale && (
+              <p className="text-xs text-amber-500">Bestand is gewijzigd op schijf sinds het laatst geladen is — herladen aanbevolen.</p>
+            )}
+            {status.warnings.length > 0 && (
+              <div>
+                <button
+                  type="button"
+                  className="text-xs text-amber-500 underline decoration-dotted"
+                  onClick={() => setShowWarnings((v) => !v)}
+                >
+                  ⚠ {status.warnings.length} inconsistenties {showWarnings ? '▴' : '▾'}
+                </button>
+                {showWarnings && (
+                  <ul className="mt-1 space-y-0.5 text-xs text-muted-foreground list-disc list-inside">
+                    {status.warnings.map((w, i) => <li key={i}>{w}</li>)}
+                  </ul>
+                )}
+              </div>
+            )}
+          </>
+        )}
+        <Button variant="outline" size="sm" onClick={handleReload} disabled={isReloading}>
+          {isReloading ? 'Herladen…' : 'Herladen'}
+        </Button>
+      </div>
+
+      <p className="text-xs text-muted-foreground italic">
+        Bestanden moeten in de glossary-map van de server staan (standaard <code>data/</code>,
+        instelbaar via de <code>GLOSSARY_DIR</code> omgevingsvariabele) — geen vrij pad, om te
+        voorkomen dat willekeurige bestanden op de server gelezen kunnen worden.
+      </p>
+    </div>
+  );
+}
+
 export default function SettingsDialog({ isOpen, onClose, settings, onUpdate, webGpuSupported }: SettingsDialogProps) {
   const hasOpenAIKey = settings.openaiApiKey.length > 0;
   const hasAnthropicKey = settings.anthropicApiKey.length > 0;
@@ -182,12 +365,21 @@ export default function SettingsDialog({ isOpen, onClose, settings, onUpdate, we
 
   return (
     <Dialog open={isOpen} onOpenChange={onClose}>
-      <DialogContent className="w-full max-w-[calc(100vw-2rem)] sm:max-w-2xl max-h-[90vh] overflow-y-auto overflow-x-hidden" data-testid="dialog-settings">
+      <DialogContent className="w-full max-w-[calc(100vw-2rem)] sm:max-w-3xl max-h-[90vh] overflow-y-auto overflow-x-hidden" data-testid="dialog-settings">
         <DialogHeader>
           <DialogTitle>Settings</DialogTitle>
         </DialogHeader>
 
-        <div className="space-y-6 py-2">
+        {/*
+          min-w-0 is load-bearing: DialogContent is `display: grid` (shadcn
+          default), and a CSS grid item's automatic minimum width defaults to
+          its content's min-content size, not 0 — so the long, unbreakable
+          masked API-key strings below (`whitespace-nowrap` <code> elements)
+          were inflating this grid item's column track past the dialog's own
+          max-width, silently clipped by DialogContent's overflow-x-hidden
+          instead of respecting their own flex-1/min-w-0/truncate styling.
+        */}
+        <div className="space-y-6 py-2 min-w-0">
 
           {/* ── API Keys ── */}
           <section className="space-y-4">
@@ -239,6 +431,22 @@ export default function SettingsDialog({ isOpen, onClose, settings, onUpdate, we
                   {!hasOpenAIKey && (
                     <p className="text-xs text-amber-600 dark:text-amber-400 mt-0.5">Enter an OpenAI API key above to enable.</p>
                   )}
+                </div>
+              </div>
+
+              {/* Local MLX Whisper — Apple Silicon only, no key/network needed */}
+              <div className="flex items-start gap-3 rounded-md border border-border p-3">
+                <RadioGroupItem value="mlx" id="t-mlx" className="mt-0.5" />
+                <div>
+                  <Label htmlFor="t-mlx" className="font-medium cursor-pointer">
+                    Local Whisper (MLX){' '}
+                    <span className="text-xs font-normal text-green-600 dark:text-green-400">free · offline</span>
+                  </Label>
+                  <p className="text-xs text-muted-foreground mt-0.5">
+                    Runs whisper-large-v3 on-device via mlx-whisper. Apple Silicon Macs only —
+                    requires the app's own server running locally with mlx-whisper installed.
+                    Fastest and most private option; no API key needed.
+                  </p>
                 </div>
               </div>
 
@@ -339,6 +547,44 @@ export default function SettingsDialog({ isOpen, onClose, settings, onUpdate, we
                   </p>
                   {!hasAnthropicKey && (
                     <p className="text-xs text-amber-600 dark:text-amber-400 mt-0.5">Enter an Anthropic API key above to enable.</p>
+                  )}
+                </div>
+              </div>
+
+              {/* Ollama — local LLM */}
+              <div className="flex items-start gap-3 rounded-md border border-border p-3">
+                <RadioGroupItem value="ollama" id="tr-ollama" className="mt-0.5" />
+                <div className="flex-1 min-w-0">
+                  <Label htmlFor="tr-ollama" className="font-medium cursor-pointer">
+                    Ollama (local){' '}
+                    <span className="text-xs font-normal text-green-600 dark:text-green-400">free · offline</span>
+                  </Label>
+                  <p className="text-xs text-muted-foreground mt-0.5">
+                    Translate using a local model via Ollama. Requires Ollama running on your machine.
+                  </p>
+                  {settings.translationProvider === 'ollama' && (
+                    <div className="mt-2 space-y-2">
+                      <div>
+                        <Label className="text-xs text-muted-foreground">Ollama base URL</Label>
+                        <Input
+                          type="text"
+                          value={settings.ollamaBaseUrl}
+                          onChange={(e) => onUpdate({ ollamaBaseUrl: e.target.value })}
+                          placeholder="http://localhost:11434"
+                          className="mt-1 h-8 text-xs"
+                        />
+                      </div>
+                      <div>
+                        <Label className="text-xs text-muted-foreground">Model name</Label>
+                        <Input
+                          type="text"
+                          value={settings.ollamaModel}
+                          onChange={(e) => onUpdate({ ollamaModel: e.target.value })}
+                          placeholder="qwen2.5:14b"
+                          className="mt-1 h-8 text-xs"
+                        />
+                      </div>
+                    </div>
                   )}
                 </div>
               </div>
@@ -763,6 +1009,234 @@ export default function SettingsDialog({ isOpen, onClose, settings, onUpdate, we
                   </div>
                 ))}
               </div>
+            )}
+          </section>
+
+          {/* ── Sermon Mode ── */}
+          <section className="space-y-4">
+            <h3 className="text-sm font-semibold text-foreground border-b border-border pb-1">
+              Preekmodus
+            </h3>
+            <p className="text-xs text-muted-foreground">
+              Instellingen voor de dual-pane preekvertaler. Bracket-size en
+              stabiliteit werken direct door op een lopende sessie — geen herstart nodig.
+            </p>
+
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+              <div className="space-y-1">
+                <Label className="text-xs font-medium">Correctieprovider (ASR)</Label>
+                <Select
+                  value={settings.sermonCorrectionProvider}
+                  onValueChange={(v) => onUpdate({ sermonCorrectionProvider: v as SermonTranslationProvider })}
+                >
+                  <SelectTrigger className="h-8 text-xs" data-testid="select-sermon-correction-provider">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="openai">OpenAI GPT-4o-mini</SelectItem>
+                    <SelectItem value="claude">Claude Haiku</SelectItem>
+                    <SelectItem value="ollama">Ollama (lokaal)</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+              <div className="space-y-1">
+                <Label className="text-xs font-medium">Vertaalprovider</Label>
+                <Select
+                  value={settings.sermonTranslationProvider}
+                  onValueChange={(v) => onUpdate({ sermonTranslationProvider: v as SermonTranslationProvider })}
+                >
+                  <SelectTrigger className="h-8 text-xs" data-testid="select-sermon-translation-provider">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="openai">OpenAI GPT-4o-mini</SelectItem>
+                    <SelectItem value="claude">Claude Haiku</SelectItem>
+                    <SelectItem value="ollama">Ollama (lokaal)</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+            </div>
+
+            <div className="space-y-1.5">
+              <Label htmlFor="sermon-model" className="text-xs font-medium">Modelnaam</Label>
+              <Input
+                id="sermon-model"
+                type="text"
+                value={settings.sermonModel}
+                onChange={(e) => onUpdate({ sermonModel: e.target.value })}
+                placeholder="gpt-4o-mini"
+                className="h-8 text-xs"
+              />
+            </div>
+
+            <div className="flex items-center gap-3">
+              <Label htmlFor="sermon-max-latency" className="text-xs font-medium whitespace-nowrap w-40">
+                Max. vertraging (bracket-size)
+              </Label>
+              <input
+                id="sermon-max-latency"
+                type="range"
+                min={3}
+                max={20}
+                step={1}
+                value={settings.sermonMaxLatencySecs}
+                onChange={(e) => onUpdate({ sermonMaxLatencySecs: Number(e.target.value) })}
+                className="flex-1 accent-primary"
+              />
+              <span className="text-xs text-muted-foreground w-10 text-right">
+                {settings.sermonMaxLatencySecs}s
+              </span>
+            </div>
+
+            <div className="flex items-center gap-3">
+              <Label htmlFor="sermon-stability" className="text-xs font-medium whitespace-nowrap w-40">
+                Stabiliteits-debounce
+              </Label>
+              <input
+                id="sermon-stability"
+                type="range"
+                min={300}
+                max={5000}
+                step={100}
+                value={settings.sermonStabilityMs}
+                onChange={(e) => onUpdate({ sermonStabilityMs: Number(e.target.value) })}
+                className="flex-1 accent-primary"
+              />
+              <span className="text-xs text-muted-foreground w-14 text-right">
+                {settings.sermonStabilityMs} ms
+              </span>
+            </div>
+
+            <div className="grid grid-cols-2 gap-3">
+              <div className="flex items-center gap-2">
+                <Label htmlFor="sermon-context-before" className="text-xs font-medium whitespace-nowrap">
+                  Context vóór
+                </Label>
+                <Input
+                  id="sermon-context-before"
+                  type="number"
+                  min={0}
+                  max={5}
+                  value={settings.sermonContextBefore}
+                  onChange={(e) => {
+                    const v = parseInt(e.target.value, 10);
+                    if (!Number.isNaN(v)) onUpdate({ sermonContextBefore: Math.max(0, Math.min(5, v)) });
+                  }}
+                  className="w-16 text-xs text-center"
+                />
+              </div>
+              <div className="flex items-center gap-2">
+                <Label htmlFor="sermon-context-after" className="text-xs font-medium whitespace-nowrap">
+                  Context ná
+                </Label>
+                <Input
+                  id="sermon-context-after"
+                  type="number"
+                  min={0}
+                  max={3}
+                  value={settings.sermonContextAfter}
+                  onChange={(e) => {
+                    const v = parseInt(e.target.value, 10);
+                    if (!Number.isNaN(v)) onUpdate({ sermonContextAfter: Math.max(0, Math.min(3, v)) });
+                  }}
+                  className="w-16 text-xs text-center"
+                />
+              </div>
+            </div>
+
+            <div className="flex items-center justify-between">
+              <div>
+                <Label htmlFor="sermon-auto-translate" className="font-medium cursor-pointer text-sm">
+                  Automatisch vertalen
+                </Label>
+                <p className="text-xs text-muted-foreground mt-0.5">
+                  Nieuwe zinnen automatisch vertalen zodra ze stabiel zijn. Refresh werkt altijd, ook uit.
+                </p>
+              </div>
+              <Switch
+                id="sermon-auto-translate"
+                checked={settings.sermonAutoTranslate}
+                onCheckedChange={(checked) => onUpdate({ sermonAutoTranslate: checked })}
+              />
+            </div>
+
+            <p className="text-xs text-muted-foreground italic">
+              Preekmodus forceert tijdens opnemen voice-activity-detection chunking met overlap 0
+              (i.p.v. de audio-instellingen hierboven) — zo landen chunkgrenzen tussen woorden.
+            </p>
+          </section>
+
+          {/* ── Preekmodus — woordenlijst ── */}
+          <section className="space-y-4">
+            <div className="flex items-center justify-between border-b border-border pb-1">
+              <h3 className="text-sm font-semibold text-foreground">
+                Preekmodus — woordenlijst
+              </h3>
+              <Switch
+                checked={settings.sermonGlossaryEnabled}
+                onCheckedChange={(checked) => onUpdate({ sermonGlossaryEnabled: checked })}
+              />
+            </div>
+            <p className="text-xs text-muted-foreground">
+              Bestandsgebaseerde theologische woordenlijst + disambiguatie-instructie, opgebouwd
+              als stabiel vertaalprefix (zie de "Theological Glossary" hierboven voor de vrije-tekst
+              variant, gebruikt zolang deze woordenlijst uit staat of niet geladen kan worden).
+            </p>
+            <GlossaryPanel settings={settings} onUpdate={onUpdate} isOpen={isOpen} />
+          </section>
+
+          {/* ── Preekmodus — Schriftcitaten ── */}
+          <section className="space-y-4">
+            <div className="flex items-center justify-between border-b border-border pb-1">
+              <h3 className="text-sm font-semibold text-foreground">
+                Preekmodus — Schriftcitaten
+              </h3>
+              <Switch
+                checked={settings.sermonScriptureEnabled}
+                onCheckedChange={(checked) => onUpdate({ sermonScriptureEnabled: checked })}
+                data-testid="switch-scripture-enabled"
+              />
+            </div>
+            <p className="text-xs text-muted-foreground">
+              Herkent een Bijbelreferentie ("Johannes 3:16") in de brontekst en vervangt een
+              woordelijk voorgelezen vers door de exacte Engelse verstekst i.p.v. een
+              model-vertaling — gemarkeerd als <code>SCRIPTURE</code> in de segmentrij. Parafraseert
+              de prediker het vers, dan wordt zíjn formulering gewoon vertaald.
+            </p>
+
+            {settings.sermonScriptureEnabled && (
+              <>
+                <ApiKeyField
+                  label="ESV API Key"
+                  placeholder="uw ESV API-sleutel"
+                  description="Voorkeursbron voor de verstekst — gratis voor niet-commercieel gebruik via api.esv.org. Zonder sleutel (of bij een mislukte lookup) wordt teruggevallen op de gebundelde King James Version."
+                  value={settings.esvApiKey}
+                  onChange={(v) => onUpdate({ esvApiKey: v })}
+                />
+
+                <div className="space-y-1">
+                  <Label className="text-xs font-medium">Als ESV niet beschikbaar is</Label>
+                  <Select
+                    value={settings.sermonScriptureFallback}
+                    onValueChange={(v) => onUpdate({ sermonScriptureFallback: v as SermonScriptureFallback })}
+                  >
+                    <SelectTrigger className="h-8 text-xs" data-testid="select-scripture-fallback">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="kjv">Terugvallen op King James Version (aanbevolen)</SelectItem>
+                      <SelectItem value="none">Niet vervangen — gewoon vertalen als model-tekst</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
+
+                <p className="text-xs text-muted-foreground italic">
+                  Scripture quotations marked ESV are from the ESV® Bible (The Holy Bible, English
+                  Standard Version®), copyright © 2001 by Crossway, a publishing ministry of Good
+                  News Publishers. Used by permission. All rights reserved. De King James Version
+                  is public domain.
+                </p>
+              </>
             )}
           </section>
 

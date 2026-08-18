@@ -9,7 +9,16 @@ export interface ChunkTranscriptionEvents {
   onAudioLevel?: (rms: number) => void;
 }
 
-export type TranslationProvider = 'openai' | 'claude' | 'none';
+export type TranslationProvider = 'openai' | 'claude' | 'ollama' | 'none';
+// Which service actually runs the speech-to-text step. 'mlx' is the local
+// mlx-whisper sidecar (Apple Silicon only) — same wire protocol as 'openai',
+// just routed to a different engine server-side.
+export type TranscriptionEngine = 'openai' | 'mlx';
+// 'translate' is the existing behaviour (correct + translate each chunk).
+// 'correct-only' is sermon mode's ASR path: correct punctuation/homophones
+// but never translate — translation happens later, per-sentence, with
+// context (see server/lib/sermon-translate.ts).
+export type OutputMode = 'translate' | 'correct-only';
 
 // Circular ring buffer keeping the last `capacity` float32 samples for overlap.
 class OverlapBuffer {
@@ -103,6 +112,60 @@ const TARGET_RATE = 16_000;
 const SCRIPT_PROCESSOR_FRAMES = 4096;
 const MIN_CHUNK_SAMPLES = TARGET_RATE; // 1 second minimum before committing
 
+// Speech-presence gate (see commitChunk). A frame counts as "voiced" once its
+// mean-abs amplitude clears whichever is higher: an absolute floor (so a
+// completely quiet/muted mic never counts), or a multiple of the room's
+// recently observed noise floor (so a chunk isn't kept alive by steady room
+// tone/hum). ABS_MIN_VOICED is set well below real speech at low gain —
+// measured against actual quiet speech and background noise — see
+// chunk-transcription.ts's header comment / CLAUDE.md for the measurements
+// that produced these numbers.
+const ABS_MIN_VOICED = 0.0012;
+const NOISE_FLOOR_RATIO = 2.5;
+// A chunk is kept if EITHER its longest unbroken run of voiced frames
+// reaches MIN_SPEECH_RUN_MS, OR its total voiced time (summed across the
+// whole chunk, runs need not be contiguous) reaches MIN_TOTAL_VOICED_MS.
+// The longest-run test alone would risk dropping a short word like "Amen"
+// or "Ja" — plosive/fricative consonants have brief low-energy gaps even
+// within one spoken word, which can break a "continuous" run under 250ms
+// despite the word clearly containing real speech overall. The OR'd total
+// catches that case. Both are deliberately generous: false negatives here
+// (dropping real speech) are worse than false positives (sending noise,
+// which the server-side artifact blocklist then catches).
+const MIN_SPEECH_RUN_MS = 250;
+const MIN_TOTAL_VOICED_MS = 400;
+// Rate at which the adaptive noise floor is allowed to rise per frame when
+// the current frame is louder than the tracked floor. The floor tracks
+// DOWN instantly (any quieter frame becomes the new floor immediately) but
+// rises slowly, so a burst of speech doesn't drag the floor up with it —
+// only sustained loud room noise does, over several seconds.
+const NOISE_FLOOR_RISE_RATE = 0.01;
+// Fallback if the server's `stop_complete` ack (see stop() below) never
+// arrives — e.g. a wedged provider call. Comfortably above any single
+// chunk's transcription+correction timeouts server-side.
+const STOP_DRAIN_TIMEOUT_MS = 20_000;
+
+// Pure decision functions for the speech-presence gate, extracted and
+// exported so the gate logic is testable without a real AudioContext/
+// getUserMedia (this file otherwise only runs in a browser). See the
+// constants above for the rationale behind each threshold.
+
+/** Tracks the noise floor down instantly, up slowly (see NOISE_FLOOR_RISE_RATE). */
+export function updateNoiseFloor(current: number, meanAbs: number): number {
+  if (current === 0 || meanAbs < current) return meanAbs;
+  return current + (meanAbs - current) * NOISE_FLOOR_RISE_RATE;
+}
+
+/** Whether one frame's mean-abs amplitude counts as voiced against the current noise floor. */
+export function isFrameVoiced(meanAbs: number, noiseFloor: number): boolean {
+  return meanAbs > Math.max(ABS_MIN_VOICED, noiseFloor * NOISE_FLOOR_RATIO);
+}
+
+/** Whether a whole chunk has enough speech to keep, given its longest voiced run and total voiced time. */
+export function shouldKeepChunk(longestVoicedRunMs: number, totalVoicedMs: number): boolean {
+  return longestVoicedRunMs >= MIN_SPEECH_RUN_MS || totalVoicedMs >= MIN_TOTAL_VOICED_MS;
+}
+
 export class ChunkBasedTranscription {
   private ws: WebSocket | null = null;
   private mediaStream: MediaStream | null = null;
@@ -118,13 +181,20 @@ export class ChunkBasedTranscription {
   private chunkDurationMs: number;
   private chunkIndex = 0;
   private isRecording = false;
+  private engine: TranscriptionEngine;
   private translationProvider: TranslationProvider;
   private openaiApiKey: string;
+  private ollamaBaseUrl: string;
+  private ollamaModel: string;
   private anthropicApiKey: string;
   private glossary: string;
   private sermonContext: string;
   private debugMode: boolean;
   private previousTranscript: string = '';
+  // 'correct-only' skips the translation step server-side and returns
+  // corrected-but-untranslated text via onTranslation(text, '', chunkIndex).
+  // Used by sermon mode — see server/lib/chunk-transcription.ts.
+  private outputMode: OutputMode = 'translate';
 
   // Audio pipeline config (runtime-adjustable)
   private normalizationGain: number = 1.0;
@@ -134,11 +204,25 @@ export class ChunkBasedTranscription {
 
   // VAD state
   private vadSilenceMs: number = 0;
-  private readonly frameDurationMs: number;
+  // Set from the constructor as a fallback, then corrected in
+  // startAudioCapture() once the AudioContext's real native sample rate is
+  // known — onaudioprocess frames are SCRIPT_PROCESSOR_FRAMES samples at the
+  // native rate (commonly 48kHz, ~85ms/frame), not at TARGET_RATE (16kHz,
+  // which would be 256ms/frame). Using the wrong rate here made vadSilenceMs
+  // accumulate ~3x too fast.
+  private frameDurationMs: number;
 
   // Chunk accumulation (16 kHz float32 samples)
   private chunkSamples: Float32Array[] = [];
   private chunkSampleCount: number = 0;
+  // Speech-presence gate state (see MIN_SPEECH_RUN_MS/MIN_TOTAL_VOICED_MS
+  // above). voicedRunMs/longestVoicedRunMs/totalVoicedMs reset every
+  // commit/discard; noiseFloor persists for the whole session — it's a
+  // property of the room, not of one chunk.
+  private voicedRunMs: number = 0;
+  private longestVoicedRunMs: number = 0;
+  private totalVoicedMs: number = 0;
+  private noiseFloor: number = 0;
   private overlapBuffer: OverlapBuffer;
 
   // Reconnect state
@@ -147,15 +231,21 @@ export class ChunkBasedTranscription {
   private reconnectAttempts = 0;
   private audioQueue: ArrayBuffer[] = [];
 
+  // Resolved when the server's 'stop_complete' message arrives — see stop().
+  private stopCompleteResolve: (() => void) | null = null;
+
   constructor(events: ChunkTranscriptionEvents, chunkDurationMs = 5000) {
     this.events = events;
     this.targetLanguage = 'nl';
     this.sourceLanguage = 'en';
     this.detectSpeakers = false;
     this.chunkDurationMs = chunkDurationMs;
+    this.engine = 'openai';
     this.translationProvider = 'openai';
     this.openaiApiKey = '';
     this.anthropicApiKey = '';
+    this.ollamaBaseUrl = 'http://localhost:11434';
+    this.ollamaModel = 'qwen2.5:14b';
     this.glossary = '';
     this.sermonContext = '';
     this.debugMode = false;
@@ -177,14 +267,20 @@ export class ChunkBasedTranscription {
     chunkOverlapMs = 500,
     useVADChunking = false,
     vadSilenceThresholdMs = 800,
+    engine: TranscriptionEngine = 'openai',
+    ollamaBaseUrl?: string,
+    ollamaModel?: string,
   ): Promise<void> {
     this.sourceLanguage = sourceLanguage;
     this.targetLanguage = targetLanguage;
     this.detectSpeakers = detectSpeakers;
     this.chunkIndex = 0;
+    this.engine = engine;
     this.translationProvider = translationProvider;
     this.openaiApiKey = openaiApiKey;
     this.anthropicApiKey = anthropicApiKey;
+    if (ollamaBaseUrl !== undefined) this.ollamaBaseUrl = ollamaBaseUrl;
+    if (ollamaModel !== undefined) this.ollamaModel = ollamaModel;
     this.glossary = glossary;
     this.sermonContext = sermonContext;
     this.debugMode = debugMode;
@@ -247,12 +343,24 @@ export class ChunkBasedTranscription {
       sourceLanguage: this.sourceLanguage,
       targetLanguage: this.targetLanguage,
       detectSpeakers: this.detectSpeakers,
+      engine: this.engine,
       translationProvider: this.translationProvider,
       openaiApiKey: this.openaiApiKey,
       anthropicApiKey: this.anthropicApiKey,
+      ollamaBaseUrl: this.ollamaBaseUrl,
+      ollamaModel: this.ollamaModel,
       glossary: this.glossary,
       sermonContext: this.sermonContext,
       debugMode: this.debugMode,
+      outputMode: this.outputMode,
+      // On a mid-session reconnect (reconnectWs() reuses this same message),
+      // this.chunkIndex has already advanced past 0 — the client keeps
+      // counting chunks across reconnects, so the server's fresh session
+      // must be told where to resume expecting indices from, or every chunk
+      // sent after a reconnect waits forever for indices that will never
+      // arrive (see server/lib/chunk-transcription.ts's nextExpectedChunk).
+      nextChunkIndex: this.chunkIndex,
+      previousTranscript: this.previousTranscript,
     };
   }
 
@@ -273,6 +381,9 @@ export class ChunkBasedTranscription {
             break;
           case 'debug':
             this.events.onDebug?.(message.message as string);
+            break;
+          case 'stop_complete':
+            this.stopCompleteResolve?.();
             break;
         }
       } catch (e) {
@@ -339,7 +450,10 @@ export class ChunkBasedTranscription {
 
     const nativeRate = this.audioContext.sampleRate;
     const ratio = nativeRate / TARGET_RATE;
-    this.frameDurationMs as number; // already set in constructor
+    // Correct the constructor's TARGET_RATE-based estimate now that the
+    // AudioContext's actual native rate is known — see the frameDurationMs
+    // field comment.
+    this.frameDurationMs = (SCRIPT_PROCESSOR_FRAMES / nativeRate) * 1000;
 
     this.source = this.audioContext.createMediaStreamSource(this.mediaStream);
     this.processor = this.audioContext.createScriptProcessor(SCRIPT_PROCESSOR_FRAMES, 1, 1);
@@ -370,6 +484,20 @@ export class ChunkBasedTranscription {
         this.vadSilenceMs += this.frameDurationMs;
       } else {
         this.vadSilenceMs = 0;
+      }
+
+      // Adaptive speech-presence gate (separate from the VAD cut-boundary
+      // logic above — see MIN_SPEECH_RUN_MS). Track the noise floor down
+      // instantly, up slowly, so steady room tone/hum settles the floor
+      // rather than being mistaken for speech chunk after chunk.
+      this.noiseFloor = updateNoiseFloor(this.noiseFloor, meanAbs);
+      const isVoiced = isFrameVoiced(meanAbs, this.noiseFloor);
+      if (isVoiced) {
+        this.voicedRunMs += this.frameDurationMs;
+        this.longestVoicedRunMs = Math.max(this.longestVoicedRunMs, this.voicedRunMs);
+        this.totalVoicedMs += this.frameDurationMs;
+      } else {
+        this.voicedRunMs = 0;
       }
 
       // Downsample to 16 kHz (nearest-neighbour)
@@ -407,6 +535,30 @@ export class ChunkBasedTranscription {
 
   private commitChunk(): void {
     if (this.chunkSampleCount === 0) return;
+
+    // A chunk is discarded only if it clears NEITHER speech test: no long
+    // enough continuous voiced run, AND not enough total voiced time either
+    // (see MIN_SPEECH_RUN_MS/MIN_TOTAL_VOICED_MS above). It's dead air, room
+    // tone, or a transient tick/click, none of which is real speech. This
+    // deliberately does NOT try to be the sole defence against hallucination:
+    // measurements (see CLAUDE.md / server/lib/asr-artifacts.ts) showed
+    // Whisper's own no_speech_prob cannot reliably distinguish quiet real
+    // speech from silence once a prompt is set, so a chunk that DOES clear
+    // this gate can still come back as a hallucinated caption artifact —
+    // that's caught server-side afterwards. This gate only needs to be
+    // conservative in one direction: never eat real speech.
+    if (!shouldKeepChunk(this.longestVoicedRunMs, this.totalVoicedMs)) {
+      this.chunkSamples = [];
+      this.chunkSampleCount = 0;
+      this.voicedRunMs = 0;
+      this.longestVoicedRunMs = 0;
+      this.totalVoicedMs = 0;
+      this.events.onDebug?.('Chunk discarded — no sustained speech detected');
+      return;
+    }
+    this.voicedRunMs = 0;
+    this.longestVoicedRunMs = 0;
+    this.totalVoicedMs = 0;
 
     const currentIndex = this.chunkIndex++;
 
@@ -480,6 +632,16 @@ export class ChunkBasedTranscription {
     this.vadSilenceMs = 0;
   }
 
+  // Set BEFORE start() to take effect on the initial 'start' handshake
+  // (that's how sermon mode uses it); also sendable mid-session for symmetry
+  // with the other runtime setters, though no caller currently needs that.
+  setOutputMode(mode: OutputMode): void {
+    this.outputMode = mode;
+    if (this.ws?.readyState === WebSocket.OPEN) {
+      this.ws.send(JSON.stringify({ type: 'config', outputMode: mode }));
+    }
+  }
+
   setPreviousTranscript(text: string): void {
     this.previousTranscript = text;
     if (this.ws?.readyState === WebSocket.OPEN) {
@@ -499,6 +661,8 @@ export class ChunkBasedTranscription {
     anthropicApiKey?: string,
     glossary?: string,
     sermonContext?: string,
+    ollamaBaseUrl?: string,
+    ollamaModel?: string,
   ): void {
     this.sourceLanguage = sourceLanguage;
     this.targetLanguage = targetLanguage;
@@ -507,6 +671,8 @@ export class ChunkBasedTranscription {
     if (openaiApiKey !== undefined) this.openaiApiKey = openaiApiKey;
     if (anthropicApiKey !== undefined) this.anthropicApiKey = anthropicApiKey;
     if (glossary !== undefined) this.glossary = glossary;
+    if (ollamaBaseUrl !== undefined) this.ollamaBaseUrl = ollamaBaseUrl;
+    if (ollamaModel !== undefined) this.ollamaModel = ollamaModel;
     if (sermonContext !== undefined) this.sermonContext = sermonContext;
 
     if (this.ws?.readyState === WebSocket.OPEN) {
@@ -518,6 +684,8 @@ export class ChunkBasedTranscription {
         translationProvider: this.translationProvider,
         openaiApiKey: this.openaiApiKey,
         anthropicApiKey: this.anthropicApiKey,
+        ollamaBaseUrl: this.ollamaBaseUrl,
+        ollamaModel: this.ollamaModel,
         glossary: this.glossary,
         sermonContext: this.sermonContext,
         previousTranscript: this.previousTranscript.slice(-300),
@@ -538,9 +706,6 @@ export class ChunkBasedTranscription {
     // Flush remaining buffered audio as the final chunk
     if (this.chunkSampleCount >= 100) this.commitChunk();
 
-    // Small delay to let the final send flush
-    await new Promise<void>(r => setTimeout(r, 100));
-
     this.processor?.disconnect();
     this.source?.disconnect();
     this.processor = null;
@@ -556,13 +721,30 @@ export class ChunkBasedTranscription {
       this.mediaStream = null;
     }
 
+    // Wait for the server to finish transcribing and deliver every chunk
+    // still in flight (including the one just committed above) before
+    // closing the socket. This used to be a fixed 100ms delay — far shorter
+    // than a single transcription call — which reliably lost the speaker's
+    // final sentence. The server's 'stop' handler now drains in-flight work
+    // and acks with 'stop_complete' (see chunk-transcription.ts) instead of
+    // aborting it; STOP_DRAIN_TIMEOUT_MS is a fallback in case that ack
+    // never arrives (e.g. a wedged provider).
     if (this.ws?.readyState === WebSocket.OPEN) {
-      this.ws.send(JSON.stringify({ type: 'stop' }));
-      this.ws.close();
+      const ws = this.ws;
+      await new Promise<void>((resolve) => {
+        const timeout = setTimeout(resolve, STOP_DRAIN_TIMEOUT_MS);
+        this.stopCompleteResolve = () => { clearTimeout(timeout); resolve(); };
+        ws.send(JSON.stringify({ type: 'stop' }));
+      });
+      this.stopCompleteResolve = null;
+      ws.close();
     }
     this.ws = null;
     this.audioQueue = [];
     this.chunkSamples = [];
     this.chunkSampleCount = 0;
+    this.voicedRunMs = 0;
+    this.longestVoicedRunMs = 0;
+    this.totalVoicedMs = 0;
   }
 }

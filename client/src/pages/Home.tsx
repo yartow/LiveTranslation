@@ -19,7 +19,6 @@ import SessionHistoryDialog from '@/components/SessionHistoryDialog';
 import { ChunkBasedTranscription } from '@/lib/chunk-based-transcription';
 import { BrowserSpeechTranscription } from '@/lib/browser-speech-transcription';
 import { StreamingTranscription } from '@/lib/streaming-transcription';
-import { countSentences } from '@/lib/text-utils';
 import { LocalWhisperTranscription } from '@/lib/local-whisper-transcription';
 import { useAudioQuality } from '@/hooks/useAudioQuality';
 import { saveSession } from '@/lib/session-db';
@@ -72,6 +71,24 @@ function splitLastTwo(text: string): [string, string] {
 
 export default function Home() {
   const { settings, updateSettings } = useSettings();
+
+  // In development, auto-fill API keys from server env vars so you don't have
+  // to retype them every reload. The endpoint returns 403 in production.
+  useEffect(() => {
+    if (import.meta.env.DEV) {
+      fetch('/api/dev-config')
+        .then(r => r.ok ? r.json() : null)
+        .then(data => {
+          if (!data) return;
+          const updates: Record<string, string> = {};
+          if (data.openaiApiKey && !settings.openaiApiKey) updates.openaiApiKey = data.openaiApiKey;
+          if (data.anthropicApiKey && !settings.anthropicApiKey) updates.anthropicApiKey = data.anthropicApiKey;
+          if (Object.keys(updates).length) updateSettings(updates);
+        })
+        .catch(() => {});
+    }
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
   const [sourceLanguage, setSourceLanguage] = useState(() => settings.defaultSourceLanguage || 'en');
   const [targetLanguage, setTargetLanguage] = useState(() => settings.defaultTargetLanguage || 'nl');
   const [isRecording, setIsRecording] = useState(false);
@@ -89,6 +106,9 @@ export default function Home() {
   const [modelLoadProgress, setModelLoadProgress] = useState(0);
   const [chunkDurationSecs, setChunkDurationSecs] = useState(5);
   const [debugLogs, setDebugLogs] = useState<string[]>([]);
+  const [debugPanelCollapsed, setDebugPanelCollapsed] = useState(true);
+  const [debugPanelHeight, setDebugPanelHeight] = useState(0);
+  const debugPanelRef = useRef<HTMLDivElement>(null);
   const [isImproving, setIsImproving] = useState(false);
   const [lookbackChars, setLookbackChars] = useState(() => settings.defaultLookbackChars);
   useEffect(() => { setLookbackChars(settings.defaultLookbackChars); }, [settings.defaultLookbackChars]);
@@ -103,6 +123,19 @@ export default function Home() {
       .then(a => setWebGpuSupported(a !== null))
       .catch(() => setWebGpuSupported(false));
   }, []);
+
+  // Measure the debug panel (header + body, whichever is currently rendered) so the
+  // text-display container below can reserve exactly that much bottom padding — the
+  // panel used to be a fixed overlay that simply covered the last line of text.
+  useEffect(() => {
+    const el = debugPanelRef.current;
+    if (!el) { setDebugPanelHeight(0); return; }
+    const observer = new ResizeObserver(([entry]) => {
+      setDebugPanelHeight(entry.contentRect.height);
+    });
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, [settings.debugMode, debugLogs.length, debugPanelCollapsed]);
 
   const [subtitleCurrent, setSubtitleCurrent] = useState('');
   const [subtitlePrevious, setSubtitlePrevious] = useState('');
@@ -119,7 +152,6 @@ export default function Home() {
   const pendingRetranslationRef = useRef(false);
   const previousTargetLanguageRef = useRef(targetLanguage);
   const previousDetectSpeakersRef = useRef(detectSpeakers);
-  const lastRetroactiveSentenceCountRef = useRef(0);
   const wakeLockRef = useRef<WakeLockSentinel | null>(null);
   const { toast } = useToast();
 
@@ -186,6 +218,8 @@ export default function Home() {
           s.anthropicApiKey,
           s.theologicalGlossary,
           sermonContextRef.current,
+          s.ollamaBaseUrl,
+          s.ollamaModel,
         );
       }
 
@@ -202,6 +236,8 @@ export default function Home() {
             translationProvider: s.translationProvider,
             openaiApiKey: s.openaiApiKey,
             anthropicApiKey: s.anthropicApiKey,
+            ollamaBaseUrl: s.ollamaBaseUrl,
+            ollamaModel: s.ollamaModel,
             glossary: s.theologicalGlossary || undefined,
             sermonContext: sermonContextRef.current || undefined,
           }),
@@ -224,6 +260,26 @@ export default function Home() {
 
     retranslateAll();
   }, [targetLanguage, detectSpeakers, isProcessing, isRetranslating]);
+
+  // Push translation settings (provider, keys, glossary) to the already-running
+  // backend so changes made mid-recording — e.g. switching to "Transcription
+  // only" — take effect on the next chunk instead of being silently queued
+  // until the session is stopped and restarted.
+  useEffect(() => {
+    if (!backendRef.current) return;
+    backendRef.current.updateConfig(
+      sourceLanguageRef.current,
+      targetLanguageRef.current,
+      detectSpeakersRef.current,
+      settings.translationProvider,
+      settings.openaiApiKey,
+      settings.anthropicApiKey,
+      settings.theologicalGlossary,
+      sermonContextRef.current,
+      settings.ollamaBaseUrl,
+      settings.ollamaModel,
+    );
+  }, [settings.translationProvider, settings.openaiApiKey, settings.anthropicApiKey, settings.theologicalGlossary, settings.ollamaBaseUrl, settings.ollamaModel]);
 
   const swapLanguages = useCallback(() => {
     setSourceLanguage(prev => { setTargetLanguage(prev); return targetLanguage; });
@@ -269,9 +325,13 @@ export default function Home() {
           accumulatedText: tailOriginal,
           targetLanguage: targetLanguageRef.current,
           detectSpeakers: detectSpeakersRef.current,
-          translationProvider: s.improvementProvider,
+          // Respect "Transcription only" — improvementProvider has no 'none' option,
+          // so without this override Improve would silently re-enable translation.
+          translationProvider: s.translationProvider === 'none' ? 'none' : s.improvementProvider,
           openaiApiKey: s.openaiApiKey,
           anthropicApiKey: s.anthropicApiKey,
+          ollamaBaseUrl: s.ollamaBaseUrl,
+          ollamaModel: s.ollamaModel,
           glossary: s.theologicalGlossary || undefined,
           sermonContext: sermonContextRef.current || undefined,
         }),
@@ -306,43 +366,6 @@ export default function Home() {
     localStorage.setItem('theme', next ? 'dark' : 'light');
   };
 
-  const performRetroactiveCorrection = useCallback(async () => {
-    if (transcriptionSegmentsRef.current.length === 0) return;
-
-    const allOriginalText = transcriptionSegmentsRef.current.map(s => s.original).join(' ');
-    const lang = targetLanguageRef.current;
-    const speakers = detectSpeakersRef.current;
-    const s = settingsRef.current;
-
-    try {
-      const response = await fetch('/api/retroactive-correct', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          accumulatedText: allOriginalText,
-          targetLanguage: lang,
-          detectSpeakers: speakers,
-          translationProvider: s.translationProvider,
-          openaiApiKey: s.openaiApiKey,
-          anthropicApiKey: s.anthropicApiKey,
-          glossary: s.theologicalGlossary || undefined,
-          sermonContext: sermonContextRef.current || undefined,
-        }),
-      });
-
-      if (!response.ok) throw new Error('Retroactive correction failed');
-
-      const data = await response.json();
-      transcriptionSegmentsRef.current = [{ original: data.correctedText, translated: data.translatedText }];
-      setOriginalText(data.correctedText);
-      setTranslatedText(data.translatedText);
-      applySubtitlesFromText(data.translatedText);
-    } catch (error) {
-      console.error('Retroactive correction error:', error);
-      toast({ title: 'Retroactive correction failed', description: 'Could not perform coherence check.', variant: 'destructive' });
-    }
-  }, [toast]);
-
   const startRecording = useCallback(async () => {
     // ── Pre-flight API key validation ─────────────────────────────────────────
     if (settings.translationProvider === 'claude' && !settings.anthropicApiKey?.trim()) {
@@ -370,7 +393,6 @@ export default function Home() {
       setSubtitlePrevious('');
       subtitleCurrentRef.current = '';
       transcriptionSegmentsRef.current = [];
-      lastRetroactiveSentenceCountRef.current = 0;
       sessionCostRef.current = 0;
       setSessionCost(0);
       setDebugLogs([]);
@@ -398,8 +420,9 @@ export default function Home() {
           setPreviewText('');
           transcriptionSegmentsRef.current.push({ original, translated });
           const newOriginal = transcriptionSegmentsRef.current.map(s => s.original).join(' ');
+          const newTranslated = transcriptionSegmentsRef.current.filter(s => s.translated).map(s => s.translated).join(' ');
           setOriginalText(newOriginal);
-          setTranslatedText(prev => prev + (prev ? ' ' : '') + translated);
+          setTranslatedText(newTranslated);
           setPreviewText('');
           // Keep Whisper context up-to-date for the next chunk
           if (backendRef.current instanceof ChunkBasedTranscription) {
@@ -418,16 +441,6 @@ export default function Home() {
           const whisperCost = s.transcriptionProvider === 'whisper' ? 0.006 * (chunkDurSecs / 60) : 0;
           sessionCostRef.current += chars * llmRate + whisperCost;
           setSessionCost(sessionCostRef.current);
-
-          const allText = transcriptionSegmentsRef.current.map(s => s.original).join(' ');
-          const totalSentences = countSentences(allText);
-          if (
-            totalSentences >= 5 &&
-            Math.floor(totalSentences / 5) > Math.floor(lastRetroactiveSentenceCountRef.current / 5)
-          ) {
-            lastRetroactiveSentenceCountRef.current = totalSentences;
-            performRetroactiveCorrection();
-          }
         },
         onDebug: (message: string) => { addDebugLog(message); },
         onError: (message: string) => {
@@ -498,11 +511,12 @@ export default function Home() {
           settings.theologicalGlossary,
           sermonContextRef.current,
         );
-      } else if (settings.transcriptionProvider === 'whisper') {
+      } else if (settings.transcriptionProvider === 'whisper' || settings.transcriptionProvider === 'mlx') {
         const chunkBackend = new ChunkBasedTranscription(events, chunkDurationSecs * 1000);
         backend = chunkBackend;
         backendRef.current = backend;
-        if (settings.debugMode) addDebugLog('Connecting to Whisper chunk transcription…');
+        const engine = settings.transcriptionProvider === 'mlx' ? 'mlx' : 'openai';
+        if (settings.debugMode) addDebugLog(`Connecting to ${engine === 'mlx' ? 'local MLX' : 'Whisper'} chunk transcription…`);
         await chunkBackend.start(
           sourceLanguage,
           targetLanguage,
@@ -517,6 +531,7 @@ export default function Home() {
           settings.chunkOverlapMs,
           settings.useVADChunking,
           settings.vadSilenceThresholdMs,
+          engine,
         );
       } else {
         // AssemblyAI real-time streaming (PCM16 over WebSocket)
@@ -558,7 +573,7 @@ export default function Home() {
         variant: 'destructive',
       });
     }
-  }, [sourceLanguage, targetLanguage, detectSpeakers, settings, chunkDurationSecs, toast, performRetroactiveCorrection, addDebugLog]);
+  }, [sourceLanguage, targetLanguage, detectSpeakers, settings, chunkDurationSecs, toast, addDebugLog]);
 
   const stopRecording = useCallback(async () => {
     if (!isRecording) return;
@@ -590,13 +605,21 @@ export default function Home() {
       ? 'Transcription only'
       : 'Translation';
 
-  const showOriginal = settings.displayContent === 'original' || settings.displayContent === 'both';
-  const showTranslation = settings.displayContent === 'translation' || settings.displayContent === 'both';
+  const translationDisabled = settings.translationProvider === 'none';
+  // In "Transcription only" mode there is nothing to show a translation panel for —
+  // always show Original and never show the translation box, regardless of displayContent.
+  const showOriginal = translationDisabled || settings.displayContent === 'original' || settings.displayContent === 'both';
+  const showTranslation = !translationDisabled && (settings.displayContent === 'translation' || settings.displayContent === 'both');
 
   const configSummary = [
-    `${getLanguageName(sourceLanguage)} → ${getLanguageName(targetLanguage)}`,
+    translationDisabled
+      ? `${getLanguageName(sourceLanguage)} (Transcription only)`
+      : `${getLanguageName(sourceLanguage)} → ${getLanguageName(targetLanguage)}`,
     settings.speechMode === 'monologue' ? 'Monologue' : 'Dialogue',
-    settings.transcriptionProvider === 'browser' ? 'Browser' : 'Whisper',
+    settings.transcriptionProvider === 'browser' ? 'Browser'
+      : settings.transcriptionProvider === 'transformers' ? 'Local Whisper'
+      : settings.transcriptionProvider === 'mlx' ? 'MLX'
+      : 'Whisper',
   ].join('  ·  ');
 
   return (
@@ -725,7 +748,7 @@ export default function Home() {
                 </div>
               )}
 
-              {settings.transcriptionProvider === 'whisper' && (
+              {(settings.transcriptionProvider === 'whisper' || settings.transcriptionProvider === 'mlx') && (
                 <div className="flex items-center gap-2">
                   <span className="text-sm text-muted-foreground">Interval</span>
                   <select
@@ -740,6 +763,7 @@ export default function Home() {
                     className="text-sm border border-input rounded-lg px-2 py-1.5 bg-background text-foreground disabled:opacity-50"
                     data-testid="select-chunk-duration"
                   >
+                    {settings.transcriptionProvider === 'mlx' && <option value={2}>2s</option>}
                     <option value={3}>3s</option>
                     <option value={5}>5s</option>
                     <option value={8}>8s</option>
@@ -754,6 +778,7 @@ export default function Home() {
             <p className="text-xs text-muted-foreground/60">
               {settings.transcriptionProvider === 'browser' ? 'Browser speech'
                 : settings.transcriptionProvider === 'transformers' ? 'Local Whisper'
+                : settings.transcriptionProvider === 'mlx' ? 'Local Whisper (MLX)'
                 : 'Whisper'}
               {' · '}
               {settings.translationProvider === 'none'
@@ -839,7 +864,16 @@ export default function Home() {
       )}
 
       {/* ── Text display ──────────────────────────────────────────────────── */}
-      <div className="flex-1 overflow-hidden flex flex-col pb-24">
+      {/* Bottom padding reserves space for the fixed action bar PLUS the debug
+          panel (when visible) — see debugPanelHeight above. A static pb-24 used
+          to only account for the action bar, so the debug panel would cover the
+          last line of text. */}
+      <div
+        className="flex-1 overflow-hidden flex flex-col"
+        style={{
+          paddingBottom: `calc(88px + env(safe-area-inset-bottom, 0px)${debugPanelHeight > 0 ? ` + ${debugPanelHeight}px + 12px` : ''})`,
+        }}
+      >
         {showOriginal && (
           <div className={`${showTranslation ? 'flex-1' : 'flex-[1]'} overflow-hidden ${showTranslation ? 'border-b border-border' : ''}`}>
             <TranscriptionDisplay
@@ -874,11 +908,26 @@ export default function Home() {
       </div>
 
       {/* ── Debug overlay ────────────────────────────────────────────────── */}
+      {/* Collapsed by default — only the header bar's height needs reserving
+          most of the time. Whichever state is rendered, debugPanelRef measures
+          it and the text-display container above reserves that much space. */}
       {settings.debugMode && debugLogs.length > 0 && (
-        <div className="fixed bottom-[88px] left-0 right-0 mx-4 z-10">
+        <div
+          ref={debugPanelRef}
+          className="fixed left-0 right-0 mx-4 z-10"
+          style={{ bottom: 'calc(88px + env(safe-area-inset-bottom, 0px))' }}
+        >
           <div className="rounded-lg border border-border bg-background/95 backdrop-blur-sm shadow-lg overflow-hidden">
             <div className="px-3 py-1.5 border-b border-border flex items-center justify-between">
-              <span className="text-xs font-semibold text-muted-foreground">Debug log</span>
+              <button
+                type="button"
+                onClick={() => setDebugPanelCollapsed(c => !c)}
+                className="flex items-center gap-1 text-xs font-semibold text-muted-foreground hover:text-foreground"
+                data-testid="button-debug-panel-toggle"
+              >
+                {debugPanelCollapsed ? <ChevronDown className="w-3 h-3" /> : <ChevronUp className="w-3 h-3" />}
+                Debug log ({debugLogs.length})
+              </button>
               <button
                 type="button"
                 onClick={() => setDebugLogs([])}
@@ -887,17 +936,22 @@ export default function Home() {
                 Clear
               </button>
             </div>
-            <div className="max-h-32 overflow-y-auto px-3 py-2 space-y-0.5">
-              {debugLogs.map((log, i) => (
-                <p key={i} className="text-xs font-mono text-muted-foreground leading-relaxed">{log}</p>
-              ))}
-            </div>
+            {!debugPanelCollapsed && (
+              <div className="max-h-32 overflow-y-auto px-3 py-2 space-y-0.5">
+                {debugLogs.map((log, i) => (
+                  <p key={i} className="text-xs font-mono text-muted-foreground leading-relaxed">{log}</p>
+                ))}
+              </div>
+            )}
           </div>
         </div>
       )}
 
       {/* ── Fixed bottom action bar ───────────────────────────────────────── */}
-      <div className="fixed bottom-0 left-0 right-0 border-t border-border bg-background/95 backdrop-blur-sm px-6 py-4">
+      <div
+        className="fixed bottom-0 left-0 right-0 border-t border-border bg-background/95 backdrop-blur-sm px-6 pt-4"
+        style={{ paddingBottom: 'calc(1rem + env(safe-area-inset-bottom, 0px))' }}
+      >
         <div className="flex items-center justify-between max-w-sm mx-auto">
           <div className="w-20">
             {quality.level > 0 && (

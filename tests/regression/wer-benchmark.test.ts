@@ -26,7 +26,7 @@ import {
 
 // ── Config ───────────────────────────────────────────────────────────────────
 
-const SERVER_URL = process.env.TEST_SERVER_URL ?? 'http://localhost:5000';
+const SERVER_URL = process.env.TEST_SERVER_URL ?? 'http://localhost:5001';
 const AUDIO_DIR = join(__dirname, '../fixtures/audio');
 const REF_DIR = join(__dirname, '../fixtures/reference');
 const RESULTS_DIR = join(__dirname, '../fixtures');

@@ -1,3 +1,5 @@
+import { sanitizeGlossary } from './prompt-safety';
+
 const LANGUAGE_NAMES: Record<string, string> = {
   en: 'English',
   es: 'Spanish',
@@ -69,20 +71,6 @@ function parseJsonResponse(
   }
 }
 
-// Sanitizes user-supplied glossary text before embedding it in a system prompt.
-// Strips backtick runs (prevents closing the data fence) and silently drops lines
-// that look like injected instructions so user content stays data-only.
-function sanitizeGlossary(raw: string): string {
-  const INJECTION_RE = /^\s*(ignore|forget|disregard|instead|override|system|assistant|human|user|new instruction|end of|stop|you are|do not|don't)/i;
-  return raw
-    .split('\n')
-    .map(line => line.trim())
-    .filter(Boolean)
-    .map(line => line.replace(/`+/g, "'"))     // close-fence prevention
-    .filter(line => !INJECTION_RE.test(line))  // drop injection attempts
-    .join('\n');
-}
-
 function buildContextSection(glossary?: string, sermonContext?: string): string {
   const parts: string[] = [];
   if (sermonContext?.trim()) parts.push(`\nSermon context: ${sermonContext.trim()}`);
@@ -129,6 +117,37 @@ Tasks:
     correctedText: result.correctedText || originalText,
     translatedText: result.translatedText ?? '',
   };
+}
+
+/** Sermon mode's ASR correction step via Claude — see openai.ts's correctTranscript for the full rationale. No translation, no paraphrasing. */
+export async function correctTranscriptWithClaude(
+  rawText: string,
+  targetLanguage: string,
+  apiKey: string,
+  glossary?: string,
+  previousTranscript?: string,
+  signal?: AbortSignal,
+): Promise<{ correctedText: string }> {
+  const contextSection = buildContextSection(glossary, undefined);
+  const tailSection = previousTranscript?.trim()
+    ? `\nEnd of the previous chunk, for continuity only — do not repeat or re-emit it: "${previousTranscript.trim().slice(-200)}"`
+    : '';
+
+  const system = `You are correcting raw speech-recognition output from a spoken sermon. Do NOT translate — the source language stays exactly as spoken (target language for later translation is ${LANGUAGE_NAMES[targetLanguage] ?? 'English'}; ignore that, it is informational only).${contextSection}${tailSection}
+
+CORRECTION RULES:
+1. Fix ASR homophones and near-misses using context (e.g. pray/prey, altar/alter, their/there/they're, word/world, profit/prophet)
+2. Correct spelling of proper nouns and theological terms
+3. Apply the glossary above — replace any transcribed word that sounds like a glossary term with the correct term
+4. This chunk is an arbitrary slice of continuous speech, cut on a pause — it may begin and end mid-sentence. Add punctuation and capitalisation only where the speech actually calls for it: if the chunk does not end on a finished sentence, leave it with NO terminating . ? or ! — do not invent one just to round it off — and if it does not begin a new sentence, do not capitalise the first word. A pause is not a sentence end; a preacher pauses mid-clause constantly. When in doubt between a comma and a full stop, use the comma — never split one spoken sentence into several short ones.
+5. Remove filler words, stutters, and false starts
+6. Do NOT paraphrase, summarise, reorder, or change the speaker's meaning or word choice beyond fixing the errors above
+7. If this chunk restates the tail of the previous chunk (see context above), drop the repeated words rather than emitting them twice
+8. Return ONLY valid JSON: { "correctedText": "..." }`;
+
+  const raw = await callClaude(system, `Raw transcription chunk: "${rawText}"`, apiKey, 512, signal);
+  const result = parseJsonResponse(raw, { correctedText: rawText });
+  return { correctedText: result.correctedText || rawText };
 }
 
 export async function retroactiveCorrectionWithClaude(
