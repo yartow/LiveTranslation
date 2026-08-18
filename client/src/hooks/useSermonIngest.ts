@@ -22,6 +22,11 @@ export interface SermonIngestArgs {
   glossary: string;
   debugMode: boolean;
   chunkDurationSecs?: number;
+  /** User's configured mic gain (settings.audioNormalizationGain). Sermon
+   *  mode used to hardcode this to 1.0 regardless of the setting, which
+   *  left a quiet mic under-amplified and more likely to fall under the
+   *  speech-presence gate in chunk-based-transcription.ts. */
+  normalizationGain?: number;
   onError: (message: string) => void;
 }
 
@@ -189,22 +194,15 @@ export function useSermonIngest(args: SermonIngestArgs) {
         a.glossary,
         '', // sermonContext — sermon mode carries context per-sentence at translate time, not per-chunk
         a.debugMode,
-        1.0, // normalizationGain
+        a.normalizationGain ?? 1.0,
         0,   // chunkOverlapMs forced to 0 — VAD cuts land between words, and
              // overlap-dedupe.ts is the belt-and-braces cleanup (plan §3)
         true, // useVADChunking forced on
         SERMON_VAD_SILENCE_MS,
         a.engine,
+        a.ollamaBaseUrl,
+        a.ollamaModel,
       );
-      // ChunkBasedTranscription.start() has no ollama parameters — those are
-      // only settable post-connect via updateConfig(), same as Home.tsx does.
-      if (a.correctionProvider === 'ollama') {
-        backend.updateConfig(
-          a.sourceLanguage, a.targetLanguage, false, 'ollama',
-          a.openaiApiKey, a.anthropicApiKey, a.glossary, '',
-          a.ollamaBaseUrl, a.ollamaModel,
-        );
-      }
       setIsRecording(true);
     } catch (err) {
       argsRef.current.onError(err instanceof Error ? err.message : 'Kon opname niet starten');
@@ -219,6 +217,13 @@ export function useSermonIngest(args: SermonIngestArgs) {
     backendRef.current = null;
     setIsRecording(false);
     if (backend) await backend.stop();
+  }, []);
+
+  // Stop any active mic/WebSocket session on unmount (e.g. navigating away
+  // from SermonMode mid-recording) — otherwise the backend keeps running
+  // with nothing left to dispatch its results into.
+  useEffect(() => {
+    return () => { backendRef.current?.stop(); };
   }, []);
 
   return { isRecording, isProcessing, start, stop };

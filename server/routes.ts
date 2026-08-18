@@ -9,8 +9,9 @@ import {
   formatForExport,
 } from './lib/openai';
 import { correctAndTranslateWithClaude, retroactiveCorrectionWithClaude } from './lib/anthropic';
-import { correctAndTranslateWithOllama, retroactiveCorrectionWithOllama } from './lib/ollama';
+import { correctAndTranslateWithOllama, retroactiveCorrectionWithOllama, isValidOllamaBaseUrl } from './lib/ollama';
 import { transcribeWithMlx } from './lib/mlx-whisper';
+import { isAsrArtifact } from './lib/asr-artifacts';
 import { translateSegments, type TranslateItemInput, type SermonTranslationProvider } from './lib/sermon-translate';
 import { getGlossaryStatus, reloadGlossary } from './lib/glossary-store';
 import { isSafeGlossaryName } from './lib/glossary-file';
@@ -102,6 +103,15 @@ async function runRetroactiveCorrection(
   return retroactiveCorrection(accumulatedText, targetLanguage, detectSpeakers, openaiApiKey, glossary, sermonContext);
 }
 
+// SSRF guard shared by every route that accepts a client-supplied
+// ollamaBaseUrl — see ollama.ts's isValidOllamaBaseUrl for why this must be
+// restricted to loopback. Absent/empty is fine (the callee falls back to the
+// default); present-and-invalid is a 400, never silently ignored or passed
+// through to a server-side HTTP client.
+function isBadOllamaBaseUrl(value: unknown): boolean {
+  return typeof value === 'string' && value.trim() !== '' && !isValidOllamaBaseUrl(value);
+}
+
 function parseProvider(value: unknown): TranslationProvider | null {
   if (typeof value === 'string' && VALID_TRANSLATION_PROVIDERS.has(value)) {
     return value as TranslationProvider;
@@ -148,18 +158,22 @@ function parseSermonItems(value: unknown): TranslateItemInput[] | null {
   if (!Array.isArray(value) || value.length === 0 || value.length > SERMON_MAX_ITEMS) return null;
 
   const items: TranslateItemInput[] = [];
+  const seenIds = new Set<string>();
   for (const raw of value) {
     if (!raw || typeof raw !== 'object') return null;
     const { id, text, before, after, readingCandidate, referenceHint } = raw as Record<string, unknown>;
 
     if (typeof id !== 'string' || !id) return null;
+    if (seenIds.has(id)) return null;
+    seenIds.add(id);
     if (typeof text !== 'string' || !text.trim() || text.length > SERMON_MAX_TEXT_LEN) return null;
 
     const beforeArr = before === undefined ? [] : before;
     const afterArr = after === undefined ? [] : after;
     if (!Array.isArray(beforeArr) || !Array.isArray(afterArr)) return null;
     if (beforeArr.length > SERMON_MAX_CONTEXT_SENTENCES || afterArr.length > SERMON_MAX_CONTEXT_SENTENCES) return null;
-    if (!beforeArr.every((s) => typeof s === 'string') || !afterArr.every((s) => typeof s === 'string')) return null;
+    const isValidContextString = (s: unknown): s is string => typeof s === 'string' && s.length <= SERMON_MAX_TEXT_LEN;
+    if (!beforeArr.every(isValidContextString) || !afterArr.every(isValidContextString)) return null;
 
     const parsedCandidate = parseReadingCandidate(readingCandidate);
     if (parsedCandidate === 'invalid') return null;
@@ -235,9 +249,17 @@ export async function registerRoutes(app: Express): Promise<Server> {
       const rawTranscript = engine === 'mlx'
         ? await transcribeWithMlx(mp3FilePath, sourceLanguage, previousTranscript)
         : await transcribeAudio(mp3FilePath, sourceLanguage, openaiApiKey, undefined, undefined, undefined, previousTranscript);
-      const { correctedText, translatedText } = await runCorrectAndTranslate(
-        rawTranscript, targetLanguage, detectSpeakers, provider, openaiApiKey, anthropicApiKey,
-      );
+
+      // Whisper caption hallucination ("MUZIEK", "***", foreign-script
+      // garbage) during silence/noise — see server/lib/asr-artifacts.ts.
+      // This endpoint is a separate code path from the WebSocket chunk
+      // pipeline (server/lib/chunk-transcription.ts) and shares none of its
+      // filtering, so it needs its own check rather than inheriting one.
+      const { correctedText, translatedText } = isAsrArtifact(rawTranscript, sourceLanguage)
+        ? { correctedText: '', translatedText: '' }
+        : await runCorrectAndTranslate(
+          rawTranscript, targetLanguage, detectSpeakers, provider, openaiApiKey, anthropicApiKey,
+        );
 
       if (webmFilePath && fs.existsSync(webmFilePath)) fs.unlinkSync(webmFilePath);
       if (mp3FilePath && fs.existsSync(mp3FilePath)) fs.unlinkSync(mp3FilePath);
@@ -264,6 +286,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
       const provider = parseProvider(translationProvider);
       if (!provider) return res.status(400).json({ error: 'Invalid translationProvider' });
+      if (isBadOllamaBaseUrl(ollamaBaseUrl)) return res.status(400).json({ error: 'Invalid ollamaBaseUrl' });
 
       const { correctedText, translatedText } = await runCorrectAndTranslate(
         text,
@@ -296,6 +319,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
       const provider = parseProvider(translationProvider);
       if (!provider) return res.status(400).json({ error: 'Invalid translationProvider' });
+      if (isBadOllamaBaseUrl(ollamaBaseUrl)) return res.status(400).json({ error: 'Invalid ollamaBaseUrl' });
 
       const { correctedText, translatedText } = await runCorrectAndTranslate(
         originalText,
@@ -328,6 +352,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
       const provider = parseProvider(translationProvider);
       if (!provider) return res.status(400).json({ error: 'Invalid translationProvider' });
+      if (isBadOllamaBaseUrl(ollamaBaseUrl)) return res.status(400).json({ error: 'Invalid ollamaBaseUrl' });
 
       const { correctedText, translatedText } = await runRetroactiveCorrection(
         accumulatedText,
@@ -369,6 +394,9 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
       if (typeof translationProvider !== 'string' || !VALID_SERMON_TRANSLATION_PROVIDERS.has(translationProvider)) {
         return res.status(400).json({ error: 'Invalid translationProvider — must be openai, claude, or ollama' });
+      }
+      if (isBadOllamaBaseUrl(ollamaBaseUrl)) {
+        return res.status(400).json({ error: 'Invalid ollamaBaseUrl' });
       }
       const parsedItems = parseSermonItems(items);
       if (!parsedItems) {
@@ -514,10 +542,18 @@ export async function registerRoutes(app: Express): Promise<Server> {
   });
 
   // Dev-only: expose server-side API keys so the browser can auto-fill them.
-  // Returns 403 in production so keys are never leaked in deployed builds.
+  // Returns 403 in production so keys are never leaked in deployed builds,
+  // and also 403s any non-loopback caller even in development — a dev server
+  // reachable from the LAN (e.g. listener-mode testing, see CLAUDE.md) must
+  // not hand its API keys to anyone else on the network.
   app.get('/api/dev-config', (req, res) => {
     if (process.env.NODE_ENV !== 'development') {
       return res.status(403).json({ error: 'Not available in production' });
+    }
+    const remoteAddress = req.socket.remoteAddress ?? '';
+    const isLoopback = remoteAddress === '127.0.0.1' || remoteAddress === '::1' || remoteAddress === '::ffff:127.0.0.1';
+    if (!isLoopback) {
+      return res.status(403).json({ error: 'Only available to local requests' });
     }
     res.json({
       openaiApiKey: process.env.OPENAI_API_KEY || '',

@@ -276,8 +276,10 @@ export default function Home() {
       settings.anthropicApiKey,
       settings.theologicalGlossary,
       sermonContextRef.current,
+      settings.ollamaBaseUrl,
+      settings.ollamaModel,
     );
-  }, [settings.translationProvider, settings.openaiApiKey, settings.anthropicApiKey, settings.theologicalGlossary]);
+  }, [settings.translationProvider, settings.openaiApiKey, settings.anthropicApiKey, settings.theologicalGlossary, settings.ollamaBaseUrl, settings.ollamaModel]);
 
   const swapLanguages = useCallback(() => {
     setSourceLanguage(prev => { setTargetLanguage(prev); return targetLanguage; });
@@ -418,7 +420,7 @@ export default function Home() {
           setPreviewText('');
           transcriptionSegmentsRef.current.push({ original, translated });
           const newOriginal = transcriptionSegmentsRef.current.map(s => s.original).join(' ');
-          const newTranslated = transcriptionSegmentsRef.current.map(s => s.translated).join(' ');
+          const newTranslated = transcriptionSegmentsRef.current.filter(s => s.translated).map(s => s.translated).join(' ');
           setOriginalText(newOriginal);
           setTranslatedText(newTranslated);
           setPreviewText('');

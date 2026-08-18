@@ -23,7 +23,30 @@ import traceback
 os.environ.setdefault("HF_HUB_DISABLE_PROGRESS_BARS", "1")
 os.environ.setdefault("TOKENIZERS_PARALLELISM", "false")
 
+# Capture the real stdout for the JSON-lines protocol, then point sys.stdout
+# at stderr *before* importing mlx_whisper/numpy/HF — those (and their
+# transitive deps) are not guaranteed to respect HF_HUB_DISABLE_PROGRESS_BARS
+# for every code path, and a single stray print() anywhere in that dependency
+# tree would otherwise desync the Node side's request/response correlation.
+# emit() is the only thing that ever writes to _protocol_stdout.
+_protocol_stdout = sys.stdout
+sys.stdout = sys.stderr
+
 MODEL_REPO = "mlx-community/whisper-large-v3-mlx"
+
+# Whisper is known to hallucinate fluent-sounding but entirely invented text
+# on silence/background noise (e.g. caption-style artifacts like "[Music]"
+# or "Thank you for watching" from its training data). An earlier version of
+# this worker tried to catch that here via segment-level no_speech_prob
+# filtering — measured against mlx-whisper large-v3 (Dutch), that doesn't
+# work: real quiet speech and actual silence produce OVERLAPPING
+# no_speech_prob values once an initial_prompt is set (as this app always
+# does) — e.g. a real quiet "Amen" scored 0.057 and was transcribed as
+# "MUZIEK", while pure silence scored 0.047, LOWER. No threshold can
+# separate those. Hallucination filtering now happens content-side, on the
+# full transcription text, in server/lib/asr-artifacts.ts — shared by both
+# the mlx and OpenAI Whisper engines, which a Python-side probability filter
+# could never be anyway.
 
 
 def log(msg: str) -> None:
@@ -31,8 +54,8 @@ def log(msg: str) -> None:
 
 
 def emit(obj: dict) -> None:
-    sys.stdout.write(json.dumps(obj) + "\n")
-    sys.stdout.flush()
+    _protocol_stdout.write(json.dumps(obj) + "\n")
+    _protocol_stdout.flush()
 
 
 def main() -> None:
@@ -72,6 +95,12 @@ def main() -> None:
                 language=language,
                 fp16=True,
                 initial_prompt=initial_prompt,
+                # Each chunk is transcribed independently (our own app already
+                # supplies cross-chunk continuity via initial_prompt) — disable
+                # the library's internal conditioning on its own previous
+                # window's text, which is a second, unrelated compounding
+                # source of hallucinated repetition.
+                condition_on_previous_text=False,
             )
             emit({"id": req_id, "text": result.get("text", "").strip()})
         except Exception as e:

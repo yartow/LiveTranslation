@@ -168,12 +168,23 @@ export interface UserMessageInput {
   referenceHint?: string;
 }
 
+// ASR text is spoken content, not attacker-controlled input, but a preacher
+// reading a technical passage or quoting something verbatim could still land
+// a literal "</TE_VERTALEN>"-shaped substring in the transcript — neutralize
+// the protocol tags' closing sequences so that can never prematurely close a
+// block and let the following text be read as something other than <TE_VERTALEN>
+// content (mirrors the ``` guard already applied to scriptureGuidance in
+// sermon-translate.ts).
+function neutralizeTags(text: string): string {
+  return text.replace(/<\/?(TE_VERTALEN|CONTEXT_VOOR|CONTEXT_NA|VERSTEKST_ESV|REFERENTIE_HINT)>/gi, '');
+}
+
 export function buildUserMessage({ before, target, after, scriptureGuidance, referenceHint }: UserMessageInput): string {
   const parts: string[] = [];
-  if (before.length > 0) parts.push(`<CONTEXT_VOOR>\n${before.join('\n')}\n</CONTEXT_VOOR>`);
-  if (scriptureGuidance) parts.push(`<VERSTEKST_ESV>\n${scriptureGuidance}\n</VERSTEKST_ESV>`);
-  if (referenceHint) parts.push(`<REFERENTIE_HINT>${referenceHint}</REFERENTIE_HINT>`);
-  parts.push(`<TE_VERTALEN>\n${target}\n</TE_VERTALEN>`);
-  if (after.length > 0) parts.push(`<CONTEXT_NA>\n${after.join('\n')}\n</CONTEXT_NA>`);
+  if (before.length > 0) parts.push(`<CONTEXT_VOOR>\n${before.map(neutralizeTags).join('\n')}\n</CONTEXT_VOOR>`);
+  if (scriptureGuidance) parts.push(`<VERSTEKST_ESV>\n${neutralizeTags(scriptureGuidance)}\n</VERSTEKST_ESV>`);
+  if (referenceHint) parts.push(`<REFERENTIE_HINT>${neutralizeTags(referenceHint)}</REFERENTIE_HINT>`);
+  parts.push(`<TE_VERTALEN>\n${neutralizeTags(target)}\n</TE_VERTALEN>`);
+  if (after.length > 0) parts.push(`<CONTEXT_NA>\n${after.map(neutralizeTags).join('\n')}\n</CONTEXT_NA>`);
   return parts.join('\n');
 }

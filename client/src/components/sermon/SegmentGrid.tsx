@@ -84,7 +84,7 @@ export default function SegmentGrid({ state, dispatch, activeSegmentIdRef, onRef
           className="absolute bottom-3 left-1/2 -translate-x-1/2 flex items-center gap-1 rounded-full bg-primary text-primary-foreground text-xs font-medium px-3 py-1.5 shadow-md hover-elevate"
           data-testid="button-jump-to-new"
         >
-          {pendingNew} nieuwe segmenten <ChevronDown className="w-3.5 h-3.5" />
+          {pendingNew} nieuw{pendingNew === 1 ? ' segment' : 'e segmenten'} <ChevronDown className="w-3.5 h-3.5" />
         </button>
       )}
     </div>

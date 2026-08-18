@@ -27,12 +27,21 @@ function resolveBibleDir(): string {
 
 let cachedBooks: BibleBook[] | null | undefined; // undefined = not yet attempted this process
 
+function isBibleBook(v: unknown): v is BibleBook {
+  if (!v || typeof v !== 'object') return false;
+  const b = v as Record<string, unknown>;
+  return typeof b.n === 'number' && typeof b.nl === 'string' && typeof b.en === 'string' && typeof b.abbr === 'string';
+}
+
 export function getBibleBooks(): BibleBook[] | null {
   if (cachedBooks !== undefined) return cachedBooks;
   try {
     const raw = readFileSync(path.join(resolveBibleDir(), 'books.json'), 'utf-8');
     const parsed = JSON.parse(raw);
-    cachedBooks = Array.isArray(parsed) ? parsed : null;
+    // A corrupt/truncated books.json shouldn't crash bookNumberByEnglishName
+    // downstream (e.g. b.en.toLowerCase() on a malformed entry) — degrade to
+    // "not built" the same as a missing file, rather than caching bad data.
+    cachedBooks = Array.isArray(parsed) && parsed.every(isBibleBook) ? parsed : null;
   } catch {
     cachedBooks = null; // not built yet, or BIBLE_DIR misconfigured — callers degrade gracefully
   }

@@ -86,6 +86,14 @@ function parseStatenvertaling(xmlPath: string): { books: BookEntry[]; verses: Re
   while ((bookMatch = bookRe.exec(xml))) {
     const [, bnumberStr, bname, bsname, bookBody] = bookMatch;
     const n = Number(bnumberStr);
+    // The join with the KJV side (below) assumes bnumber IS canonical
+    // insertion position (1-indexed, Genesis..Revelation in source order) —
+    // fail loudly rather than silently mis-joining every subsequent book if
+    // the source XML ever numbers/orders books differently than expected.
+    const expectedPosition = books.length + 1;
+    if (n !== expectedPosition) {
+      throw new Error(`Statenvertaling XML book order mismatch: expected bnumber ${expectedPosition} at position ${books.length}, got ${n} (${bname})`);
+    }
     // `en` is filled in below once the KJV side is parsed — both sides are
     // joined by canonical position, not written independently here.
     books.push({ n, nl: bname, en: '', abbr: bsname });

@@ -84,9 +84,11 @@ export async function fetchEsvPassage(
   url.searchParams.set('include-passage-references', 'false');
 
   try {
+    const timeout = AbortSignal.timeout(8000);
+    const signal = opts.signal ? AbortSignal.any([timeout, opts.signal]) : timeout;
     const response = await fetch(url, {
       headers: { Authorization: `Token ${apiKey}` },
-      signal: opts.signal ?? AbortSignal.timeout(8000),
+      signal,
     });
     if (!response.ok) return null;
     const data = await response.json() as { passages?: string[] };

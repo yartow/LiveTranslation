@@ -1,8 +1,9 @@
 import { WebSocket as WsWebSocket, WebSocketServer } from 'ws';
-import { transcribeAudio, correctAndTranslateText, correctTranscript } from './openai';
+import { transcribeAudio, correctAndTranslateText, correctTranscript, buildWhisperPrompt } from './openai';
 import { correctAndTranslateWithClaude, correctTranscriptWithClaude } from './anthropic';
 import { correctAndTranslateWithOllama, correctTranscriptWithOllama } from './ollama';
 import { transcribeWithMlx } from './mlx-whisper';
+import { isAsrArtifact } from './asr-artifacts';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { writeFile, unlink } from 'fs/promises';
@@ -41,6 +42,9 @@ interface ChunkSession {
   pendingResults: Map<number, ChunkResult>;
   // Aborted when the session ends so in-flight LLM calls are cancelled
   abortController: AbortController;
+  // In-flight processChunk() calls, so 'stop' can wait for them to finish
+  // and flush before acking — see the 'stop' handler below.
+  pendingChunkPromises: Set<Promise<void>>;
 }
 
 export interface ChunkResult {
@@ -70,6 +74,18 @@ const activeSessions = new Map<WsWebSocket, ChunkSession>();
 // Safety limit: reject chunk indexes that are unreasonably far ahead to
 // prevent unbounded memory growth in pendingResults.
 const MAX_CHUNK_QUEUE_DEPTH = 200;
+
+// See flushInOrder's gap-recovery guard.
+const MAX_PENDING_BEFORE_GAP_SKIP = 8;
+
+// On 'stop', in-flight chunks are drained (allowed to finish and flush)
+// rather than aborted, so the speaker's final utterance still reaches the
+// client — see the 'stop' handler below. This bounds how long that wait
+// can run before falling back to the old abort-immediately behaviour, in
+// case a provider call is wedged. Kept below the client's own
+// STOP_DRAIN_TIMEOUT_MS fallback (chunk-based-transcription.ts) so the
+// server's ack has a chance to arrive first.
+const STOP_DRAIN_TIMEOUT_MS = 15_000;
 
 // When SIMULATE_LATENCY_MS is set, each chunk waits this many ms after the
 // audio is converted before sending to Whisper. Simulates the time a mobile
@@ -142,6 +158,19 @@ async function convertAudioToMp3(inputBuffer: Buffer): Promise<string> {
 // A chunk is only delivered after all lower-indexed chunks have been sent.
 // Exported for unit testing; not part of the public API.
 export function flushInOrder(session: ChunkSessionForTest): void {
+  // Gap recovery: every early-exit in the binary-frame handler below is
+  // supposed to insert a pendingResults placeholder before returning, so an
+  // index should never go permanently missing — but if one somehow still
+  // does (a genuinely lost WebSocket frame, a bug not yet found), don't let
+  // it stall every later chunk for the rest of the session. Once enough
+  // completed results have piled up waiting behind the missing index, skip
+  // ahead to the lowest one actually available.
+  if (!session.pendingResults.has(session.nextExpectedChunk) && session.pendingResults.size > MAX_PENDING_BEFORE_GAP_SKIP) {
+    const lowest = Math.min(...Array.from(session.pendingResults.keys()));
+    console.warn(`Chunk ${session.nextExpectedChunk} never arrived — skipping ahead to ${lowest}`);
+    session.nextExpectedChunk = lowest;
+  }
+
   while (session.pendingResults.has(session.nextExpectedChunk)) {
     const result = session.pendingResults.get(session.nextExpectedChunk)!;
     session.pendingResults.delete(session.nextExpectedChunk);
@@ -158,6 +187,20 @@ export function flushInOrder(session: ChunkSessionForTest): void {
 
     session.nextExpectedChunk++;
   }
+}
+
+// Resolves the chunk index a 'start' message wants the session to begin
+// expecting from. Normally 0 for a genuinely new session. On a mid-recording
+// WebSocket reconnect, the client's chunkIndex has already advanced past 0
+// (it never resets across a reconnect — see chunk-based-transcription.ts's
+// buildStartMessage/reconnectWs), so a fresh session defaulting to 0 here
+// would wait forever for indices that will never arrive again, silently
+// swallowing every chunk for the rest of the recording. Exported for
+// testing; not part of the public API.
+export function resolveStartChunkIndex(message: { nextChunkIndex?: unknown }): number {
+  return typeof message.nextChunkIndex === 'number' && message.nextChunkIndex >= 0
+    ? message.nextChunkIndex
+    : 0;
 }
 
 function sendDebug(session: ChunkSession, message: string): void {
@@ -214,7 +257,8 @@ async function processChunk(
     let rawText: string;
     if (session.engine === 'mlx') {
       sendDebug(session, `Chunk #${chunkIndex}: sending to local MLX Whisper (${session.sourceLanguage})…`);
-      rawText = await transcribeWithMlx(audioPath, session.sourceLanguage, session.previousTranscript || undefined, signal);
+      const initialPrompt = buildWhisperPrompt(session.glossary || undefined, session.sermonContext || undefined, session.previousTranscript || undefined);
+      rawText = await transcribeWithMlx(audioPath, session.sourceLanguage, initialPrompt, signal);
     } else {
       const hasOpenAIKey = !!(session.openaiApiKey || process.env.OPENAI_API_KEY);
       if (!hasOpenAIKey) {
@@ -227,6 +271,19 @@ async function processChunk(
 
     if (!rawText.trim()) {
       sendDebug(session, `Chunk #${chunkIndex}: silent — no speech detected`);
+      session.pendingResults.set(chunkIndex, { correctedText: '', translatedText: '' });
+      flushInOrder(session);
+      return;
+    }
+
+    // Whisper caption hallucination ("MUZIEK", "***", foreign-script
+    // garbage) during silence/noise — see server/lib/asr-artifacts.ts's
+    // header comment for why this can't be caught via no_speech_prob.
+    // Must run before stripAsteriskArtifacts below, which would otherwise
+    // strip the very asterisks that mark e.g. "*ZANG EN MUZIEK*" as an
+    // annotation, leaving the hallucinated words behind.
+    if (isAsrArtifact(rawText, session.sourceLanguage)) {
+      sendDebug(session, `Chunk #${chunkIndex}: discarded — ASR artifact ("${rawText.slice(0, 40)}")`);
       session.pendingResults.set(chunkIndex, { correctedText: '', translatedText: '' });
       flushInOrder(session);
       return;
@@ -257,7 +314,9 @@ async function processChunk(
       // translation with context happens later via /api/sermon/translate —
       // see server/lib/sermon-translate.ts.
       translatedText = '';
-      if (session.translationProvider === 'ollama') {
+      if (session.translationProvider === 'none') {
+        correctedText = rawText;
+      } else if (session.translationProvider === 'ollama') {
         sendDebug(session, `Chunk #${chunkIndex}: correcting via Ollama (${session.ollamaModel})…`);
         ({ correctedText } = await correctTranscriptWithOllama(
           rawText, session.targetLanguage, session.ollamaModel, session.ollamaBaseUrl,
@@ -373,9 +432,10 @@ export function setupChunkTranscriptionWebSocket(wss: WebSocketServer): void {
               sermonContext: message.sermonContext || '',
               debugMode: message.debugMode ?? false,
               previousTranscript: message.previousTranscript || '',
-              nextExpectedChunk: 0,
+              nextExpectedChunk: resolveStartChunkIndex(message),
               pendingResults: new Map(),
               abortController: new AbortController(),
+              pendingChunkPromises: new Set(),
             };
             activeSessions.set(clientWs, session);
             clientWs.send(JSON.stringify({ type: 'ready' }));
@@ -398,41 +458,82 @@ export function setupChunkTranscriptionWebSocket(wss: WebSocketServer): void {
             }
 
           } else if (message.type === 'stop') {
-            if (session) session.abortController.abort();
-            activeSessions.delete(clientWs);
-            session = null;
+            if (session) {
+              const stoppingSession = session;
+              activeSessions.delete(clientWs);
+              session = null;
+
+              // Drain in-flight chunk processing instead of aborting it
+              // outright — the speaker's final utterance is very often
+              // still being transcribed/corrected right when 'stop' arrives
+              // (see chunk-based-transcription.ts's stop(), which commits
+              // one last chunk before sending this message), and aborting
+              // it here used to reliably lose that final sentence. Only
+              // fall back to aborting if draining takes unreasonably long
+              // (e.g. a wedged provider call).
+              const drainTimeout = setTimeout(() => stoppingSession.abortController.abort(), STOP_DRAIN_TIMEOUT_MS);
+              Promise.allSettled(Array.from(stoppingSession.pendingChunkPromises)).then(() => {
+                clearTimeout(drainTimeout);
+                if (stoppingSession.clientWs.readyState === WsWebSocket.OPEN) {
+                  stoppingSession.clientWs.send(JSON.stringify({ type: 'stop_complete' }));
+                }
+              });
+            }
           }
 
         } else if (isBinary || data instanceof Buffer) {
           if (!session) return;
+          const activeSession = session;
 
           // Binary protocol: [4-byte big-endian chunk index][1-byte flags][audio data]
           // flags bit 0 (0x01): 1 = PCM16/WAV, 0 = legacy webm/opus
           const buf = Buffer.isBuffer(data) ? data : Buffer.from(data as unknown as ArrayBuffer);
-          if (buf.length < 6) return;
 
+          // Below this length there isn't even a full 4-byte index to
+          // attribute a hole to — nothing to reconcile, just drop it. In
+          // practice the client never sends a frame this short.
+          if (buf.length < 4) return;
           const chunkIndex = buf.readUInt32BE(0);
+
+          // Every exit below THIS point knows chunkIndex, so it must insert
+          // a pendingResults placeholder before returning — otherwise that
+          // index never arrives, flushInOrder blocks on it forever (short
+          // of the gap-recovery guard above), and every later chunk this
+          // session sends is silently swallowed for the rest of the
+          // recording.
+          const dropChunk = (reason: string): void => {
+            console.warn(`Chunk ${chunkIndex} dropped: ${reason}`);
+            activeSession.pendingResults.set(chunkIndex, { correctedText: '', translatedText: '' });
+            flushInOrder(activeSession);
+          };
+
+          if (buf.length < 6) { dropChunk('frame too short'); return; }
+
           const flags = buf[4];
           const audioBuffer = buf.subarray(5);
           const isWav = (flags & 0x01) !== 0;
 
           // Reject oversized chunks to prevent memory/disk exhaustion
           if (audioBuffer.length > MAX_CHUNK_SIZE) {
-            console.warn(`Chunk audio exceeds ${MAX_CHUNK_SIZE} bytes; discarding`);
+            dropChunk(`audio exceeds ${MAX_CHUNK_SIZE} bytes`);
             return;
           }
 
           // Reject unreasonably large indexes to prevent memory exhaustion
-          if (chunkIndex > session.nextExpectedChunk + MAX_CHUNK_QUEUE_DEPTH) {
-            console.warn(`Chunk index ${chunkIndex} exceeds queue depth limit; discarding`);
+          if (chunkIndex > activeSession.nextExpectedChunk + MAX_CHUNK_QUEUE_DEPTH) {
+            dropChunk('exceeds queue depth limit');
             return;
           }
 
           // Fire-and-forget: chunks are processed concurrently.
-          // flushInOrder() ensures the client receives results in recording order.
-          processChunk(session, audioBuffer, chunkIndex, isWav).catch((err) => {
-            console.error('Unhandled chunk error:', err);
-          });
+          // flushInOrder() ensures the client receives results in recording
+          // order. Tracked in pendingChunkPromises so 'stop' can wait for
+          // every in-flight chunk to finish before acking — see the 'stop'
+          // handler above.
+          const chunkPromise: Promise<void> = processChunk(activeSession, audioBuffer, chunkIndex, isWav)
+            .catch((err) => { console.error('Unhandled chunk error:', err); })
+            .finally(() => { activeSession.pendingChunkPromises.delete(chunkPromise); });
+          activeSession.pendingChunkPromises.add(chunkPromise);
         }
       } catch (error) {
         console.error('WebSocket message error:', error);

@@ -1,4 +1,4 @@
-import { useCallback, useEffect } from 'react';
+import { useCallback, useEffect, useRef } from 'react';
 import {
   type SegmentStoreState, type SegmentAction, selectDirtyIds, selectTranslatable, selectContext,
 } from '@/lib/sermon/segment-store';
@@ -40,14 +40,29 @@ export function useTranslationQueue(
   autoTranslateRef: React.MutableRefObject<boolean>,
   flushersRef: React.MutableRefObject<Map<string, () => void>>,
 ) {
-  const runBatch = useCallback(async (ids: string[]) => {
-    if (ids.length === 0) return;
+  // Segment ids currently part of an in-flight batch — guards refreshAll/
+  // refreshOne/auto-translate against issuing a second provider call for a
+  // segment that's already TRANSLATING in another batch (e.g. a manual
+  // Refresh firing while auto-translate's poll already picked the same
+  // segment up).
+  const inFlightIdsRef = useRef(new Set<string>());
+  // Batch-owned AbortControllers, so an unmounted SermonMode (or a fresh
+  // recording session) can cancel any still-in-flight translate calls
+  // instead of letting them dangle.
+  const activeControllersRef = useRef(new Set<AbortController>());
+
+  useEffect(() => {
+    const controllers = activeControllersRef.current;
+    return () => { Array.from(controllers).forEach(c => c.abort()); };
+  }, []);
+
+  const runBatchInner = useCallback(async (ids: string[], signal: AbortSignal) => {
     // Flush any edit still sitting in a SourceCell's debounce window before
     // reading segment text — otherwise a Refresh triggered right after a
     // keystroke (e.g. Cmd+Enter) would translate the pre-edit text. See
     // SourceCell.tsx's commitPending/flushersRef registration.
     for (const id of ids) flushersRef.current.get(id)?.();
-    const cfg = configRef.current;
+    const cfg = { ...configRef.current, signal };
     const snapshot = stateRef.current;
 
     // Scripture (spec "Bijbelcitaten"): a segment whose own text resolves a
@@ -154,12 +169,33 @@ export function useTranslationQueue(
         }
       }
     } catch (err) {
-      const message = err instanceof Error ? err.message : 'Translation request failed';
+      const message = err instanceof Error && err.name === 'AbortError'
+        ? 'Translation request timed out'
+        : err instanceof Error ? err.message : 'Translation request failed';
       for (const item of items) {
         dispatch({ type: 'SET_ERROR', id: item.id, error: message, requestHash: item.requestHash });
       }
     }
   }, [dispatch, configRef, stateRef, flushersRef]);
+
+  // Public entry point: dedupes against segments already part of another
+  // in-flight batch (a manual Refresh firing while auto-translate's poll
+  // already picked the same segment up would otherwise double-call the
+  // provider for it), and owns the AbortController for this batch so an
+  // unmount can cancel it — see the cleanup effect above.
+  const runBatch = useCallback(async (idsIn: string[]) => {
+    const ids = idsIn.filter(id => !inFlightIdsRef.current.has(id));
+    if (ids.length === 0) return;
+    for (const id of ids) inFlightIdsRef.current.add(id);
+    const controller = new AbortController();
+    activeControllersRef.current.add(controller);
+    try {
+      await runBatchInner(ids, controller.signal);
+    } finally {
+      for (const id of ids) inFlightIdsRef.current.delete(id);
+      activeControllersRef.current.delete(controller);
+    }
+  }, [runBatchInner]);
 
   const refreshAll = useCallback(() => {
     const dirty = selectDirtyIds(stateRef.current);

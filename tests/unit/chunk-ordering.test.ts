@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeEach } from 'vitest';
-import { flushInOrder, stripAsteriskArtifacts, type ChunkSessionForTest, type ChunkResult } from '../../server/lib/chunk-transcription.js';
+import { flushInOrder, stripAsteriskArtifacts, resolveStartChunkIndex, type ChunkSessionForTest, type ChunkResult } from '../../server/lib/chunk-transcription.js';
+import { isAsrArtifact } from '../../server/lib/asr-artifacts.js';
 
 function makeSession(): ChunkSessionForTest & { sent: Array<{ original: string; chunkIndex: number }> } {
   const sent: Array<{ original: string; chunkIndex: number }> = [];
@@ -83,6 +84,34 @@ describe('flushInOrder', () => {
     expect(s.sent).toHaveLength(0);
     expect(s.nextExpectedChunk).toBe(0);
   });
+
+  it('gap recovery: skips ahead once enough results have piled up behind a permanently missing index', () => {
+    const s = makeSession();
+    // Chunk 0 never arrives (simulates a genuinely lost frame). Chunks 1-9
+    // do. Without recovery, flushInOrder would block forever on index 0.
+    for (let i = 1; i <= 9; i++) {
+      s.pendingResults.set(i, { correctedText: `chunk${i}`, translatedText: '' });
+    }
+    flushInOrder(s);
+    // 9 pending results exceeds MAX_PENDING_BEFORE_GAP_SKIP (8) — recovery
+    // should have advanced past the hole and delivered everything.
+    expect(s.nextExpectedChunk).toBe(10);
+    expect(s.sent.map(m => m.original)).toEqual(
+      Array.from({ length: 9 }, (_, i) => `chunk${i + 1}`),
+    );
+  });
+
+  it('does not skip ahead while the pile-up is still below the recovery threshold', () => {
+    const s = makeSession();
+    // Only a few chunks piled up behind the missing index 0 — not enough
+    // to trigger recovery yet; ordering must still block correctly.
+    for (let i = 1; i <= 3; i++) {
+      s.pendingResults.set(i, { correctedText: `chunk${i}`, translatedText: '' });
+    }
+    flushInOrder(s);
+    expect(s.sent).toHaveLength(0);
+    expect(s.nextExpectedChunk).toBe(0);
+  });
 });
 
 describe('stripAsteriskArtifacts', () => {
@@ -105,5 +134,45 @@ describe('stripAsteriskArtifacts', () => {
 
   it('leaves an empty string empty', () => {
     expect(stripAsteriskArtifacts('')).toBe('');
+  });
+});
+
+describe('resolveStartChunkIndex (reconnect resync)', () => {
+  it('resumes from the requested index on a reconnect', () => {
+    expect(resolveStartChunkIndex({ nextChunkIndex: 42 })).toBe(42);
+  });
+
+  it('defaults to 0 for a genuinely new session (field absent)', () => {
+    expect(resolveStartChunkIndex({})).toBe(0);
+  });
+
+  it('defaults to 0 for a negative or non-numeric value rather than trusting it blindly', () => {
+    expect(resolveStartChunkIndex({ nextChunkIndex: -1 })).toBe(0);
+    expect(resolveStartChunkIndex({ nextChunkIndex: 'not-a-number' as unknown as number })).toBe(0);
+  });
+
+  it('accepts 0 explicitly (the very first chunk of a session)', () => {
+    expect(resolveStartChunkIndex({ nextChunkIndex: 0 })).toBe(0);
+  });
+});
+
+describe('isAsrArtifact + stripAsteriskArtifacts ordering (regression for the asterisk-marker bug)', () => {
+  it('an asterisk-wrapped hallucination must be caught by isAsrArtifact BEFORE stripAsteriskArtifacts runs', () => {
+    const rawText = '*ZANG EN MUZIEK*';
+    // stripAsteriskArtifacts alone would destroy the very marker that
+    // identifies this as an annotation, leaving the hallucinated words
+    // behind ("ZANG EN MUZIEK") — this is what server/lib/chunk-
+    // transcription.ts's processChunk() must avoid by running the artifact
+    // check first.
+    expect(isAsrArtifact(rawText, 'nl')).toBe(true);
+
+    // Simulate the actual pipeline order: artifact check first (drops to
+    // '' before stripAsteriskArtifacts ever runs on it).
+    const correctedText = isAsrArtifact(rawText, 'nl') ? '' : stripAsteriskArtifacts(rawText);
+    expect(correctedText).toBe('');
+
+    // Demonstrate the bug this guards against: running strip first would
+    // have left the hallucinated words intact and un-caught.
+    expect(stripAsteriskArtifacts(rawText)).toBe('ZANG EN MUZIEK');
   });
 });

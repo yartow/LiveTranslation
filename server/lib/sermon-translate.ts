@@ -73,6 +73,13 @@ export interface TranslateOptions {
 const semaphore = new Semaphore(4);
 
 const ITEM_TIMEOUT_MS = 20_000;
+// A whole-batch deadline on top of the per-item timeout: with SERMON_MAX_ITEMS
+// (server/routes.ts) at 100 and a concurrency cap of 4, a batch could
+// otherwise queue up to ~25 sequential waves of ITEM_TIMEOUT_MS each before
+// every item has at least had a chance to start — bounding total request
+// time regardless of batch size, on top of (not instead of) each item's own
+// timeout once it's actually running.
+const BATCH_TIMEOUT_MS = 90_000;
 
 export interface TranslateDeps {
   callModel?: (systemPrompt: string, userMessage: string, opts: TranslateOptions, signal: AbortSignal) => Promise<string>;
@@ -100,11 +107,17 @@ export async function translateSegments(
 
   const scriptureEnabled = opts.scriptureEnabled !== false;
 
+  // Batch-wide deadline — combined into every item's own signal below so a
+  // queued (not-yet-started) item can never outlive it even though its own
+  // ITEM_TIMEOUT_MS timer hasn't started counting yet.
+  const batchTimeout = AbortSignal.timeout(BATCH_TIMEOUT_MS);
+  const batchSignal = opts.signal ? AbortSignal.any([batchTimeout, opts.signal]) : batchTimeout;
+
   return Promise.all(items.map(async (item): Promise<TranslateItemResult> => {
     await semaphore.acquire();
     try {
       const timeout = AbortSignal.timeout(ITEM_TIMEOUT_MS);
-      const combinedSignal = opts.signal ? AbortSignal.any([timeout, opts.signal]) : timeout;
+      const combinedSignal = AbortSignal.any([timeout, batchSignal]);
 
       // Scripture adjudication happens BEFORE the model call — a verbatim
       // reading substitutes the exact verse text directly and skips the
@@ -116,13 +129,26 @@ export async function translateSegments(
       let scriptureGuidance: string | undefined;
       let scriptureInfo: ScriptureResultInfo | undefined;
 
+      // Verbatim substitution only makes sense when the target is English —
+      // the substituted text is always ESV/KJV English wording (scripture.ts),
+      // so substituting it into a non-English target stream would silently
+      // insert untranslated English into (say) a Dutch translation instead of
+      // the Dutch rendering of the verse. Paraphrase guidance (<VERSTEKST_ESV>,
+      // still just a register hint fed to the model) is unaffected.
+      const isEnglishTarget = opts.targetLanguage.split('-')[0].toLowerCase() === 'en';
+
       if (scriptureEnabled && item.readingCandidate) {
         const verdict = await adjudicateScripture(item.text, item.readingCandidate, {
           esvApiKey: opts.esvApiKey,
           signal: combinedSignal,
         });
 
-        if (verdict.kind === 'verbatim') {
+        if (verdict.kind === 'verbatim' && !isEnglishTarget) {
+          // Genuinely a verbatim reading, but substitution would insert
+          // English text into a non-English target — fall through to an
+          // ordinary model translation of the preacher's own (Dutch) words,
+          // without marking the reading as ended, since it hasn't.
+        } else if (verdict.kind === 'verbatim') {
           const fallbackDeclined = verdict.version === 'KJV' && opts.scriptureFallback === 'none';
           if (!fallbackDeclined) {
             return {
@@ -166,6 +192,7 @@ export async function translateSegments(
       }
       return result;
     } catch (err) {
+      console.error(`Sermon translate item ${item.id} failed:`, err);
       return { id: item.id, status: 'error', error: classifyError(err) };
     } finally {
       semaphore.release();
@@ -180,7 +207,10 @@ function classifyError(error: unknown): string {
   const anyErr = error as { status?: number };
   if (anyErr.status === 401 || msg.toLowerCase().includes('api key')) return 'API key invalid or missing';
   if (anyErr.status === 429 || msg.toLowerCase().includes('rate limit')) return 'Rate limit exceeded — try again shortly';
-  return msg;
+  // Anything else (network errors, provider-side 5xxs, etc.) is logged with
+  // full detail by the caller above — the client only gets a generic
+  // message so internal details (hostnames, stack fragments) never leak.
+  return 'Translation failed';
 }
 
 async function callModelDefault(systemPrompt: string, userMessage: string, opts: TranslateOptions, signal: AbortSignal): Promise<string> {

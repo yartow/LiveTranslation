@@ -187,8 +187,8 @@ function GlossaryPanel({ settings, onUpdate, isOpen }: GlossaryPanelProps) {
   }, [settings.sermonGlossaryCsv, settings.sermonDisambiguationPrompt]);
 
   useEffect(() => {
-    if (isOpen) fetchStatus();
-  }, [isOpen, fetchStatus]);
+    if (isOpen && settings.sermonGlossaryEnabled) fetchStatus();
+  }, [isOpen, settings.sermonGlossaryEnabled, fetchStatus]);
 
   async function handleReload() {
     setIsReloading(true);
@@ -198,7 +198,10 @@ function GlossaryPanel({ settings, onUpdate, isOpen }: GlossaryPanelProps) {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ csv: settings.sermonGlossaryCsv, prompt: settings.sermonDisambiguationPrompt }),
       });
-      if (res.ok) setStatus(await res.json());
+      if (res.ok) { setStatus(await res.json()); setFetchError(''); }
+      else setFetchError('Herladen mislukt.');
+    } catch {
+      setFetchError('Herladen mislukt.');
     } finally {
       setIsReloading(false);
     }
@@ -563,22 +566,22 @@ export default function SettingsDialog({ isOpen, onClose, settings, onUpdate, we
                     <div className="mt-2 space-y-2">
                       <div>
                         <Label className="text-xs text-muted-foreground">Ollama base URL</Label>
-                        <input
+                        <Input
                           type="text"
                           value={settings.ollamaBaseUrl}
                           onChange={(e) => onUpdate({ ollamaBaseUrl: e.target.value })}
                           placeholder="http://localhost:11434"
-                          className="mt-1 w-full rounded-md border border-border bg-background px-2 py-1 text-xs text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-1 focus:ring-ring"
+                          className="mt-1 h-8 text-xs"
                         />
                       </div>
                       <div>
                         <Label className="text-xs text-muted-foreground">Model name</Label>
-                        <input
+                        <Input
                           type="text"
                           value={settings.ollamaModel}
                           onChange={(e) => onUpdate({ ollamaModel: e.target.value })}
                           placeholder="qwen2.5:14b"
-                          className="mt-1 w-full rounded-md border border-border bg-background px-2 py-1 text-xs text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-1 focus:ring-ring"
+                          className="mt-1 h-8 text-xs"
                         />
                       </div>
                     </div>
@@ -1056,13 +1059,13 @@ export default function SettingsDialog({ isOpen, onClose, settings, onUpdate, we
 
             <div className="space-y-1.5">
               <Label htmlFor="sermon-model" className="text-xs font-medium">Modelnaam</Label>
-              <input
+              <Input
                 id="sermon-model"
                 type="text"
                 value={settings.sermonModel}
                 onChange={(e) => onUpdate({ sermonModel: e.target.value })}
                 placeholder="gpt-4o-mini"
-                className="w-full rounded-md border border-border bg-background px-2 py-1 text-xs text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-1 focus:ring-ring"
+                className="h-8 text-xs"
               />
             </div>
 
@@ -1117,7 +1120,7 @@ export default function SettingsDialog({ isOpen, onClose, settings, onUpdate, we
                   value={settings.sermonContextBefore}
                   onChange={(e) => {
                     const v = parseInt(e.target.value, 10);
-                    if (!Number.isNaN(v)) onUpdate({ sermonContextBefore: v });
+                    if (!Number.isNaN(v)) onUpdate({ sermonContextBefore: Math.max(0, Math.min(5, v)) });
                   }}
                   className="w-16 text-xs text-center"
                 />
@@ -1134,7 +1137,7 @@ export default function SettingsDialog({ isOpen, onClose, settings, onUpdate, we
                   value={settings.sermonContextAfter}
                   onChange={(e) => {
                     const v = parseInt(e.target.value, 10);
-                    if (!Number.isNaN(v)) onUpdate({ sermonContextAfter: v });
+                    if (!Number.isNaN(v)) onUpdate({ sermonContextAfter: Math.max(0, Math.min(3, v)) });
                   }}
                   className="w-16 text-xs text-center"
                 />

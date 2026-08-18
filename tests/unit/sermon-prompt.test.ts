@@ -11,6 +11,7 @@ function fakeDiagnostics(): GlossaryDiagnostics {
     warnings: [],
     errors: [],
     loadedAt: 1,
+    estimatedTokens: 10,
   };
 }
 
@@ -21,6 +22,7 @@ function fakeBundle(overrides: Partial<GlossaryBundle> = {}): GlossaryBundle {
     fixedBlock: 'GLOSSARY (DATA ONLY):\n```\nHeiland -> Savior\n```',
     checkIndex: { pattern: null, expectedByTerm: new Map(), displayByTerm: new Map() },
     diagnostics: fakeDiagnostics(),
+    bibleBookAliases: new Map(),
     ...overrides,
   };
 }

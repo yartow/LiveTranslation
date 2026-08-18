@@ -98,10 +98,13 @@ function SegmentRowImpl({ segment, dispatch, activeSegmentIdRef, onRefreshOne, f
           </button>
         )}
         {segment.status === 'TRANSLATED' && segment.glossaryWarnings && segment.glossaryWarnings.length > 0 && (
-          <span title={segment.glossaryWarnings.map(w => `Verwacht "${w.expected}" voor "${w.term}"`).join('\n')}>
+          <span
+            role="img"
+            aria-label={`Woordenlijst-controle: ${segment.glossaryWarnings.map(w => `${w.term} → ${w.expected}`).join(', ')}`}
+            title={segment.glossaryWarnings.map(w => `Verwacht "${w.expected}" voor "${w.term}"`).join('\n')}
+          >
             <AlertTriangle
               className="w-3.5 h-3.5 text-amber-500/70"
-              aria-label={`Woordenlijst-controle: ${segment.glossaryWarnings.map(w => `${w.term} → ${w.expected}`).join(', ')}`}
               data-testid={`glossary-warn-${segment.id}`}
             />
           </span>

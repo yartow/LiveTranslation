@@ -185,7 +185,12 @@ function evaluate(state: IngestState, cfg: IngestConfig, now: number): IngestSte
 
 /** Append newly-arrived corrected ASR text (one chunk) to the buffer and evaluate the flush triggers. */
 export function appendChunk(state: IngestState, rawText: string, cfg: IngestConfig, now: number): IngestStep {
-  const deduped = dedupeOverlap(state.recentTail, rawText);
+  // Compare against the tail of whatever is still sitting unflushed in the
+  // buffer when there is any — recentTail only reflects the text as of the
+  // last branch-(a) flush, so within a still-open block it would miss an
+  // overlap against a chunk that arrived after that flush but before this one.
+  const currentTail = state.pieces.length > 0 ? tail80(bufferText(state)) : state.recentTail;
+  const deduped = dedupeOverlap(currentTail, rawText);
   if (!deduped.trim()) return { state, effects: [] };
 
   const sep = needsSpace(state.pieces, deduped) ? ' ' : '';

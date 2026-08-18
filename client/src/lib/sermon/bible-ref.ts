@@ -58,15 +58,18 @@ export function parseDutchNumberWord(word: string): number | null {
     const rest = parseDutchNumberWord(w.slice('honderd'.length));
     return rest === null ? null : 100 + rest;
   }
-  if (w in TEENS) return TEENS[w];
-  if (w in TENS) return TENS[w];
-  if (w in ONES) return ONES[w];
+  // hasOwnProperty (not `in`) — `in` also matches inherited Object.prototype
+  // members, so a stray token like "toString" or "constructor" would
+  // otherwise return a function instead of null.
+  if (Object.prototype.hasOwnProperty.call(TEENS, w)) return TEENS[w];
+  if (Object.prototype.hasOwnProperty.call(TENS, w)) return TENS[w];
+  if (Object.prototype.hasOwnProperty.call(ONES, w)) return ONES[w];
   // Compound: <ones>en<tens>, e.g. "vijfenzeventig" = vijf + en + zeventig = 75.
   for (const [onesWord, onesVal] of Object.entries(ONES)) {
     const prefix = `${onesWord}en`;
     if (!w.startsWith(prefix)) continue;
     const tensWord = w.slice(prefix.length);
-    if (tensWord in TENS) return onesVal + TENS[tensWord];
+    if (Object.prototype.hasOwnProperty.call(TENS, tensWord)) return onesVal + TENS[tensWord];
   }
   return null;
 }

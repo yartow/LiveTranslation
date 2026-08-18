@@ -52,7 +52,7 @@ const LANGUAGE_NAMES: Record<string, string> = {
 // Build a short Whisper prompt from glossary + sermon context + previous transcript.
 // Whisper uses this as "previous context" to prime the decoder toward domain vocabulary.
 // The last 2 sentences of previousTranscript give inter-chunk continuity.
-function buildWhisperPrompt(glossary?: string, sermonContext?: string, previousTranscript?: string): string | undefined {
+export function buildWhisperPrompt(glossary?: string, sermonContext?: string, previousTranscript?: string): string | undefined {
   const parts: string[] = [];
   if (previousTranscript?.trim()) {
     const sentences = previousTranscript.trim().split(/(?<=[.!?])\s+/).filter(Boolean);
@@ -69,6 +69,17 @@ function buildWhisperPrompt(glossary?: string, sermonContext?: string, previousT
     if (terms) parts.push(`Terms: ${terms}.`);
   }
   return parts.length ? parts.join(' ') : undefined;
+}
+
+// Guarded JSON parse — mirrors server/lib/anthropic.ts's parseJsonResponse so
+// a malformed/truncated model response degrades to the fallback instead of
+// throwing an uncaught exception out of the request handler.
+function parseJsonResponse(raw: string, fallback: Record<string, string>): Record<string, string> {
+  try {
+    return JSON.parse(raw);
+  } catch {
+    return fallback;
+  }
 }
 
 // Build the context block injected into LLM system messages. Glossary text
@@ -167,7 +178,7 @@ Your tasks:
     { signal: combinedSignal },
   );
 
-  const result = JSON.parse(response.choices[0].message.content || '{}');
+  const result = parseJsonResponse(response.choices[0].message.content || '{}', { correctedText: originalText, translatedText: '' });
 
   return {
     correctedText: result.correctedText || originalText,
@@ -232,7 +243,7 @@ CORRECTION RULES — apply all of them aggressively:
     { signal: combinedSignal },
   );
 
-  const result = JSON.parse(response.choices[0].message.content || '{}');
+  const result = parseJsonResponse(response.choices[0].message.content || '{}', { correctedText: accumulatedText, translatedText: '' });
 
   return {
     correctedText: result.correctedText || accumulatedText,
@@ -301,7 +312,7 @@ CORRECTION RULES:
     { signal: combinedSignal },
   );
 
-  const result = JSON.parse(response.choices[0].message.content || '{}');
+  const result = parseJsonResponse(response.choices[0].message.content || '{}', { correctedText: rawText });
   return { correctedText: result.correctedText || rawText };
 }
 

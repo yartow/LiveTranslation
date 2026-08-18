@@ -194,7 +194,10 @@ export interface DisambiguationDoc {
 
 export function parseDisambiguationDoc(md: string): DisambiguationDoc {
   const blocks: string[] = [];
-  const re = /```([\s\S]*?)```/g;
+  // The opening fence's info string (e.g. "```text") must not leak into the
+  // captured content — match past the rest of that line, capture only what
+  // follows it up to the closing fence.
+  const re = /```[^\n]*\n([\s\S]*?)```/g;
   let m: RegExpExecArray | null;
   while ((m = re.exec(md)) !== null) {
     blocks.push(m[1].trim());

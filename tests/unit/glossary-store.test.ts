@@ -93,12 +93,15 @@ describe('glossary-store', () => {
   });
 
   it('caches bundles per distinct selection without unbounded growth', () => {
+    const first = getGlossaryBundle({ csv: 'mini.csv', prompt: 'mini.md' });
     for (let i = 0; i < 20; i++) {
       getGlossaryBundle({ csv: 'mini.csv', prompt: 'mini.md' });
     }
-    // same selection every time -> should not grow the cache at all
+    // same selection every time -> should return the identical cached
+    // object, not just "not null" (which would pass even if caching were broken)
     const bundle = getGlossaryBundle({ csv: 'mini.csv', prompt: 'mini.md' });
     expect(bundle).not.toBeNull();
+    expect(bundle).toBe(first);
   });
 
   describe('bibleBookAliases', () => {

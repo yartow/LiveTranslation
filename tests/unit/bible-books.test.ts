@@ -5,12 +5,15 @@ import { getBibleBooks, bookNumberByEnglishName, _resetBibleBooksForTests } from
 const FIXTURE_DIR = join(__dirname, '..', 'fixtures', 'bible');
 
 describe('bible-books', () => {
+  const originalBibleDir = process.env.BIBLE_DIR;
+
   beforeEach(() => {
     process.env.BIBLE_DIR = FIXTURE_DIR;
     _resetBibleBooksForTests();
   });
   afterEach(() => {
-    delete process.env.BIBLE_DIR;
+    if (originalBibleDir === undefined) delete process.env.BIBLE_DIR;
+    else process.env.BIBLE_DIR = originalBibleDir;
     _resetBibleBooksForTests();
   });
 

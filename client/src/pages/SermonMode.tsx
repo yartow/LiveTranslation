@@ -114,6 +114,7 @@ export default function SermonMode() {
     ollamaModel: settings.ollamaModel,
     glossary: settings.theologicalGlossary,
     debugMode: settings.debugMode,
+    normalizationGain: settings.audioNormalizationGain,
     onError: (message) => toast({ title: 'Opnamefout', description: message, variant: 'destructive' }),
   });
 
@@ -149,7 +150,13 @@ export default function SermonMode() {
       <SermonToolbar
         isRecording={isRecording}
         isProcessing={isProcessing}
-        onToggleRecording={() => { isRecording ? stop() : start(); }}
+        onToggleRecording={() => {
+          if (isRecording) {
+            stop().catch((err) => toast({ title: 'Opnamefout', description: err instanceof Error ? err.message : 'Kon opname niet stoppen', variant: 'destructive' }));
+          } else {
+            start();
+          }
+        }}
         dirtyCount={dirtyCount}
         onRefreshAll={refreshAll}
         autoTranslate={settings.sermonAutoTranslate}

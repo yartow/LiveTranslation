@@ -7,10 +7,32 @@
 import { spawn, type ChildProcessWithoutNullStreams } from 'child_process';
 import { createInterface } from 'readline';
 import { join } from 'path';
+import { existsSync } from 'fs';
 
-const WORKER_PATH = join(import.meta.dirname, '..', 'python', 'mlx_worker.py');
+// In dev (tsx running server/index.ts directly), import.meta.dirname here is
+// server/lib, so '../python/...' resolves to server/python. In a production
+// build, esbuild bundles everything into dist/index.js and import.meta.dirname
+// is dist — '../python/...' would resolve outside the repo entirely unless
+// the build step copies server/python next to dist (see package.json's
+// `build` script), which lands it at dist/python instead. Try both rather
+// than hard-coding one layout.
+function resolveWorkerPath(): string {
+  const devLayout = join(import.meta.dirname, '..', 'python', 'mlx_worker.py');
+  if (existsSync(devLayout)) return devLayout;
+  const prodLayout = join(import.meta.dirname, 'python', 'mlx_worker.py');
+  if (existsSync(prodLayout)) return prodLayout;
+  return devLayout; // neither exists — fail with a path in the error message that at least points at the expected dev location
+}
+
+const WORKER_PATH = resolveWorkerPath();
 const REQUEST_TIMEOUT_MS = 30_000;
+// The worker's first waitUntilReady() call may need to download the model
+// (multi-GB from Hugging Face) in addition to warm-up inference — a much
+// longer allowance than any individual transcription request should ever need.
+const STARTUP_TIMEOUT_MS = 10 * 60_000;
 const RESTART_BACKOFF_MS = 2_000;
+const MAX_RESTART_BACKOFF_MS = 60_000;
+const MAX_CONSECUTIVE_RESTART_FAILURES = 10;
 
 interface PendingRequest {
   resolve: (text: string) => void;
@@ -26,6 +48,7 @@ class MlxWorkerManager {
   private nextId = 1;
   private lastSpawnError: string | null = null;
   private restarting = false;
+  private consecutiveRestartFailures = 0;
 
   private pythonBin(): string {
     return process.env.MLX_PYTHON || 'python3';
@@ -71,11 +94,18 @@ class MlxWorkerManager {
 
   private scheduleRestart(): void {
     if (this.restarting) return;
+    this.consecutiveRestartFailures++;
+    if (this.consecutiveRestartFailures > MAX_CONSECUTIVE_RESTART_FAILURES) {
+      console.error(`MLX worker: giving up after ${this.consecutiveRestartFailures} consecutive failed restarts — check MLX_PYTHON (currently "${this.pythonBin()}")`);
+      this.failAllPending(new Error('MLX worker repeatedly failed to start — check server logs / MLX_PYTHON'));
+      return;
+    }
     this.restarting = true;
+    const backoff = Math.min(RESTART_BACKOFF_MS * 2 ** (this.consecutiveRestartFailures - 1), MAX_RESTART_BACKOFF_MS);
     setTimeout(() => {
       this.restarting = false;
       this.spawnWorker();
-    }, RESTART_BACKOFF_MS);
+    }, backoff);
   }
 
   private handleLine(line: string): void {
@@ -91,6 +121,7 @@ class MlxWorkerManager {
 
     if (msg.type === 'ready') {
       this.ready = true;
+      this.consecutiveRestartFailures = 0;
       for (const waiter of this.readyWaiters.splice(0)) waiter.resolve();
       return;
     }
@@ -145,7 +176,7 @@ class MlxWorkerManager {
   ): Promise<string> {
     if (signal?.aborted) return '';
 
-    await this.waitUntilReady(REQUEST_TIMEOUT_MS);
+    await this.waitUntilReady(STARTUP_TIMEOUT_MS);
     if (!this.proc) throw new Error('MLX worker unavailable');
 
     const id = this.nextId++;
@@ -177,7 +208,24 @@ class MlxWorkerManager {
         language: normalizedLanguage,
         initial_prompt: initialPrompt || null,
       });
-      this.proc!.stdin.write(req + '\n');
+      // The worker can exit between waitUntilReady() resolving and this
+      // write (e.g. it crashed the instant after reporting ready) — without
+      // an error handler here, a failed/EPIPE write would otherwise just
+      // sit until REQUEST_TIMEOUT_MS instead of failing immediately.
+      try {
+        this.proc!.stdin.write(req + '\n', (err) => {
+          if (!err) return;
+          const pending = this.pending.get(id);
+          if (!pending) return;
+          this.pending.delete(id);
+          clearTimeout(pending.timeout);
+          pending.reject(new Error(`MLX worker write failed: ${err.message}`));
+        });
+      } catch (err) {
+        this.pending.delete(id);
+        clearTimeout(timeout);
+        reject(err instanceof Error ? err : new Error(String(err)));
+      }
     });
   }
 }

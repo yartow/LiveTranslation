@@ -17,12 +17,18 @@ function sha256(s: string): string {
   return createHash('sha256').update(s).digest('hex');
 }
 
+// The approved digest of the current no-glossary English system prompt. A
+// failure here means ROLE_PREAMBLE/OUTPUT_PROTOCOL in sermon-prompt.ts
+// changed — if that was intentional, update this constant.
+const EXPECTED_HASH = 'db640e242046255b9c0a0021320b3c2d1f27652c247520df8f03b3f0da9d74a6';
+
 describe('sermon system prompt — stable prefix regression', () => {
-  it('is byte-identical across repeated calls', () => {
+  it('is byte-identical across repeated calls, and matches the approved digest', () => {
     const ctx = getGlossaryContext(undefined);
     const first = buildSystemPrompt('en', ctx);
     const second = buildSystemPrompt('en', ctx);
     expect(sha256(first)).toBe(sha256(second));
+    expect(sha256(first)).toBe(EXPECTED_HASH);
   });
 
   it('contains no per-request-varying content (no ISO dates, no counts)', () => {

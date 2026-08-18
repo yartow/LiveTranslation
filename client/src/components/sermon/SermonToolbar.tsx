@@ -85,7 +85,11 @@ export default function SermonToolbar({
           value={maxLatencySecs}
           onChange={(e) => {
             const v = parseInt(e.target.value, 10);
-            if (!Number.isNaN(v)) onChangeMaxLatencySecs(Math.max(3, Math.min(20, v)));
+            if (!Number.isNaN(v)) onChangeMaxLatencySecs(v);
+          }}
+          onBlur={(e) => {
+            const v = parseInt(e.target.value, 10);
+            onChangeMaxLatencySecs(Number.isNaN(v) ? maxLatencySecs : Math.max(3, Math.min(20, v)));
           }}
           className="w-14 rounded-md border border-input bg-background px-2 py-1 text-xs"
           data-testid="input-max-latency"

@@ -110,16 +110,15 @@ describe('translateSegments — glossary warnings', () => {
     try {
       const opts: TranslateOptions = { ...baseOpts, glossaryCsv: 'mini.csv', disambiguationPrompt: 'mini.md' };
       const items: TranslateItemInput[] = [
-        { id: 'miss', text: 'Hij is de Heiland.', before: [], after: [] }, // Heiland -> Savior, translation below omits it
+        { id: 'miss', text: 'Hij is de Heiland, de Verlosser.', before: [], after: [] }, // Heiland -> Savior, translation below omits it
         { id: 'hit', text: 'Hij is de Heiland.', before: [], after: [] },
       ];
 
-      // callModel doesn't see the item id, so distinguish the two calls by
-      // order — Promise.all preserves the items array's call order per item.
-      let call = 0;
-      const callModelOrdered = vi.fn(async () => {
-        call++;
-        return call === 1 ? 'He is the Redeemer.' : 'He is the Savior.';
+      // Distinguish the two calls by inspecting the user message's content
+      // (each item's distinct source text ends up in <TE_VERTALEN>) rather
+      // than by invocation order, which Promise.all doesn't actually guarantee.
+      const callModelOrdered = vi.fn(async (_systemPrompt: string, userMessage: string) => {
+        return userMessage.includes('Verlosser') ? 'He is the Redeemer.' : 'He is the Savior.';
       });
 
       const results = await translateSegments(items, opts, { callModel: callModelOrdered });

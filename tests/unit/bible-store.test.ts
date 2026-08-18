@@ -7,12 +7,15 @@ import {
 const FIXTURE_DIR = join(__dirname, '..', 'fixtures', 'bible');
 
 describe('bible-store', () => {
+  const originalBibleDir = process.env.BIBLE_DIR;
+
   beforeEach(() => {
     process.env.BIBLE_DIR = FIXTURE_DIR;
     _resetBibleStoreForTests();
   });
   afterEach(() => {
-    delete process.env.BIBLE_DIR;
+    if (originalBibleDir === undefined) delete process.env.BIBLE_DIR;
+    else process.env.BIBLE_DIR = originalBibleDir;
     _resetBibleStoreForTests();
   });
 

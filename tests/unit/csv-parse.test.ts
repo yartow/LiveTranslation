@@ -23,7 +23,7 @@ describe('parseCsv', () => {
   });
 
   it('strips a leading UTF-8 BOM', () => {
-    expect(parseCsv('﻿a,b\n1,2')).toEqual([['a', 'b'], ['1', '2']]);
+    expect(parseCsv('\uFEFFa,b\n1,2')).toEqual([['a', 'b'], ['1', '2']]);
   });
 
   it('returns an empty array for empty input', () => {

@@ -7,7 +7,7 @@
 // purpose (offline test scoring vs. an online per-segment decision) and a
 // different cost profile, so it isn't reused here.
 
-const COMBINING_DIACRITICS_RE = new RegExp('[' + String.fromCharCode(0x0300) + '-' + String.fromCharCode(0x036f) + ']', 'g');
+const COMBINING_DIACRITICS_RE = /[\u0300-\u036f]/g;
 
 function normalize(text: string): string {
   return text

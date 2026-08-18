@@ -8,6 +8,7 @@ services:
     environment:
       NODE_ENV: production
       PORT: "5001"
+      GLOSSARY_DIR: /app/data
     volumes:
       # data/ is gitignored and not baked into the image (see Dockerfile) —
       # it holds sermon mode's glossary CSV/md files (server/lib/glossary-store.ts).

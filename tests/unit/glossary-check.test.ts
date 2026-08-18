@@ -28,6 +28,11 @@ describe('buildCheckIndex', () => {
     const index = buildCheckIndex([row('Rijk Gods', 'Kingdom (of God)')], new Set());
     expect(index.expectedByTerm.get('rijk gods')).toBe('Kingdom');
   });
+
+  it('excludes a 4-character term (below the 5-char minimum)', () => {
+    const index = buildCheckIndex([row('Eer', 'Honor'), row('Amos', 'Amos')], new Set());
+    expect(index.expectedByTerm.size).toBe(0);
+  });
 });
 
 describe('checkGlossaryAdherence', () => {
@@ -44,11 +49,6 @@ describe('checkGlossaryAdherence', () => {
 
   it('is case-insensitive on both source and translation', () => {
     expect(checkGlossaryAdherence('hij is de HEILAND.', 'he is the savior.', index)).toEqual([]);
-  });
-
-  it('excludes a 4-character term (below the 5-char minimum)', () => {
-    const idx = buildCheckIndex([row('Eer', 'Honor'), row('Amos', 'Amos')], new Set());
-    expect(idx.expectedByTerm.size).toBe(0);
   });
 
   it('does not match a term embedded inside a longer word', () => {

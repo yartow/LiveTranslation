@@ -17,6 +17,11 @@ interface TargetCellProps {
 export default function TargetCell({ segment, dispatch, activeSegmentIdRef }: TargetCellProps) {
   const [editing, setEditing] = useState(false);
   const ref = useRef<HTMLTextAreaElement>(null);
+  // Set by Escape just before blur fires (either natively, from the
+  // textarea unmounting, or from a subsequent click) — commit() checks and
+  // clears this so a cancelled edit is never saved regardless of how blur
+  // ends up being triggered.
+  const cancelledRef = useRef(false);
 
   const autoGrow = useCallback(() => {
     const el = ref.current;
@@ -28,8 +33,9 @@ export default function TargetCell({ segment, dispatch, activeSegmentIdRef }: Ta
   useLayoutEffect(() => { if (editing) autoGrow(); }, [editing, autoGrow]);
 
   const commit = useCallback(() => {
-    const value = ref.current?.value ?? segment.translatedText;
     setEditing(false);
+    if (cancelledRef.current) { cancelledRef.current = false; return; }
+    const value = ref.current?.value ?? segment.translatedText;
     if (value !== segment.translatedText) {
       dispatch({ type: 'SET_TARGET_MANUAL', id: segment.id, translatedText: value, now: Date.now() });
     }
@@ -44,7 +50,7 @@ export default function TargetCell({ segment, dispatch, activeSegmentIdRef }: Ta
         onInput={autoGrow}
         onFocus={() => { activeSegmentIdRef.current = segment.id; }}
         onBlur={commit}
-        onKeyDown={(e) => { if (e.key === 'Escape') setEditing(false); }}
+        onKeyDown={(e) => { if (e.key === 'Escape') { cancelledRef.current = true; setEditing(false); } }}
         data-segment-id={segment.id}
         data-testid={`target-edit-${segment.id}`}
         rows={1}
@@ -69,6 +75,9 @@ export default function TargetCell({ segment, dispatch, activeSegmentIdRef }: Ta
       data-testid={`target-${segment.id}`}
       tabIndex={0}
       onFocus={() => { activeSegmentIdRef.current = segment.id; }}
+      onKeyDown={(e) => {
+        if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); setEditing(true); }
+      }}
     >
       {segment.manualOverride && (
         <Lock className="inline-block w-3 h-3 mr-1 mb-0.5 text-blue-500" aria-label="Handmatig aangepast" />

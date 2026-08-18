@@ -70,6 +70,20 @@ export interface TranslateRequestOptions {
   signal?: AbortSignal;
 }
 
+// Bounds a batch's server round-trip so a stalled request can never leave
+// segments stuck at TRANSLATING forever (see useTranslationQueue.ts's
+// runBatch, which dispatches MARK_TRANSLATING before this call and has no
+// other mechanism to un-stick it if the fetch itself never settles).
+const SERMON_TRANSLATE_TIMEOUT_MS = 30_000;
+
+function timeoutSignal(callerSignal?: AbortSignal): AbortSignal {
+  const timeout = AbortSignal.timeout(SERMON_TRANSLATE_TIMEOUT_MS);
+  if (!callerSignal) return timeout;
+  return typeof AbortSignal.any === 'function'
+    ? AbortSignal.any([timeout, callerSignal])
+    : callerSignal; // very old runtime without AbortSignal.any — caller cancellation still works, just without the extra timeout
+}
+
 export async function translateItems(items: TranslateItem[], opts: TranslateRequestOptions): Promise<TranslateResult[]> {
   if (items.length === 0) return [];
 
@@ -100,7 +114,7 @@ export async function translateItems(items: TranslateItem[], opts: TranslateRequ
         readingCandidate: i.readingCandidate, referenceHint: i.referenceHint,
       })),
     }),
-    signal: opts.signal,
+    signal: timeoutSignal(opts.signal),
   });
 
   if (!res.ok) {
