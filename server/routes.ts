@@ -11,7 +11,7 @@ import {
 import { correctAndTranslateWithClaude, retroactiveCorrectionWithClaude } from './lib/anthropic';
 import { correctAndTranslateWithOllama, retroactiveCorrectionWithOllama, isValidOllamaBaseUrl } from './lib/ollama';
 import { transcribeWithMlx } from './lib/mlx-whisper';
-import { isAsrArtifact } from './lib/asr-artifacts';
+import { isAsrArtifact, stripAsrArtifacts } from './lib/asr-artifacts';
 import { translateSegments, type TranslateItemInput, type SermonTranslationProvider } from './lib/sermon-translate';
 import { getGlossaryStatus, reloadGlossary } from './lib/glossary-store';
 import { isSafeGlossaryName } from './lib/glossary-file';
@@ -71,7 +71,7 @@ async function runCorrectAndTranslate(
     return correctAndTranslateWithClaude(text, targetLanguage, detectSpeakers, anthropicApiKey || '', glossary, sermonContext);
   }
   if (provider === 'ollama') {
-    return correctAndTranslateWithOllama(text, targetLanguage, detectSpeakers, ollamaModel || 'qwen2.5:14b', ollamaBaseUrl || 'http://localhost:11434', glossary, sermonContext);
+    return correctAndTranslateWithOllama(text, targetLanguage, detectSpeakers, ollamaModel || 'qwen3.6:latest', ollamaBaseUrl || 'http://localhost:11434', glossary, sermonContext);
   }
   if (provider === 'none') {
     return { correctedText: text, translatedText: '' };
@@ -95,7 +95,7 @@ async function runRetroactiveCorrection(
     return retroactiveCorrectionWithClaude(accumulatedText, targetLanguage, detectSpeakers, anthropicApiKey || '', glossary, sermonContext);
   }
   if (provider === 'ollama') {
-    return retroactiveCorrectionWithOllama(accumulatedText, targetLanguage, detectSpeakers, ollamaModel || 'qwen2.5:14b', ollamaBaseUrl || 'http://localhost:11434', glossary, sermonContext);
+    return retroactiveCorrectionWithOllama(accumulatedText, targetLanguage, detectSpeakers, ollamaModel || 'qwen3.6:latest', ollamaBaseUrl || 'http://localhost:11434', glossary, sermonContext);
   }
   if (provider === 'none') {
     return { correctedText: accumulatedText, translatedText: '' };
@@ -255,10 +255,13 @@ export async function registerRoutes(app: Express): Promise<Server> {
       // This endpoint is a separate code path from the WebSocket chunk
       // pipeline (server/lib/chunk-transcription.ts) and shares none of its
       // filtering, so it needs its own check rather than inheriting one.
-      const { correctedText, translatedText } = isAsrArtifact(rawTranscript, sourceLanguage)
+      const cleanedTranscript = isAsrArtifact(rawTranscript, sourceLanguage)
+        ? ''
+        : stripAsrArtifacts(rawTranscript, sourceLanguage);
+      const { correctedText, translatedText } = !cleanedTranscript
         ? { correctedText: '', translatedText: '' }
         : await runCorrectAndTranslate(
-          rawTranscript, targetLanguage, detectSpeakers, provider, openaiApiKey, anthropicApiKey,
+          cleanedTranscript, targetLanguage, detectSpeakers, provider, openaiApiKey, anthropicApiKey,
         );
 
       if (webmFilePath && fs.existsSync(webmFilePath)) fs.unlinkSync(webmFilePath);

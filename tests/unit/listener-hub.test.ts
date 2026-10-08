@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import {
-  createHubState, toListenerLine, applyPublish, applyClear, snapshot,
+  createHubState, toListenerLine, applyPublish, applyClear, applySync, snapshot,
 } from '../../server/lib/listener-hub.js';
 
 describe('toListenerLine — trust-boundary narrowing', () => {
@@ -79,5 +79,34 @@ describe('snapshot', () => {
     const state = createHubState();
     applyPublish(state, [{ id: 'a', index: 0, text: 'First', edited: false, sourceText: 'Eerste' }]);
     expect(Object.keys(snapshot(state)[0]).sort()).toEqual(['edited', 'id', 'index', 'text']);
+  });
+});
+
+describe('applySync', () => {
+  it('replaces the whole backlog — a reloaded operator page must not leave the previous page\'s lines behind', () => {
+    const state = createHubState();
+    applyPublish(state, [
+      { id: 'seg_old_0', index: 0, text: 'Old line one', edited: false },
+      { id: 'seg_old_1', index: 1, text: 'Old line two', edited: false },
+    ]);
+    const accepted = applySync(state, [{ id: 'seg_new_0', index: 0, text: 'New line', edited: false }]);
+    expect(accepted).toHaveLength(1);
+    expect(snapshot(state).map(l => l.text)).toEqual(['New line']);
+  });
+
+  it('an empty sync empties the hub (the operator has nothing)', () => {
+    const state = createHubState();
+    applyPublish(state, [{ id: 'seg_old_0', index: 0, text: 'Old', edited: false }]);
+    applySync(state, []);
+    expect(snapshot(state)).toEqual([]);
+  });
+
+  it('still drops malformed lines and extra fields', () => {
+    const state = createHubState();
+    applySync(state, [
+      { id: 'a', index: 0, text: 'ok', edited: false, sourceText: 'Nederlands' },
+      { id: '', index: 1, text: 'bad', edited: false },
+    ]);
+    expect(snapshot(state)).toEqual([{ id: 'a', index: 0, text: 'ok', edited: false }]);
   });
 });

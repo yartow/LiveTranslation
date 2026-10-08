@@ -32,7 +32,27 @@ os.environ.setdefault("TOKENIZERS_PARALLELISM", "false")
 _protocol_stdout = sys.stdout
 sys.stdout = sys.stderr
 
-MODEL_REPO = "mlx-community/whisper-large-v3-mlx"
+# Override with MLX_MODEL (e.g. "mlx-community/whisper-large-v3-turbo" — faster,
+# ~1.6 GB first-run download). Default stays the already-cached large-v3.
+MODEL_REPO = os.environ.get("MLX_MODEL") or "mlx-community/whisper-large-v3-mlx"
+
+# Per-segment hallucination filter, applied to Whisper's own segment stats.
+# compression_ratio > 2.4 is Whisper's standard signature of a repetition loop
+# ("Muziek Muziek Muziek ..."). The no_speech/logprob pair is deliberately an
+# AND of two weak signals: no_speech_prob alone is NOT trustworthy (see the
+# comment below), but a segment the model itself rates as probably-no-speech
+# AND low-confidence is safe to drop.
+MAX_COMPRESSION_RATIO = 2.4
+NO_SPEECH_PROB_DROP = 0.6
+AVG_LOGPROB_DROP = -1.0
+
+
+def keep_segment(seg: dict) -> bool:
+    if seg.get("compression_ratio", 0.0) > MAX_COMPRESSION_RATIO:
+        return False
+    if seg.get("no_speech_prob", 0.0) > NO_SPEECH_PROB_DROP and seg.get("avg_logprob", 0.0) < AVG_LOGPROB_DROP:
+        return False
+    return True
 
 # Whisper is known to hallucinate fluent-sounding but entirely invented text
 # on silence/background noise (e.g. caption-style artifacts like "[Music]"
@@ -101,8 +121,24 @@ def main() -> None:
                 # window's text, which is a second, unrelated compounding
                 # source of hallucinated repetition.
                 condition_on_previous_text=False,
+                # Required for hallucination_silence_threshold: when a long
+                # silence is detected around a segment, a suspicious segment
+                # next to it is skipped instead of kept.
+                word_timestamps=True,
+                hallucination_silence_threshold=2.0,
+                compression_ratio_threshold=MAX_COMPRESSION_RATIO,
+                no_speech_threshold=NO_SPEECH_PROB_DROP,
             )
-            emit({"id": req_id, "text": result.get("text", "").strip()})
+            segments = result.get("segments") or []
+            if segments:
+                kept = [seg for seg in segments if keep_segment(seg)]
+                dropped = len(segments) - len(kept)
+                if dropped:
+                    log(f"Request {req_id}: dropped {dropped}/{len(segments)} low-confidence segment(s)")
+                text = " ".join(seg.get("text", "").strip() for seg in kept).strip()
+            else:
+                text = result.get("text", "").strip()
+            emit({"id": req_id, "text": text})
         except Exception as e:
             log(f"Request {req_id} failed: {traceback.format_exc()}")
             emit({"id": req_id, "error": str(e)})

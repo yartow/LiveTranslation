@@ -49,11 +49,24 @@ export default function SourceCell({ segment, dispatch, activeSegmentIdRef, flus
   useEffect(() => {
     if (segment.sourceRevision === revisionRef.current) return;
     const el = ref.current;
-    if (!el || document.activeElement === el) return;
+    if (!el) return;
+    if (document.activeElement === el) {
+      // Focused but not yet typed in, on a still-live row: keep showing what
+      // the store has, so the operator's first keystroke edits the current
+      // text rather than overwriting words that arrived after focus. Live
+      // provisional text only grows at the end, so the caret offsets stay valid.
+      if (segment.status !== 'PROVISIONAL' || pendingRef.current !== null) return;
+      const { selectionStart, selectionEnd } = el;
+      revisionRef.current = segment.sourceRevision;
+      el.value = segment.sourceText;
+      el.setSelectionRange(selectionStart, selectionEnd);
+      autoGrow();
+      return;
+    }
     revisionRef.current = segment.sourceRevision;
     el.value = segment.sourceText;
     autoGrow();
-  }, [segment.sourceRevision, segment.sourceText, autoGrow]);
+  }, [segment.sourceRevision, segment.sourceText, segment.status, autoGrow]);
 
   const commitPending = useCallback(() => {
     if (debounceRef.current) { clearTimeout(debounceRef.current); debounceRef.current = null; }
@@ -78,8 +91,12 @@ export default function SourceCell({ segment, dispatch, activeSegmentIdRef, flus
     autoGrow();
     pendingRef.current = e.currentTarget.value;
     if (debounceRef.current) clearTimeout(debounceRef.current);
+    // First keystroke on a live row: commit synchronously so the row flips to
+    // EDITED (and the ingest buffer hands it over) before any further live
+    // update can land inside the debounce window and be overwritten.
+    if (segment.status === 'PROVISIONAL') { commitPending(); return; }
     debounceRef.current = setTimeout(commitPending, EDIT_DEBOUNCE_MS);
-  }, [autoGrow, commitPending]);
+  }, [autoGrow, commitPending, segment.status]);
 
   const handleBlur = useCallback(() => {
     commitPending();

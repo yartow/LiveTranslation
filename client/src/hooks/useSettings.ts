@@ -47,6 +47,9 @@ export interface AppSettings {
   ollamaBaseUrl: string;
   ollamaModel: string;
   // audio pipeline
+  // Capture the mic without the browser's echo-cancel / noise-suppress / auto-gain
+  // (they hurt Whisper — see chunk-based-transcription.ts).
+  rawAudioCapture: boolean;
   useTranscriptAsWhisperContext: boolean;
   chunkOverlapMs: number;
   useVADChunking: boolean;
@@ -67,6 +70,9 @@ export interface AppSettings {
   sermonTranslationProvider: SermonTranslationProvider;
   sermonModel: string;
   sermonCorrectionProvider: SermonTranslationProvider;
+  // Run the per-chunk LLM correction pass on live ASR text. Off = use Whisper's
+  // own text as-is (faster, no risk of the model rewriting correct words).
+  sermonAsrCorrection: boolean;
   sermonAutoTranslate: boolean;
   // sermon mode — file-based glossary (see server/lib/glossary-store.ts)
   sermonGlossaryEnabled: boolean;
@@ -99,7 +105,8 @@ const defaultSettings: AppSettings = {
   defaultTargetLanguage: 'nl',
   debugMode: false,
   ollamaBaseUrl: 'http://localhost:11434',
-  ollamaModel: 'qwen2.5:14b',
+  ollamaModel: 'qwen3.6:latest',
+  rawAudioCapture: true,
   useTranscriptAsWhisperContext: true,
   chunkOverlapMs: 500,
   useVADChunking: false,
@@ -121,6 +128,7 @@ const defaultSettings: AppSettings = {
   sermonTranslationProvider: 'openai',
   sermonModel: 'gpt-4o-mini',
   sermonCorrectionProvider: 'openai',
+  sermonAsrCorrection: true,
   sermonAutoTranslate: true,
   sermonGlossaryEnabled: true,
   sermonGlossaryCsv: 'preek_woordenlijst_NL_EN_1.csv',
@@ -246,6 +254,9 @@ function loadSettings(): AppSettings {
   if (typeof merged.sermonModel !== 'string' || !merged.sermonModel.trim() || merged.sermonModel.length > 80) {
     merged.sermonModel = defaultSettings.sermonModel;
   }
+  if (typeof merged.sermonAsrCorrection !== 'boolean') {
+    merged.sermonAsrCorrection = defaultSettings.sermonAsrCorrection;
+  }
   if (typeof merged.sermonAutoTranslate !== 'boolean') {
     merged.sermonAutoTranslate = defaultSettings.sermonAutoTranslate;
   }
@@ -308,6 +319,7 @@ export function useSettings() {
           debugMode: next.debugMode,
           ollamaBaseUrl: next.ollamaBaseUrl,
           ollamaModel: next.ollamaModel,
+          rawAudioCapture: next.rawAudioCapture,
           useTranscriptAsWhisperContext: next.useTranscriptAsWhisperContext,
           chunkOverlapMs: next.chunkOverlapMs,
           useVADChunking: next.useVADChunking,
@@ -325,6 +337,7 @@ export function useSettings() {
           sermonTranslationProvider: next.sermonTranslationProvider,
           sermonModel: next.sermonModel,
           sermonCorrectionProvider: next.sermonCorrectionProvider,
+          sermonAsrCorrection: next.sermonAsrCorrection,
           sermonAutoTranslate: next.sermonAutoTranslate,
           sermonGlossaryEnabled: next.sermonGlossaryEnabled,
           sermonGlossaryCsv: next.sermonGlossaryCsv,

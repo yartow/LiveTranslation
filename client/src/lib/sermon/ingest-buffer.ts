@@ -32,12 +32,16 @@
 // carried-over partial actually wait out a full block before it's forced
 // out mid-sentence.)
 //
+// If the human edits an open provisional row, releaseProvisional() hands that
+// row over: the text it already shows leaves the buffer and only newer text
+// goes into the next row.
+//
 // A provisional segment (emitted only when there is no complete sentence at
 // all after the cap fires) is tracked by an ingest-internal `token`, not a
 // real segment id — segment id assignment belongs to the store/hook layer.
 // See useSermonIngest.ts for how a token is bound to a real segment id.
 
-import { lastBoundary, splitSentences } from './sentence-split';
+import { findBoundaries, lastBoundary, splitSentences } from './sentence-split';
 import { dedupeOverlap, tail80 } from './overlap-dedupe';
 
 interface Piece {
@@ -50,11 +54,20 @@ export interface IngestState {
   anchorAt: number | null;
   provisionalToken: string | null;
   provisionalSeq: number;
+  /** Text last sent for the open provisional row, so an unchanged buffer isn't re-sent on every ~250ms tick. */
+  provisionalText: string | null;
   recentTail: string;
 }
 
 export interface IngestConfig {
   maxLatencyMs: number;
+  /**
+   * A block shorter than this many words doesn't flush at the normal deadline
+   * — it gets an extra half-window (up to 1.5x maxLatencyMs in total) to
+   * grow, so a lone "Amen." or a short sentence before a pause doesn't
+   * become a row of its own. Omitted/0 disables the rule.
+   */
+  minBlockWords?: number;
 }
 
 export type IngestEffect =
@@ -69,7 +82,7 @@ export interface IngestStep {
 }
 
 export function initIngestState(): IngestState {
-  return { pieces: [], anchorAt: null, provisionalToken: null, provisionalSeq: 0, recentTail: '' };
+  return { pieces: [], anchorAt: null, provisionalToken: null, provisionalSeq: 0, provisionalText: null, recentTail: '' };
 }
 
 function bufferText(state: IngestState): string {
@@ -126,6 +139,29 @@ function evaluate(state: IngestState, cfg: IngestConfig, now: number): IngestSte
   const lastB = lastBoundary(buf);
   const capExpired = state.anchorAt !== null && now - state.anchorAt >= cfg.maxLatencyMs;
 
+  // (c) A provisional row is open and its sentence has now completed: finish
+  // THAT sentence immediately (the row is already on screen, so there is no
+  // reason to make it wait), but consume only that one sentence. Any further
+  // complete sentences stay buffered and start a fresh block clock, instead of
+  // being emitted as extra short rows in the same step (the old behaviour,
+  // which is what produced "provisional row + a lone 'Amen.' row").
+  if (state.provisionalToken && lastB >= 0) {
+    const firstEnd = findBoundaries(buf)[0];
+    const sentence = buf.slice(0, firstEnd).trim();
+    const survivingPieces = trimPiecesTo(state.pieces, firstEnd);
+    return {
+      state: {
+        ...state,
+        pieces: survivingPieces,
+        anchorAt: survivingPieces.some(p => p.text.trim()) ? now : null,
+        provisionalToken: null,
+        provisionalText: null,
+        recentTail: tail80(buf.slice(0, firstEnd)),
+      },
+      effects: [{ type: 'completeProvisional', token: state.provisionalToken, text: sentence }],
+    };
+  }
+
   // (a) A complete sentence exists AND the block has reached its target
   // duration — flush everything complete in the buffer as one joined
   // segment. If the target hasn't been reached yet, fall through and wait:
@@ -133,22 +169,16 @@ function evaluate(state: IngestState, cfg: IngestConfig, now: number): IngestSte
   // deadline (or before another appendChunk brings the next one in).
   if (lastB >= 0 && capExpired) {
     const head = buf.slice(0, lastB);
+    const sentences = splitSentences(head);
+
+    // Too short to stand as its own row: hold it for a further half-window.
+    const wordCount = head.trim().split(/\s+/).filter(Boolean).length;
+    const minWords = cfg.minBlockWords ?? 0;
+    if (wordCount < minWords && now - state.anchorAt! < cfg.maxLatencyMs * 1.5) {
+      return { state, effects: [] };
+    }
+
     const survivingPieces = trimPiecesTo(state.pieces, lastB);
-    let sentences = splitSentences(head);
-
-    const effects: IngestEffect[] = [];
-    let provisionalToken = state.provisionalToken;
-
-    if (provisionalToken && sentences.length > 0) {
-      // The sentence that was running provisional has now completed.
-      effects.push({ type: 'completeProvisional', token: provisionalToken, text: sentences[0] });
-      sentences = sentences.slice(1);
-      provisionalToken = null;
-    }
-    if (sentences.length > 0) {
-      effects.push({ type: 'emit', text: sentences.join(' '), provisional: false });
-    }
-
     return {
       state: {
         ...state,
@@ -156,31 +186,58 @@ function evaluate(state: IngestState, cfg: IngestConfig, now: number): IngestSte
         // Restart the block clock: a surviving partial begins a fresh
         // cfg.maxLatencyMs window rather than inheriting the one that just
         // expired — see the header comment for why this is the actual fix.
-        anchorAt: survivingPieces.length > 0 ? now : null,
-        provisionalToken,
+        anchorAt: survivingPieces.some(p => p.text.trim()) ? now : null,
         recentTail: tail80(head),
       },
-      effects,
+      effects: sentences.length > 0 ? [{ type: 'emit', text: sentences.join(' '), provisional: false }] : [],
     };
   }
 
   // (b) No complete sentence at all — only act once the cap has expired.
   if (lastB < 0 && capExpired) {
+    const text = buf.trim();
     if (state.provisionalToken == null) {
       const token = `p${state.provisionalSeq}`;
       return {
-        state: { ...state, provisionalToken: token, provisionalSeq: state.provisionalSeq + 1 },
-        effects: [{ type: 'emit', text: buf.trim(), provisional: true, token }],
+        state: { ...state, provisionalToken: token, provisionalSeq: state.provisionalSeq + 1, provisionalText: text },
+        effects: [{ type: 'emit', text, provisional: true, token }],
       };
     }
-    // Same provisional row keeps growing — never open a second one.
+    // Same provisional row keeps growing — never open a second one, and
+    // don't re-send text that hasn't changed since the last update.
+    if (text === state.provisionalText) return { state, effects: [] };
     return {
-      state,
-      effects: [{ type: 'updateProvisional', token: state.provisionalToken, text: buf.trim() }],
+      state: { ...state, provisionalText: text },
+      effects: [{ type: 'updateProvisional', token: state.provisionalToken, text }],
     };
   }
 
   return { state, effects: [] };
+}
+
+/**
+ * Hands an open provisional row over to the human (they edited it, so
+ * canWriteLive() is false). Everything the row already shows is dropped from
+ * the buffer; only text that arrived after the row's last update survives, and
+ * it starts a fresh block. Without this, every later update/complete effect
+ * carries the WHOLE buffer, and the hook's fallback would open a new row
+ * containing the text the edited row already has — duplicated blocks.
+ */
+export function releaseProvisional(state: IngestState, now: number): IngestState {
+  if (state.provisionalToken == null) return state;
+  const buf = bufferText(state);
+  const shown = state.provisionalText ?? '';
+  const leadingWs = buf.length - buf.trimStart().length;
+  const cut = Math.min(buf.length, leadingWs + shown.length);
+  const pieces = trimPiecesTo(state.pieces, cut);
+  return {
+    ...state,
+    pieces,
+    anchorAt: pieces.some(p => p.text.trim()) ? now : null,
+    provisionalToken: null,
+    provisionalText: null,
+    recentTail: tail80(buf.slice(0, cut)),
+  };
 }
 
 /** Append newly-arrived corrected ASR text (one chunk) to the buffer and evaluate the flush triggers. */

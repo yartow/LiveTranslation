@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { ChunkBasedTranscription, type ChunkTranscriptionEvents, type TranscriptionEngine } from '@/lib/chunk-based-transcription';
-import { initIngestState, appendChunk, tick as ingestTick, type IngestConfig, type IngestEffect } from '@/lib/sermon/ingest-buffer';
+import { initIngestState, appendChunk, releaseProvisional, tick as ingestTick, type IngestConfig, type IngestEffect } from '@/lib/sermon/ingest-buffer';
 import { canWriteLive, type SegmentAction, type SegmentStoreState } from '@/lib/sermon/segment-store';
 import type { SermonTranslationProvider } from '@/hooks/useSettings';
 
@@ -15,6 +15,8 @@ export interface SermonIngestArgs {
   targetLanguage: string;
   engine: TranscriptionEngine;
   correctionProvider: SermonTranslationProvider;
+  /** false = skip the per-chunk LLM correction and use Whisper's text as-is. */
+  asrCorrection?: boolean;
   openaiApiKey: string;
   anthropicApiKey: string;
   ollamaBaseUrl: string;
@@ -27,19 +29,27 @@ export interface SermonIngestArgs {
    *  left a quiet mic under-amplified and more likely to fall under the
    *  speech-presence gate in chunk-based-transcription.ts. */
   normalizationGain?: number;
+  /** Settings.rawAudioCapture — see chunk-based-transcription.ts's setRawAudioCapture. */
+  rawAudioCapture?: boolean;
   onError: (message: string) => void;
 }
 
 const CAP_TICK_MS = 250;
-// VAD-silence threshold for sermon mode's forced VAD chunking — see the
-// "Gevolg voor chunk-overlap" note in the plan: cutting on silence (rather
-// than a fixed duration) means chunk boundaries land between words, which
-// is what makes chunkOverlapMs:0 safe to use here. Raised from 700ms to
-// 1100ms alongside the sermonMaxLatencySecs default bump (6s -> 10s,
-// useSettings.ts): fewer, longer chunks means fewer chunk boundaries for
-// the per-chunk correction step to guess sentence-final punctuation across,
-// which is what was fragmenting sermon mode's output into short segments.
-const SERMON_VAD_SILENCE_MS = 1100;
+// Sermon-mode chunking. Whisper is trained on up-to-30 s windows and is much
+// more accurate (and far less prone to hallucinating) on several seconds of
+// context than on the 1-3 s fragments a short pause threshold produces — a
+// preacher pauses constantly. So: a VAD cut is only allowed once
+// SERMON_MIN_CHUNK_MS of audio is buffered, the pause that triggers it is a
+// natural-sentence-gap length, and SERMON_MAX_CHUNK_MS is a hard cap kept well
+// under Whisper's 30 s window. Cutting on silence (rather than a fixed
+// duration) also means boundaries land between words, which is what makes
+// chunkOverlapMs:0 safe here.
+const SERMON_VAD_SILENCE_MS = 700;
+const SERMON_MIN_CHUNK_MS = 6_000;
+const SERMON_MAX_CHUNK_MS = 20_000;
+// How much of the already-transcribed text is fed back to Whisper as its
+// prompt for the next chunk (server trims further, see buildWhisperPrompt).
+const WHISPER_CONTEXT_CHARS = 300;
 
 /**
  * Wires ChunkBasedTranscription (outputMode:'correct-only', VAD chunking,
@@ -71,6 +81,7 @@ export function useSermonIngest(args: SermonIngestArgs) {
   // the defense-in-depth backstop if this ever collides anyway.
   const liveSessionRef = useRef(0);
   const lastChunkIndexRef = useRef(0);
+  const recentTextRef = useRef('');
 
   const approxTiming = useCallback(() => {
     const durationMs = (argsRef.current.chunkDurationSecs ?? 5) * 1000;
@@ -79,6 +90,19 @@ export function useSermonIngest(args: SermonIngestArgs) {
   }, []);
 
   const nextLiveId = useCallback(() => `live-${liveSessionRef.current}-${liveSeqRef.current++}`, []);
+
+  // If the human has taken over the open provisional row (edited it), hand it
+  // over in the ingest buffer too, so the text that row already shows isn't
+  // re-sent in a brand-new row. Must run before every evaluation.
+  const releaseIfTakenOver = useCallback((now: number) => {
+    const token = ingestStateRef.current.provisionalToken;
+    if (!token) return;
+    const id = tokenToIdRef.current.get(token);
+    if (!id) return; // no row was ever bound — applyEffects' missing-row fallback handles it
+    if (canWriteLive(argsRef.current.stateRef.current.byId[id])) return;
+    tokenToIdRef.current.delete(token);
+    ingestStateRef.current = releaseProvisional(ingestStateRef.current, now);
+  }, []);
 
   const applyEffects = useCallback((effects: IngestEffect[], now: number) => {
     const { dispatch, stateRef } = argsRef.current;
@@ -94,13 +118,12 @@ export function useSermonIngest(args: SermonIngestArgs) {
       } else if (effect.type === 'updateProvisional') {
         const id = tokenToIdRef.current.get(effect.token);
         const seg = id ? stateRef.current.byId[id] : undefined;
-        // The human has taken over this row (edited it) since it was opened,
-        // or it's gone missing (token-miss) — UPDATE_PROVISIONAL would be a
-        // silent no-op in either case (segment-store.ts's canWriteLive guard,
-        // or "no such id"), which used to just drop the live text on the
-        // floor. Open a fresh row for it instead so nothing is lost, and stop
-        // tracking the old token under the row we're no longer allowed to touch.
-        if (!id || !canWriteLive(seg)) {
+        // No row is bound to this token (token-miss): nothing on screen shows
+        // this text, so open a row for it. A row the human has taken over is
+        // NOT handled here — releaseIfTakenOver() hands it over before every
+        // evaluation, and re-sending the full buffer into a new row is what
+        // used to duplicate the block.
+        if (!id || !seg) {
           const newId = nextLiveId();
           const { startTime, endTime } = approxTiming();
           tokenToIdRef.current.set(effect.token, newId);
@@ -115,10 +138,9 @@ export function useSermonIngest(args: SermonIngestArgs) {
         const id = tokenToIdRef.current.get(effect.token);
         const seg = id ? stateRef.current.byId[id] : undefined;
         tokenToIdRef.current.delete(effect.token);
-        if (!id || !canWriteLive(seg)) {
-          // Same reasoning as above: COMPLETE_PROVISIONAL would refuse the
-          // write and the completed sentence would vanish. Append it as its
-          // own new segment instead.
+        if (!id || !seg) {
+          // Same reasoning as above: no row shows this sentence, so append it
+          // as its own new segment.
           const newId = nextLiveId();
           const { startTime, endTime } = approxTiming();
           dispatch({
@@ -135,11 +157,17 @@ export function useSermonIngest(args: SermonIngestArgs) {
   const handleCorrected = useCallback((text: string, chunkIndex: number) => {
     if (!text.trim()) return;
     lastChunkIndexRef.current = chunkIndex;
+    // Give Whisper the end of what it just produced as the prompt for the next
+    // chunk (continuity across the cut). Sermon chunks used to be transcribed
+    // cold; only Home.tsx did this.
+    recentTextRef.current = (recentTextRef.current + ' ' + text).slice(-WHISPER_CONTEXT_CHARS);
+    backendRef.current?.setPreviousTranscript(recentTextRef.current.trim());
     const now = Date.now();
+    releaseIfTakenOver(now);
     const step = appendChunk(ingestStateRef.current, text, argsRef.current.ingestConfigRef.current, now);
     ingestStateRef.current = step.state;
     applyEffects(step.effects, now);
-  }, [applyEffects]);
+  }, [applyEffects, releaseIfTakenOver]);
 
   // The cap-flush trigger must fire even when no new audio is arriving
   // (a speaker mid-sentence, or silence) — see plan §3. Runs for the whole
@@ -147,12 +175,13 @@ export function useSermonIngest(args: SermonIngestArgs) {
   useEffect(() => {
     const interval = setInterval(() => {
       const now = Date.now();
+      releaseIfTakenOver(now);
       const step = ingestTick(ingestStateRef.current, argsRef.current.ingestConfigRef.current, now);
       ingestStateRef.current = step.state;
       if (step.effects.length > 0) applyEffects(step.effects, now);
     }, CAP_TICK_MS);
     return () => clearInterval(interval);
-  }, [applyEffects]);
+  }, [applyEffects, releaseIfTakenOver]);
 
   const start = useCallback(async () => {
     const a = argsRef.current;
@@ -162,6 +191,7 @@ export function useSermonIngest(args: SermonIngestArgs) {
     liveSeqRef.current = 0;
     liveSessionRef.current += 1;
     lastChunkIndexRef.current = 0;
+    recentTextRef.current = '';
 
     const events: ChunkTranscriptionEvents = {
       onReady: () => {},
@@ -181,6 +211,8 @@ export function useSermonIngest(args: SermonIngestArgs) {
 
     const backend = new ChunkBasedTranscription(events, (a.chunkDurationSecs ?? 5) * 1000);
     backend.setOutputMode('correct-only');
+    backend.setChunkLimits(SERMON_MIN_CHUNK_MS, SERMON_MAX_CHUNK_MS);
+    backend.setRawAudioCapture(a.rawAudioCapture ?? true);
     backendRef.current = backend;
 
     try {
@@ -188,7 +220,7 @@ export function useSermonIngest(args: SermonIngestArgs) {
         a.sourceLanguage,
         a.targetLanguage,
         false, // detectSpeakers — not meaningful for a single-speaker sermon
-        a.correctionProvider,
+        a.asrCorrection === false ? 'none' : a.correctionProvider,
         a.openaiApiKey,
         a.anthropicApiKey,
         a.glossary,

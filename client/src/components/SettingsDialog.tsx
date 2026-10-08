@@ -22,6 +22,8 @@ import {
 } from '@/components/ui/select';
 import type { AppSettings, TranscriptionProvider, TranslationProvider, ImprovementProvider, LocalWhisperModel, DeviceProfile, SermonTranslationProvider, SermonBibleVersion, SermonScriptureFallback } from '@/hooks/useSettings';
 import { maskKey } from '@/lib/mask-key';
+import CopyableUrlList from '@/components/CopyableUrlList';
+import { useLanAddress } from '@/hooks/useLanAddress';
 
 interface SettingsDialogProps {
   isOpen: boolean;
@@ -334,6 +336,7 @@ export default function SettingsDialog({ isOpen, onClose, settings, onUpdate, we
   const hasAnthropicKey = settings.anthropicApiKey.length > 0;
   const noWebGpu = webGpuSupported === false;
   const isBrave = typeof (window.navigator as any).brave !== 'undefined';
+  const lan = useLanAddress(isOpen);
 
   const [isSavingProfile, setIsSavingProfile] = useState(false);
   const [newProfileName, setNewProfileName] = useState('');
@@ -580,7 +583,7 @@ export default function SettingsDialog({ isOpen, onClose, settings, onUpdate, we
                           type="text"
                           value={settings.ollamaModel}
                           onChange={(e) => onUpdate({ ollamaModel: e.target.value })}
-                          placeholder="qwen2.5:14b"
+                          placeholder="qwen3.6:latest"
                           className="mt-1 h-8 text-xs"
                         />
                       </div>
@@ -695,6 +698,23 @@ export default function SettingsDialog({ isOpen, onClose, settings, onUpdate, we
                   </div>
                 ))}
               </RadioGroup>
+            </div>
+
+            {/* Raw audio capture */}
+            <div className="flex items-center justify-between">
+              <div>
+                <Label htmlFor="raw-audio" className="font-medium cursor-pointer text-sm">
+                  Raw microphone audio
+                </Label>
+                <p className="text-xs text-muted-foreground mt-0.5">
+                  Turns off the browser's echo cancellation, noise suppression and auto-gain. Whisper is more accurate on unprocessed audio. Applies from the next recording.
+                </p>
+              </div>
+              <Switch
+                id="raw-audio"
+                checked={settings.rawAudioCapture}
+                onCheckedChange={(checked) => onUpdate({ rawAudioCapture: checked })}
+              />
             </div>
 
             {/* Previous transcript context */}
@@ -864,6 +884,29 @@ export default function SettingsDialog({ isOpen, onClose, settings, onUpdate, we
                 testId="select-default-target-language"
               />
             </div>
+          </section>
+
+          {/* ── Local IP address (listener mode) ── */}
+          <section className="space-y-3">
+            <h3 className="text-sm font-semibold text-foreground border-b border-border pb-1">
+              Local IP address
+            </h3>
+            <p className="text-xs text-muted-foreground">
+              Give this address to listeners on the same Wi-Fi so they can follow the English
+              translation on their phone (include the <code>http://</code> and the port). Look it
+              up again after you join a different network.
+            </p>
+            {lan.error && <p className="text-xs text-destructive">Could not look up the address.</p>}
+            {!lan.error && !lan.loaded && <p className="text-xs text-muted-foreground">Looking up address…</p>}
+            {lan.loaded && lan.urls.length === 0 && (
+              <p className="text-xs text-muted-foreground">
+                No network address found — this computer doesn't seem to be on a network.
+              </p>
+            )}
+            {lan.urls.length > 0 && <CopyableUrlList urls={lan.urls} />}
+            <Button type="button" variant="outline" size="sm" onClick={lan.refresh}>
+              Refresh
+            </Button>
           </section>
 
           {/* ── Theological Glossary ── */}
@@ -1055,6 +1098,24 @@ export default function SettingsDialog({ isOpen, onClose, settings, onUpdate, we
                   </SelectContent>
                 </Select>
               </div>
+            </div>
+
+            <div className="flex items-center justify-between">
+              <div>
+                <Label htmlFor="sermon-asr-correction" className="font-medium cursor-pointer text-sm">
+                  Correctiestap per fragment
+                </Label>
+                <p className="text-xs text-muted-foreground mt-0.5">
+                  Laat een taalmodel elk opgenomen fragment nog corrigeren. Uit = de tekst van Whisper
+                  ongewijzigd gebruiken (sneller; het model kan dan geen goede woorden herschrijven).
+                </p>
+              </div>
+              <Switch
+                id="sermon-asr-correction"
+                checked={settings.sermonAsrCorrection}
+                onCheckedChange={(checked) => onUpdate({ sermonAsrCorrection: checked })}
+                data-testid="switch-sermon-asr-correction"
+              />
             </div>
 
             <div className="space-y-1.5">

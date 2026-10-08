@@ -103,7 +103,7 @@ scripts/
 The app's default route — a purpose-built UI for translating a live sermon block-by-block with human review, distinct from Home's streaming-subtitle flow (moved to `/live`; `/sermon` redirects to `/` for old links). Full design: `client/src/lib/sermon/segment-model.ts`'s header comment and the plan file it references.
 
 - **Segment model** (`segment-model.ts`/`segment-store.ts`) — a `Segment` is one or more complete sentences grouped into a block (see "Live ingest" below), the atomic unit of editing/translation. Reducer replaces only the touched segment's object reference, so `SegmentRow` (memoized on `segment ===`) never re-renders unrelated rows while new segments stream in. The store also tracks `activeReading` (see "Scripture pipeline" below).
-- **Live ingest** (`ingest-buffer.ts`) — buffers incoming corrected ASR text and flushes into segments once `sermonMaxLatencySecs` elapses since the current block started: at that point, every complete sentence currently buffered is joined into one segment (so several short sentences spoken back-to-back become one block instead of one segment each), or, if no sentence has completed at all yet, the partial text is flushed mid-sentence as a `PROVISIONAL` segment. `sermonMaxLatencySecs` is thus both the target block duration and the hard ceiling — a complete sentence alone never triggers an immediate flush, it just waits for the next deadline. The block clock **restarts on every flush**: a leftover half-sentence that survives a flush starts a fresh `sermonMaxLatencySecs` window rather than an already-expired one (otherwise it gets forced into its own tiny `PROVISIONAL` segment on the very next tick — this was the cause of sermon mode rendering as a run of short, choppy rows). The per-chunk correction step (`correctTranscript`/`correctTranscriptWithClaude`/`correctTranscriptWithOllama`) deliberately leaves a mid-sentence chunk **unpunctuated** rather than guessing a period, since a chunk boundary (VAD-cut on a ~1.1s pause) frequently lands mid-sentence and a hallucinated period there is what fed short segments upstream of the ingest buffer.
+- **Live ingest** (`ingest-buffer.ts`) — buffers incoming corrected ASR text and flushes into segments once `sermonMaxLatencySecs` elapses since the current block started: at that point, every complete sentence currently buffered is joined into one segment (so several short sentences spoken back-to-back become one block instead of one segment each), or, if no sentence has completed at all yet, the partial text is flushed mid-sentence as a `PROVISIONAL` segment. `sermonMaxLatencySecs` is thus both the target block duration and the hard ceiling — a complete sentence alone never triggers an immediate flush, it just waits for the next deadline. The block clock **restarts on every flush**: a leftover half-sentence that survives a flush starts a fresh `sermonMaxLatencySecs` window rather than an already-expired one (otherwise it is forced into its own tiny `PROVISIONAL` segment on the very next tick, which renders as a run of short, choppy rows). The per-chunk correction step (`correctTranscript`/`correctTranscriptWithClaude`/`correctTranscriptWithOllama`) deliberately leaves a mid-sentence chunk **unpunctuated** rather than guessing a period, since a chunk boundary (VAD-cut on a ~1.1s pause) frequently lands mid-sentence and a hallucinated period there would cut segments short upstream of the ingest buffer.
 - **Translation** (`translate-client.ts` → `POST /api/sermon/translate` → `server/lib/sermon-translate.ts`) — batches dirty segments, translates via `sermonTranslationProvider`/`sermonCorrectionProvider` (`'openai' | 'claude' | 'ollama'` — sermon mode never offers `'none'`), and returns per-item `warnings?: GlossaryWarning[]` when the file-based glossary is enabled, or `scripture?: {...}` when a Bible reference was checked (see "Scripture pipeline" below).
 - **File-based glossary** — see the "File-based glossary trust boundary" security section and `GLOSSARY_DIR`/`GLOSSARY_CSV`/`GLOSSARY_PROMPT` env vars below. Configured per-user in Settings → "Preekmodus — woordenlijst" (`GlossaryPanel` in `SettingsDialog.tsx`).
 - **Hotkeys** (`hotkeys.ts`) — pure, DOM-free chord predicates (e.g. Cmd/Ctrl+Shift+Enter = re-translate all dirty segments); wired to `preventDefault`/capture-phase listeners in `SermonMode.tsx`.
@@ -142,7 +142,8 @@ Lets non-Dutch-speaking listeners follow the sermon translation live on their ow
 - **Two WebSocket endpoints**, wired up in `server/index.ts` alongside `/ws/transcribe`/`/ws/chunk-transcribe`:
   - `/ws/sermon-broadcast` — the operator's `SermonMode.tsx` page (`useListenerBroadcast.ts`) publishes segments once they're `TRANSLATED`/`SCRIPTURE`/manually overridden (`selectPublishableLines`), diffed against what was last sent so the socket stays quiet when nothing changed. A revised line republishes with `edited: true`, which `ListenerMode.tsx` renders in italic.
   - `/ws/sermon-listen` — a listener's phone (`ListenerMode.tsx`). Gets a full `snapshot` on connect (so joining mid-sermon shows the whole backlog), then incremental `update`s.
-- **One room, not per-session.** The hub is a module-level singleton — this app is built for one preacher on one MBP running one service at a time. A broadcaster reconnect (page reload, HMR) takes over as the current broadcaster and republishes its full known set, so the hub can't drift stale after a takeover.
+- **Sync, not merge; heartbeat; refresh.** The operator's page sends a `sync` (not `publish`) on every connect, which *replaces* the hub's backlog and pushes a fresh `snapshot` to every phone — a reloaded operator page has a new session/new segment ids, and merging it into the old page's leftovers showed old and new text interleaved on phones. The hub also sends `{type:'ping'}` to listeners every 15 s; `ListenerMode.tsx` treats 40 s of silence (20 s after the phone wakes/comes back online) as a dead socket (no `close` event fires on a silent drop) and reconnects. The phone header has a **Refresh** button (full page reload, which also picks up a newer version of the page).
+- **One room, not per-session.** The hub is a module-level singleton — this app is built for one preacher on one MBP running one service at a time. A broadcaster reconnect (page reload, HMR) takes over as the current broadcaster and syncs its full known set (replacing the hub's backlog), so the hub can't drift stale after a takeover.
 - **Bare-IP redirect.** A listener typing just the IP with no path would otherwise land on the operator console (`/`, with recording controls) or `/live`. `server/index.ts` redirects exactly those two paths to `/listen` for any HTML navigation from a non-loopback socket address — checked on `req.socket.remoteAddress`, not a spoofable header. Set `ALLOW_REMOTE_OPERATOR=true` to disable (e.g. to run the console itself from another device).
 - **Not an authentication boundary.** Anyone on the same LAN who can reach the server can read the transcript at `/listen`, and (if `ALLOW_REMOTE_OPERATOR=true`) the operator console too. This is intended for this feature — do not present it as access control.
 - Church guest wifi with AP/client isolation blocks phone→laptop traffic entirely and can't be fixed in code — test on the actual venue's network ahead of time; a personal hotspot from the MBP is the fallback.
@@ -190,6 +191,92 @@ installed — plain `python3` on PATH is often *not* that interpreter (e.g. it's
 under a conda/venv). This is the repo's only Python dependency and only
 subprocess boundary; it does not run outside macOS/Apple Silicon, so
 containerized deploys (`Dockerfile`) simply don't offer the `mlx` provider.
+`MLX_MODEL` (env var) overrides the Whisper model the worker loads (default
+`mlx-community/whisper-large-v3-mlx`; e.g. `mlx-community/whisper-large-v3-turbo`
+for speed — first run downloads it).
+
+---
+
+## Audio capture & hallucination handling (chunk pipeline)
+
+Wrong transcriptions and caption hallucinations ("Muziek", "TV Gelderland 2021",
+`***`) originate in the audio layer, not the sermon UI. The pipeline:
+
+- **Capture** (`chunk-based-transcription.ts`): `rawAudioCapture` (default on)
+  disables the browser's echo-cancel / noise-suppress / auto-gain — they gate word
+  tails and pump the level, and Whisper prefers raw audio. The `AudioContext` is
+  requested at 16 kHz; when the browser refuses (Firefox) or ignores it (Safari),
+  the exported `Resampler` (windowed-sinc low-pass + decimate, stateful across
+  callbacks) does the downsample; the low-pass matters because plain decimation
+  aliases everything above 8 kHz into the speech band.
+- **Speech gate** (`SpeechGate`, `chunk-based-transcription.ts`): a chunk is only sent
+  if it holds a voiced run >= 250 ms, measured in 20 ms windows with brief gaps (<= 80 ms)
+  bridged — NOT per ScriptProcessor frame (256 ms at the 16 kHz context, so one keystroke
+  used to count as a full frame of speech and Whisper then invented multilingual text for
+  the noise). There is deliberately no "total voiced time" fallback: key clicks summed over a
+  6-20 s chunk reach any such threshold.
+- **Overlap**: `ChunkAssembler` prefixes each chunk with the tail of the
+  *previous* committed chunk — not the end of the same chunk, which Whisper would hear twice.
+- **Chunk limits**: a per-frame hard cap (not a timer) ends a chunk.
+  `setChunkLimits(minChunkMs, maxChunkMs)` — sermon mode uses 6 s min / 20 s max /
+  700 ms VAD pause (`useSermonIngest.ts`) so Whisper sees real context instead of
+  1–3 s fragments. VAD "silence" is relative to the tracked noise floor so a noisy
+  room (noise suppression is off) still produces cut points.
+- **Context**: sermon mode feeds the tail of the text so far back via
+  `setPreviousTranscript`. `buildWhisperPrompt` (`openai.ts`) puts the glossary
+  first as a natural sentence in the spoken language and the previous text *last*;
+  a bare `Terms: a, b, c` list right before the audio invites hallucination.
+- **Filtering** (`asr-artifacts.ts`): `isAsrArtifact` drops a chunk that is
+  *entirely* a caption phrase; `stripAsrArtifacts` removes `[..]`/`*..*`/♪ spans,
+  edge caption phrases and trailing credits, and collapses decoder loops, leaving
+  the real speech around them. Both run in `chunk-transcription.ts` and
+  `POST /api/transcribe`. An energy gate cannot tell music from speech, so music
+  still reaches Whisper — the filters are the backstop; a VAD-gated streaming core
+  is the real fix (see the plan).
+- **MLX worker**: `word_timestamps` + `hallucination_silence_threshold`, plus a
+  per-segment drop for `compression_ratio > 2.4` or (`no_speech_prob > 0.6` AND
+  `avg_logprob < -1.0`).
+- **Correction** (`correction-prompt.ts`): language-appropriate homophone examples,
+  a no-annotations rule, and `guardCorrection()` (rejects output far longer than
+  the input). `sermonAsrCorrection` turns the per-chunk LLM pass off entirely.
+- **Ingest** (`ingest-buffer.ts`): a completed provisional row consumes only its
+  own sentence; unchanged provisional text isn't re-sent each tick; `minBlockWords`
+  (sermon: 12) holds a very short block for an extra half-window.
+- **Truncation guard** (`whisper-guard.ts`): the Whisper prompt can make the decoder
+  *echo* the prompt instead of transcribing (measured: an 8 s Scripture reading came
+  back as "Filippenzen 2, vers 5 tot 11." once a glossary was in the prompt). A chunk
+  of >=5 s with <1 word/s is retried once without the prompt and the fuller text wins
+  (`transcribeGuarded`, used for both engines in `chunk-transcription.ts`). With the
+  guard, a glossary in the prompt measured neutral-to-slightly-positive; without it,
+  it doubled the error rate.
+
+---
+
+## Evaluating ASR changes (`npm run eval:asr`, `npm run draft:asr`)
+
+Don't tune audio/chunking/prompt settings by feel — measure them.
+
+- **Fixtures**: `tests/fixtures/audio/<name>.m4a` + `tests/fixtures/reference/<name>.txt`
+  (what was actually *said*). `npm run draft:asr -- <clip>` writes a Whisper draft next
+  to the clip for you to correct **by ear** (a draft only skimmed scores Whisper
+  against itself).
+- **`npm run eval:asr`** (`scripts/asr-eval.ts`) simulates the browser's gate/VAD
+  chunking on recorded clips, transcribes with the local MLX Whisper through the real
+  prompt builder / guard / artifact filters, and prints WER/CER/artifact counts per
+  chunking setup. Flags: `--glossary <csv|txt> --glossary-terms n`, `--setup <name>`,
+  `--runs n`, `--no-guard`, `--verbose` (per-chunk prompt + raw output). It does NOT
+  include the LLM correction step or the browser mic path.
+- **Scoring** (`normalizeForScoring`, `tests/lib/wer.ts`) ignores spelling-only
+  differences: digits vs number words, diacritics/apostrophes/hyphens, fillers, and the
+  pairs in `tests/fixtures/spelling-variants.txt`. Add only genuine equivalents there,
+  never real mishearings.
+- **Reading results**: long-chunk setups (>=6 s) repeat exactly run to run; short-chunk
+  setups (1-4 s) do not (Whisper's temperature fallback fires), so don't over-read a
+  1-2 point difference between them. Baseline on 4 clips (~540 words, no music):
+  fixed 5 s chunks 12.4%, old sermon settings ~10-14%, current sermon settings 7.7%,
+  whole-clip single pass 7.8%.
+- **Whisper cost on an M1 MBP (large-v3)**: ~1.0 s for a 3 s buffer, 1.6 s for 15 s,
+  2.3 s for 25 s — relevant if a rolling-window streaming transcriber is ever built.
 
 ---
 
@@ -199,7 +286,7 @@ containerized deploys (`Dockerfile`) simply don't offer the `mlx` provider.
 |---------------|----------|---------------|
 | `'openai'` | GPT-4o-mini | `correctAndTranslateText`, `retroactiveCorrection` |
 | `'claude'` | Claude Haiku | `correctAndTranslateWithClaude`, `retroactiveCorrectionWithClaude` |
-| `'ollama'` | Local Ollama model | `correctAndTranslateWithOllama`, `retroactiveCorrectionWithOllama` (`server/lib/ollama.ts`) |
+| `'ollama'` | Local Ollama model | `correctAndTranslateWithOllama`, `retroactiveCorrectionWithOllama` (`server/lib/ollama.ts`) — default model `qwen3.6:latest`; calls send `reasoning_effort: 'none'` (`OLLAMA_NO_THINKING`) because a thinking model takes ~25-45 s per sentence otherwise |
 | `'none'` | — | Raw transcription only (translation provider only, not offered in sermon mode) |
 
 **`improvementProvider`** controls the "Improve" button independently of `translationProvider`. Sermon mode has its own independent pair, `sermonTranslationProvider`/`sermonCorrectionProvider`.
@@ -237,6 +324,7 @@ interface AppSettings {
   useVADChunking: boolean;
   vadSilenceThresholdMs: number;
   audioNormalizationGain: number;
+  rawAudioCapture: boolean;             // true = no browser echo-cancel/noise-suppress/AGC
   showAdvancedAudioDuringRecording: boolean;
   assemblyEndOfTurnThreshold: number;   // AssemblyAI tuning, applied at session start
   assemblyTurnSilenceMs: number;
@@ -253,6 +341,7 @@ interface AppSettings {
   sermonTranslationProvider: 'openai' | 'claude' | 'ollama';  // no 'none' — a call is always required
   sermonModel: string;
   sermonCorrectionProvider: 'openai' | 'claude' | 'ollama';
+  sermonAsrCorrection: boolean;           // false = skip the per-chunk LLM correction pass
   sermonAutoTranslate: boolean;
 
   // sermon mode — file-based glossary (see server/lib/glossary-store.ts)
@@ -334,7 +423,7 @@ Client API keys are passed through to the respective provider per request. They 
 
 ## Debug overlay (Home.tsx)
 
-The collapsible debug-log panel (`settings.debugMode`) is a `fixed` element positioned above the action bar, not laid out in-flow — so the text-display container's bottom padding is computed dynamically (`ResizeObserver` on the panel, `debugPanelHeight` state) rather than a static Tailwind class, specifically so the panel can never cover the last line of transcript/translation text. If you resize or restructure that panel, keep the padding calculation in sync — it used to be a static `pb-24` sized only for the action bar, which is what let this overlap happen originally.
+The collapsible debug-log panel (`settings.debugMode`) is a `fixed` element positioned above the action bar, not laid out in-flow — so the text-display container's bottom padding is computed dynamically (`ResizeObserver` on the panel, `debugPanelHeight` state) rather than a static Tailwind class, specifically so the panel can never cover the last line of transcript/translation text. If you resize or restructure that panel, keep the padding calculation in sync — a static class like `pb-24` sized only for the action bar lets the panel cover the last line.
 
 ---
 
@@ -352,6 +441,7 @@ The `/ws/transcribe` upgrade handler (and its siblings — `/ws/chunk-transcribe
 | `ANTHROPIC_API_KEY` | Optional | Default Anthropic client |
 | `ASSEMBLYAI_API_KEY` | For streaming transcription | AssemblyAI client |
 | `DATABASE_URL` | For session persistence | Neon PostgreSQL |
+| `MLX_MODEL` | Optional | Whisper model repo for the `mlx` worker. Defaults to `mlx-community/whisper-large-v3-mlx` |
 | `MLX_PYTHON` | For local `mlx` transcription | Path to the Python interpreter with `mlx-whisper` installed (Apple Silicon only). Defaults to `python3` on PATH if unset |
 | `GLOSSARY_DIR` | Optional | Directory sermon mode's file-based glossary may read from — a security boundary, see "File-based glossary trust boundary" above. Defaults to `<repo>/data` |
 | `GLOSSARY_CSV` | Optional | Default glossary CSV filename (basename only) used when a request doesn't specify one |

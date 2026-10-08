@@ -10,7 +10,9 @@
     "check": "tsc",
     "db:push": "drizzle-kit push",
     "test": "vitest run tests/unit tests/integration",
-    "test:regression": "vitest run tests/regression"
+    "test:regression": "vitest run tests/regression",
+    "eval:asr": "node --import tsx scripts/asr-eval.ts",
+    "draft:asr": "node --import tsx scripts/asr-draft.ts"
   },
   "dependencies": {
     "@hookform/resolvers": "^3.10.0",

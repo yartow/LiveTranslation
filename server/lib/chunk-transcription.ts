@@ -3,7 +3,8 @@ import { transcribeAudio, correctAndTranslateText, correctTranscript, buildWhisp
 import { correctAndTranslateWithClaude, correctTranscriptWithClaude } from './anthropic';
 import { correctAndTranslateWithOllama, correctTranscriptWithOllama } from './ollama';
 import { transcribeWithMlx } from './mlx-whisper';
-import { isAsrArtifact } from './asr-artifacts';
+import { isAsrArtifact, stripAsrArtifacts } from './asr-artifacts';
+import { transcribeGuarded, wavDurationSecs } from './whisper-guard';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { writeFile, unlink } from 'fs/promises';
@@ -254,11 +255,19 @@ async function processChunk(
       return;
     }
 
+    // Only the client's WAV frames have a known duration; legacy webm chunks skip the guard.
+    const audioDurationSecs = isWav ? wavDurationSecs(audioBuffer.length) : Number.NaN;
+
     let rawText: string;
     if (session.engine === 'mlx') {
       sendDebug(session, `Chunk #${chunkIndex}: sending to local MLX Whisper (${session.sourceLanguage})…`);
-      const initialPrompt = buildWhisperPrompt(session.glossary || undefined, session.sermonContext || undefined, session.previousTranscript || undefined);
-      rawText = await transcribeWithMlx(audioPath, session.sourceLanguage, initialPrompt, signal);
+      const initialPrompt = buildWhisperPrompt(session.glossary || undefined, session.sermonContext || undefined, session.previousTranscript || undefined, session.sourceLanguage);
+      const guarded = await transcribeGuarded(
+        (usePrompt) => transcribeWithMlx(audioPath!, session.sourceLanguage, usePrompt ? initialPrompt : undefined, signal),
+        !!initialPrompt, audioDurationSecs,
+      );
+      if (guarded.retried) sendDebug(session, `Chunk #${chunkIndex}: transcript implausibly short for ${audioDurationSecs.toFixed(1)}s of audio — retried without the prompt`);
+      rawText = guarded.text;
     } else {
       const hasOpenAIKey = !!(session.openaiApiKey || process.env.OPENAI_API_KEY);
       if (!hasOpenAIKey) {
@@ -266,7 +275,19 @@ async function processChunk(
       } else {
         sendDebug(session, `Chunk #${chunkIndex}: sending to Whisper (${session.sourceLanguage})…`);
       }
-      rawText = await transcribeAudio(audioPath, session.sourceLanguage, session.openaiApiKey || undefined, session.glossary || undefined, session.sermonContext || undefined, signal, session.previousTranscript || undefined);
+      const hasPrompt = !!buildWhisperPrompt(session.glossary || undefined, session.sermonContext || undefined, session.previousTranscript || undefined, session.sourceLanguage);
+      const guarded = await transcribeGuarded(
+        (usePrompt) => transcribeAudio(
+          audioPath!, session.sourceLanguage, session.openaiApiKey || undefined,
+          usePrompt ? session.glossary || undefined : undefined,
+          usePrompt ? session.sermonContext || undefined : undefined,
+          signal,
+          usePrompt ? session.previousTranscript || undefined : undefined,
+        ),
+        hasPrompt, audioDurationSecs,
+      );
+      if (guarded.retried) sendDebug(session, `Chunk #${chunkIndex}: transcript implausibly short for ${audioDurationSecs.toFixed(1)}s of audio — retried without the prompt`);
+      rawText = guarded.text;
     }
 
     if (!rawText.trim()) {
@@ -288,6 +309,21 @@ async function processChunk(
       flushInOrder(session);
       return;
     }
+
+    // Partial artifacts mixed into real speech ("[Muziek] Goedemorgen",
+    // trailing "Ondertiteling door …", decoder loops) — isAsrArtifact above
+    // only catches a chunk that is ENTIRELY an artifact.
+    const strippedText = stripAsrArtifacts(rawText, session.sourceLanguage);
+    if (!strippedText) {
+      sendDebug(session, `Chunk #${chunkIndex}: discarded — nothing left after artifact stripping ("${rawText.slice(0, 40)}")`);
+      session.pendingResults.set(chunkIndex, { correctedText: '', translatedText: '' });
+      flushInOrder(session);
+      return;
+    }
+    if (strippedText !== rawText.trim()) {
+      sendDebug(session, `Chunk #${chunkIndex}: stripped ASR artifacts ("${rawText.slice(0, 40)}" → "${strippedText.slice(0, 40)}")`);
+    }
+    rawText = strippedText;
 
     sendDebug(session, `Chunk #${chunkIndex}: Whisper → "${rawText.slice(0, 60)}${rawText.length > 60 ? '…' : ''}"`);
 
@@ -320,7 +356,7 @@ async function processChunk(
         sendDebug(session, `Chunk #${chunkIndex}: correcting via Ollama (${session.ollamaModel})…`);
         ({ correctedText } = await correctTranscriptWithOllama(
           rawText, session.targetLanguage, session.ollamaModel, session.ollamaBaseUrl,
-          session.glossary || undefined, session.previousTranscript || undefined, signal,
+          session.glossary || undefined, session.previousTranscript || undefined, signal, session.sourceLanguage,
         ));
       } else if (session.translationProvider === 'claude') {
         const hasAnthropicKey = !!(session.anthropicApiKey || process.env.ANTHROPIC_API_KEY);
@@ -328,13 +364,13 @@ async function processChunk(
         else sendDebug(session, `Chunk #${chunkIndex}: correcting via Claude Haiku…`);
         ({ correctedText } = await correctTranscriptWithClaude(
           rawText, session.targetLanguage, session.anthropicApiKey,
-          session.glossary || undefined, session.previousTranscript || undefined, signal,
+          session.glossary || undefined, session.previousTranscript || undefined, signal, session.sourceLanguage,
         ));
       } else {
         sendDebug(session, `Chunk #${chunkIndex}: correcting via GPT-4o-mini…`);
         ({ correctedText } = await correctTranscript(
           rawText, session.targetLanguage, session.openaiApiKey || undefined,
-          session.glossary || undefined, session.previousTranscript || undefined, signal,
+          session.glossary || undefined, session.previousTranscript || undefined, signal, session.sourceLanguage,
         ));
       }
     } else if (session.translationProvider === 'none') {
@@ -427,7 +463,7 @@ export function setupChunkTranscriptionWebSocket(wss: WebSocketServer): void {
               openaiApiKey: message.openaiApiKey || '',
               anthropicApiKey: message.anthropicApiKey || '',
               ollamaBaseUrl: message.ollamaBaseUrl || 'http://localhost:11434',
-              ollamaModel: message.ollamaModel || 'qwen2.5:14b',
+              ollamaModel: message.ollamaModel || 'qwen3.6:latest',
               glossary: message.glossary || '',
               sermonContext: message.sermonContext || '',
               debugMode: message.debugMode ?? false,

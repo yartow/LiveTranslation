@@ -5,7 +5,7 @@
 // plan doc §4 for the full design.
 
 import { client as openaiClient } from './openai';
-import { makeClient as ollamaClient } from './ollama';
+import { makeClient as ollamaClient, OLLAMA_NO_THINKING } from './ollama';
 import { buildSystemPrompt, buildUserMessage, getFileGlossaryContext } from './sermon-prompt';
 import { getGlossaryBundle } from './glossary-store';
 import { checkGlossaryAdherence, type GlossaryWarning } from './glossary-check';
@@ -247,12 +247,13 @@ async function callOpenAI(systemPrompt: string, userMessage: string, opts: Trans
 async function callOllama(systemPrompt: string, userMessage: string, opts: TranslateOptions, signal: AbortSignal): Promise<string> {
   const response = await ollamaClient(opts.ollamaBaseUrl || 'http://localhost:11434').chat.completions.create(
     {
-      model: opts.ollamaModel || 'qwen2.5:14b',
+      model: opts.ollamaModel || 'qwen3.6:latest',
       messages: [
         { role: 'system', content: systemPrompt },
         { role: 'user', content: userMessage },
       ],
       response_format: { type: 'json_object' },
+      ...OLLAMA_NO_THINKING,
       temperature: 0.2,
     },
     { signal },

@@ -13,6 +13,10 @@ import { useListenerBroadcast } from '@/hooks/useListenerBroadcast';
 import type { IngestConfig } from '@/lib/sermon/ingest-buffer';
 import { isMacPlatform } from '@/lib/platform';
 
+// A sermon row shorter than this holds for an extra half-window before it
+// flushes alone — see ingest-buffer.ts's IngestConfig.minBlockWords.
+const SERMON_MIN_BLOCK_WORDS = 12;
+
 // Sermon mode is its own page/route ("/", see App.tsx) rather than a mode of
 // Home.tsx — Home's TranscriptionSegment model is chunk-level, id-less, and
 // flattened to one element by every correction path, so it can't carry the
@@ -88,9 +92,9 @@ export default function SermonMode() {
   const translationConfigRef = useRef<TranslationRuntimeConfig>(buildTranslationConfig());
   useEffect(() => { translationConfigRef.current = buildTranslationConfig(); }, [settings]);
 
-  const ingestConfigRef = useRef<IngestConfig>({ maxLatencyMs: settings.sermonMaxLatencySecs * 1000 });
+  const ingestConfigRef = useRef<IngestConfig>({ maxLatencyMs: settings.sermonMaxLatencySecs * 1000, minBlockWords: SERMON_MIN_BLOCK_WORDS });
   useEffect(() => {
-    ingestConfigRef.current = { maxLatencyMs: settings.sermonMaxLatencySecs * 1000 };
+    ingestConfigRef.current = { maxLatencyMs: settings.sermonMaxLatencySecs * 1000, minBlockWords: SERMON_MIN_BLOCK_WORDS };
   }, [settings.sermonMaxLatencySecs]);
 
   const { refreshAll, refreshOne } = useTranslationQueue(stateRef, applyAction, translationConfigRef, autoTranslateRef, flushersRef);
@@ -108,6 +112,7 @@ export default function SermonMode() {
     targetLanguage: settings.defaultTargetLanguage || 'en',
     engine: settings.transcriptionProvider === 'mlx' ? 'mlx' : 'openai',
     correctionProvider: settings.sermonCorrectionProvider,
+    asrCorrection: settings.sermonAsrCorrection,
     openaiApiKey: settings.openaiApiKey,
     anthropicApiKey: settings.anthropicApiKey,
     ollamaBaseUrl: settings.ollamaBaseUrl,
@@ -115,6 +120,7 @@ export default function SermonMode() {
     glossary: settings.theologicalGlossary,
     debugMode: settings.debugMode,
     normalizationGain: settings.audioNormalizationGain,
+    rawAudioCapture: settings.rawAudioCapture,
     onError: (message) => toast({ title: 'Opnamefout', description: message, variant: 'destructive' }),
   });
 

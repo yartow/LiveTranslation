@@ -76,9 +76,12 @@ export function useListenerBroadcast(stateRef: React.MutableRefObject<SegmentSto
 
       ws.onopen = () => {
         reconnectAttemptsRef.current = 0;
-        // Full resync — see computeBatch's `force` doc comment.
+        // Full resync — see computeBatch's `force` doc comment. A 'sync'
+        // REPLACES the hub's backlog (even with an empty batch): after a page
+        // reload this operator has a fresh session, and merging it into the
+        // previous page's leftovers would leave old text on every phone.
         const batch = computeBatch(stateRef.current, publishedRef.current, true);
-        if (batch.length > 0) ws.send(JSON.stringify({ type: 'publish', lines: batch }));
+        ws.send(JSON.stringify({ type: 'sync', lines: batch }));
       };
       ws.onmessage = (evt) => {
         try {

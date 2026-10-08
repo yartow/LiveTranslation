@@ -1,4 +1,5 @@
 import { sanitizeGlossary } from './prompt-safety';
+import { homophoneExamples, NO_ANNOTATIONS_RULE, guardCorrection } from './correction-prompt';
 
 const LANGUAGE_NAMES: Record<string, string> = {
   en: 'English',
@@ -127,6 +128,7 @@ export async function correctTranscriptWithClaude(
   glossary?: string,
   previousTranscript?: string,
   signal?: AbortSignal,
+  sourceLanguage?: string,
 ): Promise<{ correctedText: string }> {
   const contextSection = buildContextSection(glossary, undefined);
   const tailSection = previousTranscript?.trim()
@@ -136,18 +138,19 @@ export async function correctTranscriptWithClaude(
   const system = `You are correcting raw speech-recognition output from a spoken sermon. Do NOT translate — the source language stays exactly as spoken (target language for later translation is ${LANGUAGE_NAMES[targetLanguage] ?? 'English'}; ignore that, it is informational only).${contextSection}${tailSection}
 
 CORRECTION RULES:
-1. Fix ASR homophones and near-misses using context (e.g. pray/prey, altar/alter, their/there/they're, word/world, profit/prophet)
+1. Fix ASR homophones and near-misses using context (e.g. ${homophoneExamples(sourceLanguage)})
 2. Correct spelling of proper nouns and theological terms
 3. Apply the glossary above — replace any transcribed word that sounds like a glossary term with the correct term
 4. This chunk is an arbitrary slice of continuous speech, cut on a pause — it may begin and end mid-sentence. Add punctuation and capitalisation only where the speech actually calls for it: if the chunk does not end on a finished sentence, leave it with NO terminating . ? or ! — do not invent one just to round it off — and if it does not begin a new sentence, do not capitalise the first word. A pause is not a sentence end; a preacher pauses mid-clause constantly. When in doubt between a comma and a full stop, use the comma — never split one spoken sentence into several short ones.
 5. Remove filler words, stutters, and false starts
 6. Do NOT paraphrase, summarise, reorder, or change the speaker's meaning or word choice beyond fixing the errors above
 7. If this chunk restates the tail of the previous chunk (see context above), drop the repeated words rather than emitting them twice
-8. Return ONLY valid JSON: { "correctedText": "..." }`;
+8. ${NO_ANNOTATIONS_RULE}
+9. Return ONLY valid JSON: { "correctedText": "..." }`;
 
   const raw = await callClaude(system, `Raw transcription chunk: "${rawText}"`, apiKey, 512, signal);
   const result = parseJsonResponse(raw, { correctedText: rawText });
-  return { correctedText: result.correctedText || rawText };
+  return { correctedText: guardCorrection(rawText, result.correctedText) };
 }
 
 export async function retroactiveCorrectionWithClaude(

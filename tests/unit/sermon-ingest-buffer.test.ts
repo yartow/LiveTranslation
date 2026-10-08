@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { initIngestState, appendChunk, tick, type IngestState } from '../../client/src/lib/sermon/ingest-buffer.js';
+import { initIngestState, appendChunk, tick, releaseProvisional, type IngestState } from '../../client/src/lib/sermon/ingest-buffer.js';
 
 describe('appendChunk — AC6: sentence-boundary flush gated on the block duration', () => {
   it('does not flush a complete sentence before the block duration is reached, then flushes it once due', () => {
@@ -112,21 +112,65 @@ describe('cap-flush PROVISIONAL path (AC8b)', () => {
     expect(state.provisionalToken).toBe('p0');
 
     // Sentence keeps growing — cap re-evaluates but must not open a second provisional row.
-    ({ state } = appendChunk(state, ' die maar door blijft gaan', cfg, 3500));
-    step = tick(state, cfg, 6000);
+    // The growth is surfaced as soon as it arrives (appendChunk evaluates too)...
+    step = appendChunk(state, ' die maar door blijft gaan', cfg, 3500);
     expect(step.effects).toEqual([
       { type: 'updateProvisional', token: 'p0', text: 'Een lange zin zonder punt die maar door blijft gaan' },
     ]);
     state = step.state;
     expect(state.provisionalToken).toBe('p0'); // still the same row
+    // ...and a later tick with nothing new stays quiet.
+    expect(tick(state, cfg, 6000).effects).toEqual([]);
 
     // Sentence finally completes.
     const completion = appendChunk(state, '. Klaar.', cfg, 7000);
+    // Only the provisional's own sentence is consumed. "Klaar." stays buffered
+    // with a fresh block clock instead of becoming a lone extra row.
     expect(completion.effects).toEqual([
       { type: 'completeProvisional', token: 'p0', text: 'Een lange zin zonder punt die maar door blijft gaan.' },
-      { type: 'emit', text: 'Klaar.', provisional: false },
     ]);
     expect(completion.state.provisionalToken).toBeNull();
+    expect(tick(completion.state, cfg, 9999).effects).toEqual([]);
+    expect(tick(completion.state, cfg, 10000).effects).toEqual([{ type: 'emit', text: 'Klaar.', provisional: false }]);
+  });
+
+  it('does not re-send an unchanged provisional text on every tick', () => {
+    let state = initIngestState();
+    const cfg = { maxLatencyMs: 3000 };
+    ({ state } = appendChunk(state, 'Een lange zin zonder punt', cfg, 0));
+    const opened = tick(state, cfg, 3000);
+    expect(opened.effects).toHaveLength(1);
+    expect(tick(opened.state, cfg, 3250).effects).toEqual([]);
+    expect(tick(opened.state, cfg, 3500).effects).toEqual([]);
+  });
+});
+
+describe('minBlockWords — a short block gets an extra half-window before flushing alone', () => {
+  it('holds a lone short sentence past the deadline, then flushes it at 1.5x', () => {
+    let state = initIngestState();
+    const cfg = { maxLatencyMs: 6000, minBlockWords: 12 };
+    ({ state } = appendChunk(state, 'Amen.', cfg, 0));
+    expect(tick(state, cfg, 6000).effects).toEqual([]);
+    expect(tick(state, cfg, 8999).effects).toEqual([]);
+    expect(tick(state, cfg, 9000).effects).toEqual([{ type: 'emit', text: 'Amen.', provisional: false }]);
+  });
+
+  it('flushes at the normal deadline once the block is long enough', () => {
+    let state = initIngestState();
+    const cfg = { maxLatencyMs: 6000, minBlockWords: 5 };
+    ({ state } = appendChunk(state, 'Dit is een heel nette zin.', cfg, 0));
+    expect(tick(state, cfg, 6000).effects).toEqual([{ type: 'emit', text: 'Dit is een heel nette zin.', provisional: false }]);
+  });
+
+  it('a short sentence absorbs the next one that arrives during the extra window', () => {
+    let state = initIngestState();
+    const cfg = { maxLatencyMs: 6000, minBlockWords: 8 };
+    ({ state } = appendChunk(state, 'Amen.', cfg, 0));
+    expect(tick(state, cfg, 6000).effects).toEqual([]);
+    const step = appendChunk(state, ' Laten we samen bidden voor de dienst.', cfg, 7000);
+    expect(step.effects).toEqual([
+      { type: 'emit', text: 'Amen. Laten we samen bidden voor de dienst.', provisional: false },
+    ]);
   });
 });
 
@@ -178,5 +222,44 @@ describe('empty/edge input', () => {
   it('tick on an empty buffer never fires the cap', () => {
     const state = initIngestState();
     expect(tick(state, { maxLatencyMs: 1 }, 999999).effects).toEqual([]);
+  });
+});
+
+describe('releaseProvisional — the human edited the open provisional row', () => {
+  const cfg = { maxLatencyMs: 3000 };
+
+  function openProvisional(): IngestState {
+    let state = initIngestState();
+    ({ state } = appendChunk(state, 'Een lange zin zonder punt', cfg, 0));
+    ({ state } = tick(state, cfg, 3000));
+    expect(state.provisionalToken).toBe('p0');
+    return state;
+  }
+
+  it('drops the text the row already shows and emits nothing further for it', () => {
+    const released = releaseProvisional(openProvisional(), 3500);
+    expect(released.provisionalToken).toBeNull();
+    expect(released.pieces.some(p => p.text.trim())).toBe(false);
+    expect(released.anchorAt).toBeNull();
+    expect(tick(released, cfg, 20000).effects).toEqual([]);
+  });
+
+  it('puts only the words that arrive afterwards into the next row (no duplicated block)', () => {
+    const released = releaseProvisional(openProvisional(), 3500);
+    let { state } = appendChunk(released, 'Nieuwe zin hier.', cfg, 4000);
+    const step = tick(state, cfg, 7000);
+    expect(step.effects).toEqual([{ type: 'emit', text: 'Nieuwe zin hier.', provisional: false }]);
+  });
+
+  it('still dedupes a chunk that repeats the tail of the handed-over text', () => {
+    const released = releaseProvisional(openProvisional(), 3500);
+    const { state } = appendChunk(released, 'zin zonder punt en verder.', cfg, 4000);
+    const step = tick(state, cfg, 7000);
+    expect(step.effects).toEqual([{ type: 'emit', text: 'en verder.', provisional: false }]);
+  });
+
+  it('is a no-op when no provisional row is open', () => {
+    const { state } = appendChunk(initIngestState(), 'Half een zin', cfg, 0);
+    expect(releaseProvisional(state, 1000)).toBe(state);
   });
 });
