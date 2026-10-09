@@ -11,7 +11,7 @@
 // recognition exists in exactly one place. See server/lib/sermon-
 // translate.ts for the only caller.
 
-import { getDutchVerseRange, getEnglishVerseRange } from './bible-store';
+import { getDutchVerseRange, getEnglishVerseRange, dutchToEnglishVerses, hasEnglishVersion, type EnglishVersion } from './bible-store';
 import { getBibleBooks } from './bible-books';
 import { similarity } from './text-similarity';
 import { fetchEsvPassage } from './esv-api';
@@ -34,15 +34,24 @@ export interface ReadingCandidate {
 }
 
 export type ScriptureVerdict =
-  | { kind: 'verbatim'; verseEnd: number; text: string; version: 'ESV' | 'KJV'; reference: string }
-  | { kind: 'paraphrase'; verseEnd: number; guidance: string; version: 'KJV' }
+  | { kind: 'verbatim'; verseEnd: number; text: string; version: EnglishVersion; reference: string }
+  | { kind: 'paraphrase'; verseEnd: number; guidance: string; version: EnglishVersion }
   | { kind: 'ended' };
 
 export interface AdjudicateOptions {
+  /** The operator's chosen Bible ("Doelvertaling"). ESV and LSB are served from locally built text (data/bible/{esv,lsb}-en.json.gz); anything else, or a version whose text isn't built, falls back to KJV. Omitted = ESV, matching the settings default. */
+  bibleVersion?: string;
   esvApiKey?: string;
-  /** Defaults true — set false to skip the ESV API entirely (e.g. no key configured, or the operator prefers the bundled KJV) and use KJV for a verbatim hit too. */
+  /** Defaults true — set false to skip the ESV API entirely. The API is only ever a fallback for ESV when the local ESV text isn't built. */
   preferEsv?: boolean;
   signal?: AbortSignal;
+}
+
+/** The version the operator asked for, if we have local text for it — else KJV (always bundled). */
+function resolveLocalVersion(requested: string | undefined): EnglishVersion {
+  const v = (requested ?? 'ESV').toUpperCase();
+  if ((v === 'ESV' || v === 'LSB') && hasEnglishVersion(v)) return v;
+  return 'KJV';
 }
 
 /**
@@ -73,22 +82,37 @@ export async function adjudicateScripture(
 
   if (!best || best.sim < PARAPHRASE_THRESHOLD) return { kind: 'ended' };
 
+  // The spoken verses are numbered as in the Dutch Bible; English numbering
+  // differs in Psalms with a stand-alone title verse (see bible-store.ts). Every
+  // English lookup, API call and displayed reference below uses `en`; `verseEnd`
+  // in the verdict stays Dutch-numbered because the client uses it to continue the reading.
+  const en = dutchToEnglishVerses(candidate.bookNumber, candidate.chapter, candidate.verse, best.verseEnd);
+  if (!en) return { kind: 'ended' }; // only the psalm title was read — no English verse to substitute
+
   if (best.sim >= VERBATIM_THRESHOLD) {
-    const esvText = opts.preferEsv !== false
-      ? await fetchEsvPassage(book.en, candidate.chapter, candidate.verse, best.verseEnd, { apiKey: opts.esvApiKey, signal: opts.signal })
-      : null;
-    const text = esvText ?? getEnglishVerseRange(candidate.bookNumber, candidate.chapter, candidate.verse, best.verseEnd);
-    if (!text) return { kind: 'ended' }; // no English text available from either source
-    const reference = best.verseEnd === candidate.verse
-      ? `${book.en} ${candidate.chapter}:${candidate.verse}`
-      : `${book.en} ${candidate.chapter}:${candidate.verse}-${best.verseEnd}`;
-    return { kind: 'verbatim', verseEnd: best.verseEnd, text, version: esvText ? 'ESV' : 'KJV', reference };
+    const local = resolveLocalVersion(opts.bibleVersion);
+    let version: EnglishVersion = local;
+    let text = local === 'KJV' ? '' : getEnglishVerseRange(candidate.bookNumber, candidate.chapter, en.start, en.end, local);
+    // ESV requested but not built locally (e.g. a Docker deploy without the XML): the API is the next-best source.
+    if (!text && (opts.bibleVersion ?? 'ESV').toUpperCase() === 'ESV' && opts.preferEsv !== false) {
+      const api = await fetchEsvPassage(book.en, candidate.chapter, en.start, en.end, { apiKey: opts.esvApiKey, signal: opts.signal });
+      if (api) { text = api; version = 'ESV'; }
+    }
+    if (!text) {
+      text = getEnglishVerseRange(candidate.bookNumber, candidate.chapter, en.start, en.end, 'KJV');
+      version = 'KJV';
+    }
+    if (!text) return { kind: 'ended' }; // no English text available from any source
+    const reference = en.end === en.start
+      ? `${book.en} ${candidate.chapter}:${en.start}`
+      : `${book.en} ${candidate.chapter}:${en.start}-${en.end}`;
+    return { kind: 'verbatim', verseEnd: best.verseEnd, text, version, reference };
   }
 
-  // Paraphrase band: guide the model toward the passage's register without
-  // an ESV lookup — worth spending an API call on a passage that's actually
-  // being quoted, not one that's merely being alluded to.
-  const guidance = getEnglishVerseRange(candidate.bookNumber, candidate.chapter, candidate.verse, best.verseEnd);
+  // Paraphrase band: guide the model toward the passage's register from local
+  // text only — never an API call for a passage that's merely being alluded to.
+  const guidanceVersion = resolveLocalVersion(opts.bibleVersion);
+  const guidance = getEnglishVerseRange(candidate.bookNumber, candidate.chapter, en.start, en.end, guidanceVersion);
   if (!guidance) return { kind: 'ended' };
-  return { kind: 'paraphrase', verseEnd: best.verseEnd, guidance, version: 'KJV' };
+  return { kind: 'paraphrase', verseEnd: best.verseEnd, guidance, version: guidanceVersion };
 }

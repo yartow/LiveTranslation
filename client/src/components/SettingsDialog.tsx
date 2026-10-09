@@ -252,6 +252,7 @@ function GlossaryPanel({ settings, onUpdate, isOpen }: GlossaryPanelProps) {
             <SelectContent>
               <SelectItem value="KJV">KJV</SelectItem>
               <SelectItem value="ESV">ESV</SelectItem>
+              <SelectItem value="LSB">LSB</SelectItem>
               <SelectItem value="NASB">NASB</SelectItem>
               <SelectItem value="NKJV">NKJV</SelectItem>
             </SelectContent>
@@ -1270,13 +1271,13 @@ export default function SettingsDialog({ isOpen, onClose, settings, onUpdate, we
                 <ApiKeyField
                   label="ESV API Key"
                   placeholder="uw ESV API-sleutel"
-                  description="Voorkeursbron voor de verstekst — gratis voor niet-commercieel gebruik via api.esv.org. Zonder sleutel (of bij een mislukte lookup) wordt teruggevallen op de gebundelde King James Version."
+                  description="Alleen nodig als de lokale ESV-tekst niet is gebouwd (zie scripts/build-bible-data.ts); anders wordt de lokale tekst gebruikt. Zonder tekst of sleutel wordt teruggevallen op de King James Version."
                   value={settings.esvApiKey}
                   onChange={(v) => onUpdate({ esvApiKey: v })}
                 />
 
                 <div className="space-y-1">
-                  <Label className="text-xs font-medium">Als ESV niet beschikbaar is</Label>
+                  <Label className="text-xs font-medium">Als de gekozen vertaling niet beschikbaar is</Label>
                   <Select
                     value={settings.sermonScriptureFallback}
                     onValueChange={(v) => onUpdate({ sermonScriptureFallback: v as SermonScriptureFallback })}
@@ -1294,8 +1295,8 @@ export default function SettingsDialog({ isOpen, onClose, settings, onUpdate, we
                 <p className="text-xs text-muted-foreground italic">
                   Scripture quotations marked ESV are from the ESV® Bible (The Holy Bible, English
                   Standard Version®), copyright © 2001 by Crossway, a publishing ministry of Good
-                  News Publishers. Used by permission. All rights reserved. De King James Version
-                  is public domain.
+                  News Publishers. Used by permission. All rights reserved. Legacy Standard Bible
+                  (LSB) © 2021 by The Lockman Foundation. De King James Version is public domain.
                 </p>
               </>
             )}

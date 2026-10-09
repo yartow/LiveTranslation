@@ -32,7 +32,7 @@ export interface ScriptureResultInfo {
   readingEnded: boolean;
   text?: string;
   reference?: string;
-  version?: 'ESV' | 'KJV';
+  version?: 'ESV' | 'LSB' | 'KJV';
   verseEnd?: number;
 }
 
@@ -139,6 +139,7 @@ export async function translateSegments(
 
       if (scriptureEnabled && item.readingCandidate) {
         const verdict = await adjudicateScripture(item.text, item.readingCandidate, {
+          bibleVersion: opts.bibleVersion,
           esvApiKey: opts.esvApiKey,
           signal: combinedSignal,
         });

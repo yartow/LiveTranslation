@@ -122,7 +122,7 @@ function parseProvider(value: unknown): TranslationProvider | null {
 // Sermon mode never accepts 'none' — a correction/translation call is always
 // required (see client/src/hooks/useSettings.ts's SermonTranslationProvider).
 const VALID_SERMON_TRANSLATION_PROVIDERS = new Set(['openai', 'claude', 'ollama']);
-const VALID_BIBLE_VERSIONS = new Set(['KJV', 'ESV', 'NASB', 'NKJV']);
+const VALID_BIBLE_VERSIONS = new Set(['KJV', 'ESV', 'LSB', 'NASB', 'NKJV']);
 const SERMON_MAX_ITEMS = 100;
 const SERMON_MAX_TEXT_LEN = 2000;
 const SERMON_MAX_CONTEXT_SENTENCES = 5;

@@ -18,8 +18,17 @@ function resolveBibleDir(): string {
   return process.env.BIBLE_DIR || path.resolve(import.meta.dirname, '..', '..', 'data', 'bible');
 }
 
+/** English texts we can substitute. KJV is always bundled (public domain); ESV/LSB exist only if scripts/build-bible-data.ts found their XML sources. */
+export type EnglishVersion = 'KJV' | 'ESV' | 'LSB';
+
+const ENGLISH_FILES: Record<EnglishVersion, string> = {
+  KJV: 'kjv-en.json.gz',
+  ESV: 'esv-en.json.gz',
+  LSB: 'lsb-en.json.gz',
+};
+
 let cachedSv: VerseMap | null | undefined; // undefined = not yet attempted this process
-let cachedKjv: VerseMap | null | undefined;
+const cachedEnglish: Partial<Record<EnglishVersion, VerseMap | null>> = {};
 
 function loadGzippedJson(filename: string): VerseMap | null {
   try {
@@ -36,9 +45,55 @@ export function getStatenvertaling(): VerseMap | null {
   return cachedSv;
 }
 
+export function getEnglishBible(version: EnglishVersion): VerseMap | null {
+  if (cachedEnglish[version] === undefined) cachedEnglish[version] = loadGzippedJson(ENGLISH_FILES[version]);
+  return cachedEnglish[version] ?? null;
+}
+
 export function getKjv(): VerseMap | null {
-  if (cachedKjv === undefined) cachedKjv = loadGzippedJson('kjv-en.json.gz');
-  return cachedKjv;
+  return getEnglishBible('KJV');
+}
+
+/** True if this English text was built into data/bible (KJV: always, once built; ESV/LSB: only with their XML sources). */
+export function hasEnglishVersion(version: EnglishVersion): boolean {
+  return getEnglishBible(version) !== null;
+}
+
+// Psalm superscriptions. The Statenvertaling numbers a stand-alone title as
+// verse 1 (verses 1-2 for Ps 51/52/54/60) while English Bibles don't, so a
+// spoken SV verse v is English verse v - t. The table {"51": 2, ...} (only
+// psalms with t >= 1) is derived by scripts/build-bible-data.ts. Missing file =
+// no remapping (identity), the same never-throw degradation as the verse data.
+const PSALMS_BOOK = 19;
+let cachedPsalmTitles: Record<string, number> | null | undefined;
+
+function getPsalmTitleVerses(): Record<string, number> | null {
+  if (cachedPsalmTitles === undefined) {
+    try {
+      const parsed = JSON.parse(readFileSync(path.join(resolveBibleDir(), 'psalm-titles.json'), 'utf-8'));
+      cachedPsalmTitles = parsed && typeof parsed === 'object' ? parsed : null;
+    } catch {
+      cachedPsalmTitles = null;
+    }
+  }
+  return cachedPsalmTitles ?? null;
+}
+
+/**
+ * Maps a verse range as numbered in the Dutch Bible (what the preacher says and
+ * the Dutch anchor uses) onto English numbering. Identical except in Psalms with a
+ * stand-alone title verse. A range that starts inside the title is clamped to
+ * English verse 1; a range lying entirely inside the title returns null (the
+ * English Bibles have no numbered verse for it).
+ */
+export function dutchToEnglishVerses(
+  n: number, c: number, verseStart: number, verseEnd: number,
+): { start: number; end: number } | null {
+  const t = n === PSALMS_BOOK ? (getPsalmTitleVerses()?.[String(c)] ?? 0) : 0;
+  if (t === 0) return { start: verseStart, end: verseEnd };
+  const end = verseEnd - t;
+  if (end < 1) return null;
+  return { start: Math.max(verseStart - t, 1), end };
 }
 
 function verseKey(n: number, c: number, v: number): string {
@@ -50,9 +105,9 @@ export function getDutchVerse(n: number, c: number, v: number): string | undefin
   return getStatenvertaling()?.[verseKey(n, c, v)];
 }
 
-/** English verse text (KJV), or undefined if unavailable/out of range. */
-export function getEnglishVerse(n: number, c: number, v: number): string | undefined {
-  return getKjv()?.[verseKey(n, c, v)];
+/** English verse text (KJV unless another built version is named), or undefined if unavailable/out of range. */
+export function getEnglishVerse(n: number, c: number, v: number, version: EnglishVersion = 'KJV'): string | undefined {
+  return getEnglishBible(version)?.[verseKey(n, c, v)];
 }
 
 /**
@@ -72,10 +127,12 @@ export function getDutchVerseRange(n: number, c: number, verseStart: number, ver
 }
 
 /** English counterpart of getDutchVerseRange, same semantics. */
-export function getEnglishVerseRange(n: number, c: number, verseStart: number, verseEnd: number): string {
+export function getEnglishVerseRange(
+  n: number, c: number, verseStart: number, verseEnd: number, version: EnglishVersion = 'KJV',
+): string {
   const parts: string[] = [];
   for (let v = verseStart; v <= verseEnd; v++) {
-    const text = getEnglishVerse(n, c, v);
+    const text = getEnglishVerse(n, c, v, version);
     if (text) parts.push(text);
   }
   return parts.join(' ');
@@ -83,5 +140,6 @@ export function getEnglishVerseRange(n: number, c: number, verseStart: number, v
 
 export function _resetBibleStoreForTests(): void {
   cachedSv = undefined;
-  cachedKjv = undefined;
+  cachedPsalmTitles = undefined;
+  for (const v of Object.keys(cachedEnglish) as EnglishVersion[]) delete cachedEnglish[v];
 }

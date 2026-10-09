@@ -31,7 +31,7 @@
 //     needs only this small table, never verse text, so it's bundled with
 //     the client instead of fetched.
 
-import { readFileSync, writeFileSync, mkdirSync } from 'node:fs';
+import { readFileSync, writeFileSync, mkdirSync, existsSync } from 'node:fs';
 import { gzipSync } from 'node:zlib';
 import path from 'node:path';
 import os from 'node:os';
@@ -40,6 +40,13 @@ const SV_XML_PATH = process.env.SV_XML_PATH
   || path.join(os.homedir(), 'Documents/GitHub/open-bibles/dut-statenvertaling.zefania.xml');
 const KJV_JSON_PATH = process.env.KJV_JSON_PATH
   || path.join(os.homedir(), 'Documents/GitHub/kjv/json/verses-1769.json');
+
+// Optional English texts (copyrighted — kept local, outputs are gitignored). Beblia
+// "Holy-Bible-XML-Format" layout: <book number><chapter number><verse number>.
+const ESV_XML_PATH = process.env.ESV_XML_PATH
+  || path.join(os.homedir(), 'Documents/GitHub/Holy-Bible-XML-Format/EnglishESVBible.xml');
+const LSB_XML_PATH = process.env.LSB_XML_PATH
+  || path.join(os.homedir(), 'Documents/GitHub/Holy-Bible-XML-Format/EnglishLSBBible.xml');
 
 const OUT_DIR = path.resolve(import.meta.dirname, '..', 'data', 'bible');
 const CLIENT_BOOKS_PATH = path.resolve(import.meta.dirname, '..', 'client', 'src', 'lib', 'sermon', 'bible-books.generated.ts');
@@ -114,6 +121,41 @@ function parseStatenvertaling(xmlPath: string): { books: BookEntry[]; verses: Re
   return { books, verses };
 }
 
+// Beblia-format English Bible (ESV/LSB): flat <book number="n"><chapter
+// number="c"><verse number="v">text</verse>. Joined onto the same
+// bookNumber:chapter:verse key space by the book's own number (1..66, canonical
+// order — asserted below). Empty verses (e.g. Matt 17:21 in ESV) are skipped.
+function parseBebliaXml(xmlPath: string): Record<string, string> {
+  const xml = readFileSync(xmlPath, 'utf-8').replace(/^﻿/, '');
+  const verses: Record<string, string> = {};
+  const bookRe = /<book number="(\d+)">([\s\S]*?)<\/book>/g;
+  const chapterRe = /<chapter number="(\d+)">([\s\S]*?)<\/chapter>/g;
+  const verseRe = /<verse number="(\d+)">([^<]*)<\/verse>/g;
+
+  let books = 0;
+  let bookMatch: RegExpExecArray | null;
+  while ((bookMatch = bookRe.exec(xml))) {
+    const [, n, bookBody] = bookMatch;
+    books++;
+    if (Number(n) !== books) {
+      throw new Error(`${xmlPath}: book order mismatch — expected book ${books}, got ${n}`);
+    }
+    chapterRe.lastIndex = 0;
+    let chapterMatch: RegExpExecArray | null;
+    while ((chapterMatch = chapterRe.exec(bookBody))) {
+      const [, c, chapterBody] = chapterMatch;
+      verseRe.lastIndex = 0;
+      let verseMatch: RegExpExecArray | null;
+      while ((verseMatch = verseRe.exec(chapterBody))) {
+        const text = decodeXmlEntities(verseMatch[2]).replace(/\s+/g, ' ').trim();
+        if (text) verses[`${n}:${c}:${verseMatch[1]}`] = text;
+      }
+    }
+  }
+  if (books !== 66) throw new Error(`Expected 66 books in ${xmlPath}, found ${books}`);
+  return verses;
+}
+
 // The kjv package's keys are "Book C:V" strings sharing one flat namespace —
 // re-key them onto the same bookNumber:chapter:verse space as the Dutch side
 // by book-name insertion order (the JSON's keys are already Genesis..
@@ -150,6 +192,115 @@ function parseKjv(jsonPath: string): { bookOrder: string[]; verses: Record<strin
   return { bookOrder, verses };
 }
 
+// ─── Psalm superscriptions ──────────────────────────────────────────────────
+// Two numbering problems, both confined to the Psalms:
+//
+// (a) The Statenvertaling file numbers like the Hebrew text: a psalm's
+//     superscription that stands alone ("Een psalm van David, voor den
+//     opperzangmeester.") is its own verse 1 (verses 1+2 for Ps 51/52/54/60),
+//     pushing the first real verse to 2 (or 3). English Bibles leave titles
+//     unnumbered, so SV verse v == English verse v - t, where t = the number
+//     of stand-alone title verses. A title written inline ("Een psalm van
+//     David. De HEERE is mijn Herder…", Ps 23) shifts nothing. We derive t per
+//     psalm from the SV text and write it to data/bible/psalm-titles.json;
+//     server/lib/bible-store.ts applies it when mapping a spoken (SV-numbered)
+//     verse onto English text. (The source file also lacks the last t verses
+//     of those psalms — not recoverable here, so those verses never match.)
+//
+// (b) The Beblia ESV/LSB texts prepend the superscription to English verse 1
+//     ("A PSALM OF DAVID.The LORD is my shepherd…"), which must not leak into a
+//     substituted quote — stripPsalmTitles() below removes it at build time.
+
+// Opening words of an SV superscription. Anchored at the start of verse 1; a
+// match plus nothing after the first sentence = a stand-alone title verse.
+const SV_TITLE_CUE = /^(?:eene? )?(?:psalm|lied|onderwijzing|gebed|gouden kleinood|opschrift|lofzang|voor den opperzangmeester|davids )/i;
+// The Hebrew superscription spans two verses only in these psalms (second verse begins
+// "Toen de profeet…" / "Als Doeg…" / "Als de Zifieten…" / "Als hij gevochten…").
+const SV_TWO_VERSE_TITLE = /^(?:toen|als) (?:de|hij|doeg)\b/i;
+
+function detectPsalmTitleVerses(svVerses: Record<string, string>): Record<string, number> {
+  const out: Record<string, number> = {};
+  for (let c = 1; c <= 150; c++) {
+    const v1 = svVerses[`19:${c}:1`];
+    const v2 = svVerses[`19:${c}:2`] ?? '';
+    if (!v1 || !SV_TITLE_CUE.test(v1)) continue;
+    // Text after the first sentence → the title shares its verse with the psalm's first line.
+    const bodyAfterFirstSentence = /^[^.!?]*[.!?]\s+\S/.test(v1);
+    if (bodyAfterFirstSentence) continue;
+    out[String(c)] = SV_TWO_VERSE_TITLE.test(v2) ? 2 : 1;
+  }
+  return out;
+}
+
+const normWords = (t: string): Set<string> =>
+  new Set(t.toLowerCase().replace(/[^a-z\s]/g, ' ').split(/\s+/).filter(Boolean));
+
+function dice(a: Set<string>, b: Set<string>): number {
+  let shared = 0;
+  a.forEach((w) => { if (b.has(w)) shared++; });
+  return a.size + b.size ? (2 * shared) / (a.size + b.size) : 0;
+}
+
+/** Offsets just after each sentence end (including a closing quote) — 0 first, so cuts[k] = start of the (k+1)th sentence. */
+function sentenceStarts(text: string): number[] {
+  const starts = [0];
+  const re = /(?<=[.?!:][”’"')]?)\s*(?=[A-Z“‘"'(])/g;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(text))) {
+    if (m[0].length === 0) re.lastIndex++;
+    const at = m.index + m[0].length;
+    if (at > 0 && at < text.length && starts[starts.length - 1] !== at) starts.push(at);
+  }
+  return starts;
+}
+
+/**
+ * Removes the superscription the Beblia ESV/LSB files glue onto Psalm verse 1.
+ *  - ESV renders titles in ALL CAPS, so the title is exactly the leading
+ *    all-caps sentences (deterministic).
+ *  - LSB uses ordinary case. A title exists iff the ESV one did (same Hebrew
+ *    superscription); where it ends is chosen as the sentence boundary at which
+ *    the remainder best overlaps (Dice) the title-free KJV + stripped-ESV
+ *    verse 1. Checked by eye across all 116 titled psalms.
+ * Mutates `english`; `esvBodies` carries the stripped ESV verse 1 of every
+ * titled psalm from the ESV pass to the LSB pass. Returns the chapters stripped.
+ */
+function stripPsalmTitles(
+  english: Record<string, string>, kind: 'ESV' | 'LSB',
+  kjv: Record<string, string>, esvBodies: Map<number, string>,
+): number[] {
+  const stripped: number[] = [];
+  for (let c = 1; c <= 150; c++) {
+    const key = `19:${c}:1`;
+    const v1 = english[key];
+    if (!v1) continue;
+    const starts = sentenceStarts(v1);
+    let cut = 0;
+    if (kind === 'ESV') {
+      for (let i = 0; i < starts.length - 1; i++) {
+        const sentence = v1.slice(starts[i], starts[i + 1]);
+        if (/[a-z]/.test(sentence) || !/[A-Z]{2}/.test(sentence)) break;
+        cut = i + 1;
+      }
+      if (cut === 0) continue;
+      esvBodies.set(c, v1.slice(starts[cut]).trim());
+    } else {
+      const esvBody = esvBodies.get(c);
+      if (esvBody === undefined) continue; // no ESV title → no LSB title
+      const ref = new Set<string>(Array.from(normWords(kjv[key] ?? '')).concat(Array.from(normWords(esvBody))));
+      let bestScore = -1;
+      for (let i = 1; i < starts.length; i++) {
+        const score = dice(normWords(v1.slice(starts[i])), ref);
+        if (score > bestScore) { bestScore = score; cut = i; }
+      }
+      if (cut === 0) continue; // single-sentence verse: nothing safe to cut
+    }
+    english[key] = v1.slice(starts[cut]).trim();
+    stripped.push(c);
+  }
+  return stripped;
+}
+
 function main() {
   console.log(`Reading Dutch Statenvertaling from ${SV_XML_PATH}`);
   const sv = parseStatenvertaling(SV_XML_PATH);
@@ -171,6 +322,30 @@ function main() {
   writeFileSync(path.join(OUT_DIR, 'books.json'), JSON.stringify(books, null, 2) + '\n');
   writeFileSync(path.join(OUT_DIR, 'sv-nl.json.gz'), gzipSync(JSON.stringify(sv.verses)));
   writeFileSync(path.join(OUT_DIR, 'kjv-en.json.gz'), gzipSync(JSON.stringify(kjv.verses)));
+
+  const psalmTitles = detectPsalmTitleVerses(sv.verses);
+  writeFileSync(path.join(OUT_DIR, 'psalm-titles.json'), JSON.stringify(psalmTitles) + '\n');
+  const counts = Object.values(psalmTitles).reduce<Record<number, number>>((a, t) => ({ ...a, [t]: (a[t] ?? 0) + 1 }), {});
+  console.log(`Psalm stand-alone title verses: ${counts[1] ?? 0} psalms with 1, ${counts[2] ?? 0} with 2 -> psalm-titles.json`);
+
+  const extras: Array<{ label: string; file: string; xmlPath: string }> = [
+    { label: 'ESV', file: 'esv-en.json.gz', xmlPath: ESV_XML_PATH },
+    { label: 'LSB', file: 'lsb-en.json.gz', xmlPath: LSB_XML_PATH },
+  ];
+  const extraVerses: Record<string, Record<string, string>> = {};
+  const esvBodies = new Map<number, string>();
+  for (const { label, file, xmlPath } of extras) {
+    if (!existsSync(xmlPath)) {
+      console.warn(`  (skipping ${label}: ${xmlPath} not found — set ${label}_XML_PATH to include it)`);
+      continue;
+    }
+    const verses = parseBebliaXml(xmlPath);
+    const stripped = stripPsalmTitles(verses, label as 'ESV' | 'LSB', kjv.verses, esvBodies);
+    console.log(`  ${label}: stripped ${stripped.length} psalm superscriptions from verse 1`);
+    extraVerses[label] = verses;
+    writeFileSync(path.join(OUT_DIR, file), gzipSync(JSON.stringify(verses)));
+    console.log(`Wrote ${path.join(OUT_DIR, file)} (${Object.keys(verses).length} verses)`);
+  }
 
   const generatedTs = [
     '// AUTO-GENERATED by scripts/build-bible-data.ts — do not edit by hand.',
@@ -201,7 +376,10 @@ function main() {
   const spotKey = '43:3:16'; // John 3:16
   console.log(`\nSpot check ${spotKey} (John 3:16):`);
   console.log(`  NL: ${JSON.stringify(sv.verses[spotKey])}`);
-  console.log(`  EN: ${JSON.stringify(kjv.verses[spotKey])}`);
+  console.log(`  KJV: ${JSON.stringify(kjv.verses[spotKey])}`);
+  for (const [label, verses] of Object.entries(extraVerses)) {
+    console.log(`  ${label}: ${JSON.stringify(verses[spotKey])}`);
+  }
 }
 
 main();

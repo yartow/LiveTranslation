@@ -9,7 +9,7 @@ export type TextDisplay = 'subtitle' | 'stream';
 export type LocalWhisperModel = 'tiny' | 'small' | 'medium';
 // Sermon mode never offers 'none' — a correction/translation call is always required there.
 export type SermonTranslationProvider = 'openai' | 'claude' | 'ollama';
-export type SermonBibleVersion = 'KJV' | 'ESV' | 'NASB' | 'NKJV';
+export type SermonBibleVersion = 'KJV' | 'ESV' | 'LSB' | 'NASB' | 'NKJV';
 export type SermonScriptureFallback = 'kjv' | 'none';
 
 export interface DeviceProfile {
@@ -146,7 +146,7 @@ const VALID_TRANSLATION: TranslationProvider[] = ['openai', 'claude', 'ollama', 
 const VALID_IMPROVEMENT: ImprovementProvider[] = ['openai', 'claude'];
 const VALID_LOCAL_MODEL: LocalWhisperModel[] = ['tiny', 'small', 'medium'];
 const VALID_SERMON_PROVIDER: SermonTranslationProvider[] = ['openai', 'claude', 'ollama'];
-const VALID_BIBLE_VERSION: SermonBibleVersion[] = ['KJV', 'ESV', 'NASB', 'NKJV'];
+const VALID_BIBLE_VERSION: SermonBibleVersion[] = ['KJV', 'ESV', 'LSB', 'NASB', 'NKJV'];
 const VALID_SCRIPTURE_FALLBACK: SermonScriptureFallback[] = ['kjv', 'none'];
 
 // A glossary filename must match server/lib/glossary-file.ts's isSafeGlossaryName

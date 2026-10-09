@@ -25,7 +25,7 @@ export interface GlossaryWarning {
 /** Set on a SCRIPTURE segment — the exact verse text substituted in, and where it came from. See CLAUDE.md "Scripture pipeline". */
 export interface ScriptureInfo {
   reference: string; // e.g. "John 3:16" or "John 3:16-18"
-  version: 'ESV' | 'KJV';
+  version: 'ESV' | 'LSB' | 'KJV';
   verses: string;
 }
 
