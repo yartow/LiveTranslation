@@ -350,28 +350,38 @@ async function processChunk(
       // translation with context happens later via /api/sermon/translate —
       // see server/lib/sermon-translate.ts.
       translatedText = '';
-      if (session.translationProvider === 'none') {
+      correctedText = rawText; // fallback if the optional correction pass below fails
+      try {
+        if (session.translationProvider === 'none') {
+          correctedText = rawText;
+        } else if (session.translationProvider === 'ollama') {
+          sendDebug(session, `Chunk #${chunkIndex}: correcting via Ollama (${session.ollamaModel})…`);
+          ({ correctedText } = await correctTranscriptWithOllama(
+            rawText, session.targetLanguage, session.ollamaModel, session.ollamaBaseUrl,
+            session.glossary || undefined, session.previousTranscript || undefined, signal, session.sourceLanguage,
+          ));
+        } else if (session.translationProvider === 'claude') {
+          const hasAnthropicKey = !!(session.anthropicApiKey || process.env.ANTHROPIC_API_KEY);
+          if (!hasAnthropicKey) sendDebug(session, `Chunk #${chunkIndex}: ✗ No Anthropic API key`);
+          else sendDebug(session, `Chunk #${chunkIndex}: correcting via Claude Haiku…`);
+          ({ correctedText } = await correctTranscriptWithClaude(
+            rawText, session.targetLanguage, session.anthropicApiKey,
+            session.glossary || undefined, session.previousTranscript || undefined, signal, session.sourceLanguage,
+          ));
+        } else {
+          sendDebug(session, `Chunk #${chunkIndex}: correcting via GPT-4o-mini…`);
+          ({ correctedText } = await correctTranscript(
+            rawText, session.targetLanguage, session.openaiApiKey || undefined,
+            session.glossary || undefined, session.previousTranscript || undefined, signal, session.sourceLanguage,
+          ));
+        }
+      } catch (correctionError) {
+        if (correctionError instanceof Error && correctionError.name === 'AbortError') throw correctionError;
+        // Correction is only polish: Whisper already produced the speech, so a failing
+        // (or overloaded/offline) LLM must not erase this stretch of the sermon.
+        console.error(`Chunk ${chunkIndex} correction failed — keeping the raw transcript:`, correctionError);
+        sendDebug(session, `Chunk #${chunkIndex}: ✗ correction failed (${classifyError(correctionError)}) — using the raw transcript`);
         correctedText = rawText;
-      } else if (session.translationProvider === 'ollama') {
-        sendDebug(session, `Chunk #${chunkIndex}: correcting via Ollama (${session.ollamaModel})…`);
-        ({ correctedText } = await correctTranscriptWithOllama(
-          rawText, session.targetLanguage, session.ollamaModel, session.ollamaBaseUrl,
-          session.glossary || undefined, session.previousTranscript || undefined, signal, session.sourceLanguage,
-        ));
-      } else if (session.translationProvider === 'claude') {
-        const hasAnthropicKey = !!(session.anthropicApiKey || process.env.ANTHROPIC_API_KEY);
-        if (!hasAnthropicKey) sendDebug(session, `Chunk #${chunkIndex}: ✗ No Anthropic API key`);
-        else sendDebug(session, `Chunk #${chunkIndex}: correcting via Claude Haiku…`);
-        ({ correctedText } = await correctTranscriptWithClaude(
-          rawText, session.targetLanguage, session.anthropicApiKey,
-          session.glossary || undefined, session.previousTranscript || undefined, signal, session.sourceLanguage,
-        ));
-      } else {
-        sendDebug(session, `Chunk #${chunkIndex}: correcting via GPT-4o-mini…`);
-        ({ correctedText } = await correctTranscript(
-          rawText, session.targetLanguage, session.openaiApiKey || undefined,
-          session.glossary || undefined, session.previousTranscript || undefined, signal, session.sourceLanguage,
-        ));
       }
     } else if (session.translationProvider === 'none') {
       sendDebug(session, `Chunk #${chunkIndex}: translation disabled — using raw text`);

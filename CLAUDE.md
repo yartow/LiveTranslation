@@ -186,6 +186,16 @@ automatically (with backoff) if it crashes. The worker's stdout must carry
 **only** protocol JSON — HF/mlx diagnostics are routed to stderr, since any
 stray stdout line would desync the request/response correlation.
 
+The client (`mlx-whisper.ts`) hands the worker **one request at a time** and starts a request's 60 s
+clock only when the worker takes it — a request it gave up on is still being computed by the worker,
+so the worker counts as busy until that answer arrives (otherwise one timeout cascaded into a run of
+dropped chunks). A timed-out chunk is retried once; a worker still silent 90 s after a timeout is
+killed and restarted. In sermon mode (`correct-only`), a failing per-chunk LLM correction keeps the raw
+Whisper text rather than dropping the chunk (`chunk-transcription.ts`). The Whisper slot (`mlxSemaphore`)
+is deliberately still held through the correction call: releasing it early lets results complete out of
+order, and `flushInOrder`'s gap-skip (>8 pending results behind a missing one) would then discard the
+slow chunk for good.
+
 `MLX_PYTHON` (env var) points at the Python interpreter with `mlx-whisper`
 installed — plain `python3` on PATH is often *not* that interpreter (e.g. it's
 under a conda/venv). This is the repo's only Python dependency and only

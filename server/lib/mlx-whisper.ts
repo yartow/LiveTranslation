@@ -24,8 +24,17 @@ function resolveWorkerPath(): string {
   return devLayout; // neither exists — fail with a path in the error message that at least points at the expected dev location
 }
 
-const WORKER_PATH = resolveWorkerPath();
-const REQUEST_TIMEOUT_MS = 30_000;
+// MLX_WORKER_PATH / MLX_REQUEST_TIMEOUT_MS / MLX_STUCK_KILL_MS are test hooks (a fake
+// worker + short timeouts in tests/unit/mlx-whisper.test.ts); leave them unset in real use.
+const WORKER_PATH = process.env.MLX_WORKER_PATH || resolveWorkerPath();
+// Per-request budget, measured from the moment the request is handed to the
+// worker (not from when it was queued behind another) — whisper-large-v3 takes
+// ~1-2.5 s per chunk normally, so this only trips when the GPU is badly contended.
+const REQUEST_TIMEOUT_MS = Number(process.env.MLX_REQUEST_TIMEOUT_MS) || 60_000;
+// A request we gave up on is still being computed by the worker (it can't be
+// cancelled). If it still hasn't answered this long after we gave up, the worker is
+// wedged — kill it so the restart logic gives us a fresh one.
+const STUCK_KILL_MS = Number(process.env.MLX_STUCK_KILL_MS) || 90_000;
 // The worker's first waitUntilReady() call may need to download the model
 // (multi-GB from Hugging Face) in addition to warm-up inference — a much
 // longer allowance than any individual transcription request should ever need.
@@ -40,11 +49,35 @@ interface PendingRequest {
   timeout: NodeJS.Timeout;
 }
 
+/** A request waiting for the worker to be free. Not on the clock until it is dispatched. */
+interface QueuedRequest {
+  id: number;
+  payload: string;
+  resolve: (text: string) => void;
+  reject: (err: Error) => void;
+}
+
+export class MlxTimeoutError extends Error {
+  constructor() {
+    super('MLX transcription timed out');
+    this.name = 'MlxTimeoutError';
+  }
+}
+
 class MlxWorkerManager {
   private proc: ChildProcessWithoutNullStreams | null = null;
   private ready = false;
   private readyWaiters: Array<{ resolve: () => void; reject: (err: Error) => void }> = [];
   private pending = new Map<number, PendingRequest>();
+  // The worker handles one request at a time, so we send it one at a time and
+  // only start a request's timeout clock when it is actually handed over.
+  // Otherwise a request that timed out (but is still being computed by the
+  // worker) would leave the next one waiting behind it with its own clock
+  // already running — one timeout cascading into a run of dropped chunks.
+  private queue: QueuedRequest[] = [];
+  private busyId: number | null = null;
+  private stuckTimer: NodeJS.Timeout | null = null;
+  private shuttingDown = false;
   private nextId = 1;
   private lastSpawnError: string | null = null;
   private restarting = false;
@@ -87,8 +120,10 @@ class MlxWorkerManager {
       console.warn(`MLX worker exited (code=${code}, signal=${signal})`);
       this.proc = null;
       this.ready = false;
+      this.busyId = null;
+      if (this.stuckTimer) { clearTimeout(this.stuckTimer); this.stuckTimer = null; }
       this.failAllPending(new Error('MLX worker exited unexpectedly'));
-      this.scheduleRestart();
+      if (!this.shuttingDown) this.scheduleRestart();
     });
   }
 
@@ -123,18 +158,73 @@ class MlxWorkerManager {
       this.ready = true;
       this.consecutiveRestartFailures = 0;
       for (const waiter of this.readyWaiters.splice(0)) waiter.resolve();
+      this.pump();
       return;
     }
 
+    // No pending entry = we already gave up on this request (timeout/abort); its answer is
+    // discarded, but it still frees the worker for the next queued request.
     const pending = this.pending.get(msg.id);
-    if (!pending) return;
-    this.pending.delete(msg.id);
-    clearTimeout(pending.timeout);
-    if (typeof msg.error === 'string') {
-      pending.reject(new Error(msg.error));
-    } else {
-      pending.resolve(typeof msg.text === 'string' ? msg.text : '');
+    if (pending) {
+      this.pending.delete(msg.id);
+      clearTimeout(pending.timeout);
+      if (typeof msg.error === 'string') {
+        pending.reject(new Error(msg.error));
+      } else {
+        pending.resolve(typeof msg.text === 'string' ? msg.text : '');
+      }
     }
+    this.releaseWorker(msg.id);
+  }
+
+  private releaseWorker(id: number): void {
+    if (this.busyId !== id) return;
+    this.busyId = null;
+    if (this.stuckTimer) { clearTimeout(this.stuckTimer); this.stuckTimer = null; }
+    this.pump();
+  }
+
+  private pump(): void {
+    if (this.busyId !== null || !this.ready || !this.proc) return;
+    const next = this.queue.shift();
+    if (next) this.dispatch(next);
+  }
+
+  private dispatch(req: QueuedRequest): void {
+    this.busyId = req.id;
+    const timeout = setTimeout(() => {
+      if (!this.pending.delete(req.id)) return;
+      console.warn(`MLX worker: request ${req.id} still running after ${REQUEST_TIMEOUT_MS} ms — giving up on it (the worker stays busy until it answers)`);
+      req.reject(new MlxTimeoutError());
+      this.stuckTimer = setTimeout(() => {
+        if (this.busyId !== req.id) return;
+        console.error(`MLX worker: still stuck on request ${req.id} ${STUCK_KILL_MS} ms later — killing it so it restarts`);
+        this.proc?.kill();
+      }, STUCK_KILL_MS);
+    }, REQUEST_TIMEOUT_MS);
+    this.pending.set(req.id, { resolve: req.resolve, reject: req.reject, timeout });
+
+    // The worker can exit between waitUntilReady() resolving and this write
+    // (e.g. it crashed the instant after reporting ready) — without an error
+    // handler a failed/EPIPE write would sit until the timeout instead of failing at once.
+    const fail = (err: Error) => {
+      const pending = this.pending.get(req.id);
+      if (pending) { this.pending.delete(req.id); clearTimeout(pending.timeout); pending.reject(err); }
+      this.releaseWorker(req.id);
+    };
+    try {
+      this.proc!.stdin.write(req.payload + '\n', (err) => {
+        if (err) fail(new Error(`MLX worker write failed: ${err.message}`));
+      });
+    } catch (err) {
+      fail(err instanceof Error ? err : new Error(String(err)));
+    }
+  }
+
+  /** Stops the worker without restarting it (tests). */
+  shutdown(): void {
+    this.shuttingDown = true;
+    this.proc?.kill();
   }
 
   private failAllPending(err: Error): void {
@@ -143,6 +233,7 @@ class MlxWorkerManager {
       pending.reject(err);
     });
     this.pending.clear();
+    for (const queued of this.queue.splice(0)) queued.reject(err);
     for (const waiter of this.readyWaiters.splice(0)) waiter.reject(err);
   }
 
@@ -174,6 +265,23 @@ class MlxWorkerManager {
     initialPrompt?: string,
     signal?: AbortSignal,
   ): Promise<string> {
+    try {
+      return await this.transcribeOnce(audioFilePath, language, initialPrompt, signal);
+    } catch (err) {
+      if (!(err instanceof MlxTimeoutError) || signal?.aborted) throw err;
+      // A timeout drops the chunk's speech from the sermon; one more attempt costs little.
+      // It goes to the back of the queue, and its clock starts only when the worker is free.
+      console.warn('MLX transcription timed out — retrying once');
+      return this.transcribeOnce(audioFilePath, language, initialPrompt, signal);
+    }
+  }
+
+  private async transcribeOnce(
+    audioFilePath: string,
+    language?: string,
+    initialPrompt?: string,
+    signal?: AbortSignal,
+  ): Promise<string> {
     if (signal?.aborted) return '';
 
     await this.waitUntilReady(STARTUP_TIMEOUT_MS);
@@ -181,51 +289,33 @@ class MlxWorkerManager {
 
     const id = this.nextId++;
     const normalizedLanguage = language && language !== 'auto' ? language.split('-')[0] : null;
+    const payload = JSON.stringify({
+      id,
+      path: audioFilePath,
+      language: normalizedLanguage,
+      initial_prompt: initialPrompt || null,
+    });
 
     return new Promise<string>((resolve, reject) => {
       const onAbort = () => {
-        this.pending.delete(id);
-        clearTimeout(timeout);
+        const queuedAt = this.queue.findIndex((q) => q.id === id);
+        if (queuedAt !== -1) {
+          this.queue.splice(queuedAt, 1);
+        } else {
+          // Already handed to the worker: stop waiting for it (it finishes on its own).
+          const pending = this.pending.get(id);
+          if (pending) { this.pending.delete(id); clearTimeout(pending.timeout); }
+        }
         resolve('');
       };
-      const timeout = setTimeout(() => {
-        this.pending.delete(id);
-        signal?.removeEventListener('abort', onAbort);
-        reject(new Error('MLX transcription timed out'));
-      }, REQUEST_TIMEOUT_MS);
-
-      this.pending.set(id, {
+      signal?.addEventListener('abort', onAbort, { once: true });
+      this.queue.push({
+        id,
+        payload,
         resolve: (text) => { signal?.removeEventListener('abort', onAbort); resolve(text); },
         reject: (err) => { signal?.removeEventListener('abort', onAbort); reject(err); },
-        timeout,
       });
-
-      signal?.addEventListener('abort', onAbort, { once: true });
-
-      const req = JSON.stringify({
-        id,
-        path: audioFilePath,
-        language: normalizedLanguage,
-        initial_prompt: initialPrompt || null,
-      });
-      // The worker can exit between waitUntilReady() resolving and this
-      // write (e.g. it crashed the instant after reporting ready) — without
-      // an error handler here, a failed/EPIPE write would otherwise just
-      // sit until REQUEST_TIMEOUT_MS instead of failing immediately.
-      try {
-        this.proc!.stdin.write(req + '\n', (err) => {
-          if (!err) return;
-          const pending = this.pending.get(id);
-          if (!pending) return;
-          this.pending.delete(id);
-          clearTimeout(pending.timeout);
-          pending.reject(new Error(`MLX worker write failed: ${err.message}`));
-        });
-      } catch (err) {
-        this.pending.delete(id);
-        clearTimeout(timeout);
-        reject(err instanceof Error ? err : new Error(String(err)));
-      }
+      this.pump();
     });
   }
 }
@@ -241,4 +331,9 @@ export async function transcribeWithMlx(
   signal?: AbortSignal,
 ): Promise<string> {
   return manager.transcribe(audioFilePath, language, initialPrompt, signal);
+}
+
+/** Stops the worker without restarting it — tests only. */
+export function _shutdownMlxWorkerForTests(): void {
+  manager.shutdown();
 }
