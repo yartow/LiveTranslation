@@ -25,7 +25,14 @@ export interface ActiveReading {
   chapter: number;
   /** The verse the NEXT segment without its own reference will be checked against. */
   nextVerse: number;
+  /** A segment has matched the passage (verbatim or paraphrase). Until then the reading is only announced ("Hebreeën 12:1-3, laten we lezen") and survives READING_GRACE_SEGMENTS non-matching segments; once matched, the first non-matching segment ends it. */
+  matched: boolean;
+  /** Non-matching segments seen since the announcement (only counted while !matched). */
+  misses: number;
 }
+
+/** How many segments after an announcement may fail to match before the reading is dropped — the announcement itself plus a little commentary ("laten we dat nog gaan lezen") before the text. */
+export const READING_GRACE_SEGMENTS = 3;
 
 export interface SegmentStoreState {
   ids: string[];
@@ -76,7 +83,8 @@ export type SegmentAction =
   // Scripture pipeline (see ActiveReading above and CLAUDE.md "Scripture pipeline").
   | { type: 'APPLY_SCRIPTURE'; id: string; text: string; reference: string; version: 'ESV' | 'KJV'; requestHash: string }
   | { type: 'CLEAR_SCRIPTURE'; id: string; now: number }
-  | { type: 'SET_ACTIVE_READING'; bookNumber: number; chapter: number; verse: number }
+  | { type: 'SET_ACTIVE_READING'; bookNumber: number; chapter: number; verse: number; matched?: boolean }
+  | { type: 'NOTE_READING_MISS' }
   | { type: 'CLEAR_ACTIVE_READING' }
   | { type: 'CLEAR_ALL'; sessionId: string };
 
@@ -278,7 +286,18 @@ export function segmentReducer(state: SegmentStoreState, action: SegmentAction):
     }
 
     case 'SET_ACTIVE_READING':
-      return { ...state, activeReading: { bookNumber: action.bookNumber, chapter: action.chapter, nextVerse: action.verse } };
+      return {
+        ...state,
+        activeReading: { bookNumber: action.bookNumber, chapter: action.chapter, nextVerse: action.verse, matched: action.matched ?? false, misses: 0 },
+      };
+
+    case 'NOTE_READING_MISS': {
+      const reading = state.activeReading;
+      if (!reading) return state;
+      // A matched reading that stops matching has ended; an announced-but-unmatched one gets a grace period.
+      if (reading.matched || reading.misses + 1 >= READING_GRACE_SEGMENTS) return { ...state, activeReading: null };
+      return { ...state, activeReading: { ...reading, misses: reading.misses + 1 } };
+    }
 
     case 'CLEAR_ACTIVE_READING':
       return state.activeReading === null ? state : { ...state, activeReading: null };

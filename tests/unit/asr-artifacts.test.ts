@@ -121,4 +121,24 @@ describe('stripAsrArtifacts', () => {
   it('keeps a short genuine repetition', () => {
     expect(stripAsrArtifacts('heel heel goed', 'nl')).toBe('heel heel goed');
   });
+  describe('chunk-edge continuation ellipses', () => {
+    it.each([
+      ['...van het geloof. Hij heeft het kruis verdragen.', 'van het geloof. Hij heeft het kruis verdragen.'],
+      ['…vragen, maar die steunen op Christus', 'vragen, maar die steunen op Christus'],
+      ['de Leidsman en voor eindelijk...', 'de Leidsman en voor eindelijk'],
+      ['Zwakke getuigen in het…', 'Zwakke getuigen in het'],
+      ['Zwakke getuigen in het.. ...geloof. Die doorgaan', 'Zwakke getuigen in het geloof. Die doorgaan'],
+      ['die......vol gas bezig', 'die vol gas bezig'],
+    ])('strips the ellipsis in %j', (input, expected) => {
+      expect(stripAsrArtifacts(input, 'nl')).toBe(expected);
+    });
+
+    it('leaves a single inner pause alone', () => {
+      expect(stripAsrArtifacts('Dat is het verhaal... Zwakke mensen.', 'nl')).toBe('Dat is het verhaal... Zwakke mensen.');
+    });
+
+    it('still returns empty for an ellipsis-only chunk', () => {
+      expect(stripAsrArtifacts('...', 'nl')).toBe('');
+    });
+  });
 });

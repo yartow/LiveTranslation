@@ -27,7 +27,18 @@ const ENGLISH_FILES: Record<EnglishVersion, string> = {
   LSB: 'lsb-en.json.gz',
 };
 
+/**
+ * Extra Dutch texts the preacher may be reading from, besides the bundled
+ * Statenvertaling — the match in scripture.ts is only as good as the anchor's
+ * wording, and a modern congregation reads the HSV/NBG, not the 1637 text (the
+ * same Hebrews 12:1 reading scores ~0.15 against SV and ~0.5 against HSV).
+ * Built by scripts/build-bible-data.ts when their XML sources exist; the verse
+ * numbering is the same as the Statenvertaling's.
+ */
+const EXTRA_DUTCH_FILES = ['hsv-nl.json.gz', 'nbg-nl.json.gz'] as const;
+
 let cachedSv: VerseMap | null | undefined; // undefined = not yet attempted this process
+let cachedExtraDutch: VerseMap[] | undefined;
 const cachedEnglish: Partial<Record<EnglishVersion, VerseMap | null>> = {};
 
 function loadGzippedJson(filename: string): VerseMap | null {
@@ -43,6 +54,15 @@ function loadGzippedJson(filename: string): VerseMap | null {
 export function getStatenvertaling(): VerseMap | null {
   if (cachedSv === undefined) cachedSv = loadGzippedJson('sv-nl.json.gz');
   return cachedSv;
+}
+
+/** Every Dutch text available to anchor a reading against: the Statenvertaling first, then whichever of HSV/NBG was built. Empty when nothing is built. */
+export function getDutchAnchors(): VerseMap[] {
+  if (cachedExtraDutch === undefined) {
+    cachedExtraDutch = EXTRA_DUTCH_FILES.map(loadGzippedJson).filter((v): v is VerseMap => v !== null);
+  }
+  const sv = getStatenvertaling();
+  return sv ? [sv, ...cachedExtraDutch] : cachedExtraDutch;
 }
 
 export function getEnglishBible(version: EnglishVersion): VerseMap | null {
@@ -101,8 +121,8 @@ function verseKey(n: number, c: number, v: number): string {
 }
 
 /** Dutch verse text (Statenvertaling), or undefined if unavailable/out of range. */
-export function getDutchVerse(n: number, c: number, v: number): string | undefined {
-  return getStatenvertaling()?.[verseKey(n, c, v)];
+export function getDutchVerse(n: number, c: number, v: number, anchor?: VerseMap | null): string | undefined {
+  return (anchor ?? getStatenvertaling())?.[verseKey(n, c, v)];
 }
 
 /** English verse text (KJV unless another built version is named), or undefined if unavailable/out of range. */
@@ -117,10 +137,10 @@ export function getEnglishVerse(n: number, c: number, v: number, version: Englis
  * translations. Empty string if none of the range was found (e.g. past the
  * end of the chapter, or bible data isn't built).
  */
-export function getDutchVerseRange(n: number, c: number, verseStart: number, verseEnd: number): string {
+export function getDutchVerseRange(n: number, c: number, verseStart: number, verseEnd: number, anchor?: VerseMap | null): string {
   const parts: string[] = [];
   for (let v = verseStart; v <= verseEnd; v++) {
-    const text = getDutchVerse(n, c, v);
+    const text = getDutchVerse(n, c, v, anchor);
     if (text) parts.push(text);
   }
   return parts.join(' ');
@@ -140,6 +160,7 @@ export function getEnglishVerseRange(
 
 export function _resetBibleStoreForTests(): void {
   cachedSv = undefined;
+  cachedExtraDutch = undefined;
   cachedPsalmTitles = undefined;
   for (const v of Object.keys(cachedEnglish) as EnglishVersion[]) delete cachedEnglish[v];
 }

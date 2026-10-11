@@ -30,6 +30,10 @@ export interface ScriptureResultInfo {
   verbatim: boolean;
   /** True when this segment was checked against an ongoing reading and the match dropped below threshold (or scripture substitution is policy-disabled) — tells the client to stop treating subsequent segments as a continuation of that reading. */
   readingEnded: boolean;
+  /** True when the segment was recognised as the preacher's own words around the announced passage (the paraphrase band) — the client uses it to treat the reading as really under way. */
+  paraphrase?: boolean;
+  /** Paraphrase only: the first verse the match started at (>= the checked candidate) — the client moves the reading up to it. */
+  verseStart?: number;
   text?: string;
   reference?: string;
   version?: 'ESV' | 'LSB' | 'KJV';
@@ -170,6 +174,7 @@ export async function translateSegments(
           // be able to close that block early. Mirrors the same guard on
           // the glossary's disambiguation doc (CLAUDE.md "Security notes").
           scriptureGuidance = verdict.guidance.replace(/```+/g, "'");
+          scriptureInfo = { verbatim: false, readingEnded: false, paraphrase: true, verseStart: verdict.verseStart };
         } else {
           scriptureInfo = { verbatim: false, readingEnded: true };
         }

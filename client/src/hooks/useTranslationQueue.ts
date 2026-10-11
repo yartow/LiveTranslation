@@ -158,13 +158,24 @@ export function useTranslationQueue(
           if (isThisStillTheActiveReading && item.readingCandidate && typeof result.scripture.verseEnd === 'number') {
             dispatch({
               type: 'SET_ACTIVE_READING', bookNumber: item.readingCandidate.bookNumber,
-              chapter: item.readingCandidate.chapter, verse: result.scripture.verseEnd + 1,
+              chapter: item.readingCandidate.chapter, verse: result.scripture.verseEnd + 1, matched: true,
             });
           }
         } else {
           dispatch({ type: 'APPLY_TRANSLATION', id: item.id, translation: result.translation, requestHash: item.requestHash, warnings: result.warnings });
-          if (isThisStillTheActiveReading && result.scripture?.readingEnded) {
-            dispatch({ type: 'CLEAR_ACTIVE_READING' });
+          if (isThisStillTheActiveReading) {
+            // A paraphrase means the passage is really being discussed: mark the
+            // reading matched and move it up to where the match began (never
+            // past it — the preacher may still be on that verse). An "ended"
+            // verdict only drops the reading once it has matched, or after the
+            // grace period (an announcement is itself checked against the
+            // first verse and never matches it).
+            if (result.scripture?.paraphrase && item.readingCandidate) {
+              dispatch({
+                type: 'SET_ACTIVE_READING', bookNumber: item.readingCandidate.bookNumber, chapter: item.readingCandidate.chapter,
+                verse: Math.max(item.readingCandidate.verse, result.scripture.verseStart ?? 0), matched: true,
+              });
+            } else if (result.scripture?.readingEnded) dispatch({ type: 'NOTE_READING_MISS' });
           }
         }
       }

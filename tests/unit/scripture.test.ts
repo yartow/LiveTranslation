@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { join } from 'path';
-import { mkdtempSync, rmSync, copyFileSync } from 'fs';
+import { mkdtempSync, rmSync, copyFileSync, writeFileSync } from 'fs';
+import { gzipSync } from 'zlib';
 import { tmpdir } from 'os';
 import { adjudicateScripture, VERBATIM_THRESHOLD, PARAPHRASE_THRESHOLD } from '../../server/lib/scripture.js';
 import { _resetBibleStoreForTests } from '../../server/lib/bible-store.js';
@@ -51,6 +52,37 @@ describe('adjudicateScripture', () => {
       expect(verdict.reference).toBe('John 3:16');
       expect(verdict.verseEnd).toBe(16);
     }
+  });
+
+  // The preacher reads from a modern Dutch Bible, not the 1637 text the bundled
+  // anchor carries: an extra anchor built into BIBLE_DIR (hsv-nl.json.gz) must
+  // be enough to recognise the reading.
+  it('recognises a reading worded like a modern Dutch Bible once its text is built as an extra anchor', async () => {
+    const modern = 'Want God had de wereld zo lief, dat Hij Zijn eniggeboren Zoon heeft gegeven, opdat ieder die in Hem gelooft niet verloren gaat, maar eeuwig leven heeft.';
+
+    useKjvOnlyData();
+    expect((await adjudicateScripture(modern, { bookNumber: 43, chapter: 3, verse: 16 })).kind).toBe('ended');
+
+    writeFileSync(join(kjvOnlyDir, 'hsv-nl.json.gz'), gzipSync(JSON.stringify({ '43:3:16': modern })));
+    _resetBibleStoreForTests();
+    const verdict = await adjudicateScripture(modern, { bookNumber: 43, chapter: 3, verse: 16 }, { bibleVersion: 'KJV' });
+    expect(verdict.kind).toBe('verbatim');
+    if (verdict.kind === 'verbatim') expect(verdict.text).toContain('For God so loved the world');
+  });
+
+  // The candidate is "the verse after the last match"; a paraphrase doesn't
+  // advance it, so the reading may be a verse or two further on by now.
+  it('finds a reading that started up to two verses after the candidate, and reports where', async () => {
+    useKjvOnlyData();
+    const verdict = await adjudicateScripture(JOHN_3_16, { bookNumber: 43, chapter: 3, verse: 14 });
+    expect(verdict.kind).toBe('verbatim');
+    if (verdict.kind === 'verbatim') {
+      expect(verdict.verseStart).toBe(16);
+      expect(verdict.verseEnd).toBe(16);
+      expect(verdict.reference).toBe('John 3:16');
+    }
+    // ...but not further than that.
+    expect((await adjudicateScripture(JOHN_3_16, { bookNumber: 43, chapter: 3, verse: 12 })).kind).toBe('ended');
   });
 
   it('prefers ESV when a key is configured and the API succeeds (AC11)', async () => {

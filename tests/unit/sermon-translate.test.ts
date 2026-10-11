@@ -201,7 +201,8 @@ describe('translateSegments — scripture (Bijbelcitaten AC11/AC12)', () => {
     expect(capturedUserMessage).toContain('For God so loved the world');
     expect(capturedUserMessage).toContain(`<TE_VERTALEN>\n${paraphrase}\n</TE_VERTALEN>`);
     expect(results[0]).toMatchObject({ id: 'a', status: 'ok', translation: 'His own paraphrase, translated.' });
-    expect((results[0] as { scripture?: unknown }).scripture).toBeUndefined();
+    // Flagged so the client knows the announced reading is really under way, but never substituted.
+    expect((results[0] as { scripture?: unknown }).scripture).toEqual({ verbatim: false, readingEnded: false, paraphrase: true, verseStart: 16 });
   }));
 
   it('an unrelated sentence is translated normally and flags readingEnded so the client stops checking further segments', () => withBibleFixture(async () => {

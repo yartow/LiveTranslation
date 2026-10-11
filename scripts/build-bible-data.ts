@@ -48,6 +48,14 @@ const ESV_XML_PATH = process.env.ESV_XML_PATH
 const LSB_XML_PATH = process.env.LSB_XML_PATH
   || path.join(os.homedir(), 'Documents/GitHub/Holy-Bible-XML-Format/EnglishLSBBible.xml');
 
+// Optional extra Dutch texts (same Beblia layout, copyrighted — local only). The
+// preacher reads from a modern Dutch Bible, so the Statenvertaling alone
+// under-scores a verbatim reading (see server/lib/bible-store.ts getDutchAnchors).
+const HSV_XML_PATH = process.env.HSV_XML_PATH
+  || path.join(os.homedir(), 'Documents/GitHub/Holy-Bible-XML-Format/DutchHSVBible.xml');
+const NBG_XML_PATH = process.env.NBG_XML_PATH
+  || path.join(os.homedir(), 'Documents/GitHub/Holy-Bible-XML-Format/DutchNBGBible.xml');
+
 const OUT_DIR = path.resolve(import.meta.dirname, '..', 'data', 'bible');
 const CLIENT_BOOKS_PATH = path.resolve(import.meta.dirname, '..', 'client', 'src', 'lib', 'sermon', 'bible-books.generated.ts');
 
@@ -343,6 +351,41 @@ function main() {
     const stripped = stripPsalmTitles(verses, label as 'ESV' | 'LSB', kjv.verses, esvBodies);
     console.log(`  ${label}: stripped ${stripped.length} psalm superscriptions from verse 1`);
     extraVerses[label] = verses;
+    writeFileSync(path.join(OUT_DIR, file), gzipSync(JSON.stringify(verses)));
+    console.log(`Wrote ${path.join(OUT_DIR, file)} (${Object.keys(verses).length} verses)`);
+  }
+
+  // Extra Dutch anchors. They must number verses like the Statenvertaling (the
+  // scripture matcher and the Psalm title shift both assume it) — warn when a
+  // chapter has fewer verses, so a mismatched source is noticed.
+  const svCounts = new Map<string, number>();
+  for (const key of Object.keys(sv.verses)) {
+    const [n, c] = key.split(':');
+    svCounts.set(`${n}:${c}`, (svCounts.get(`${n}:${c}`) ?? 0) + 1);
+  }
+  for (const { label, file, xmlPath } of [
+    { label: 'HSV', file: 'hsv-nl.json.gz', xmlPath: HSV_XML_PATH },
+    { label: 'NBG', file: 'nbg-nl.json.gz', xmlPath: NBG_XML_PATH },
+  ]) {
+    if (!existsSync(xmlPath)) {
+      console.warn(`  (skipping Dutch ${label}: ${xmlPath} not found — set ${label}_XML_PATH to include it)`);
+      continue;
+    }
+    const verses = parseBebliaXml(xmlPath);
+    const counts = new Map<string, number>();
+    for (const key of Object.keys(verses)) {
+      const [n, c] = key.split(':');
+      counts.set(`${n}:${c}`, (counts.get(`${n}:${c}`) ?? 0) + 1);
+    }
+    // More verses than the Statenvertaling source is the known truncation of that
+    // source (it lacks the last verses of many psalms) — harmless. FEWER, or a
+    // chapter the source lacks entirely, means the numbering really differs.
+    const fewer = Array.from(svCounts).filter(([k, v]) => (counts.get(k) ?? 0) < v).map(([k]) => k);
+    const more = Array.from(svCounts).filter(([k, v]) => (counts.get(k) ?? 0) > v).length;
+    console.log(`  Dutch ${label}: ${more} chapters have more verses than the (truncated) Statenvertaling source — expected`);
+    if (fewer.length) {
+      console.warn(`  Dutch ${label}: ${fewer.length} chapters have FEWER verses than the Statenvertaling (book:chapter) — ${fewer.slice(0, 12).join(', ')}${fewer.length > 12 ? ', …' : ''} — check the numbering`);
+    }
     writeFileSync(path.join(OUT_DIR, file), gzipSync(JSON.stringify(verses)));
     console.log(`Wrote ${path.join(OUT_DIR, file)} (${Object.keys(verses).length} verses)`);
   }

@@ -93,28 +93,44 @@ const ORDINAL_WORDS: Record<number, string> = { 1: 'eerste', 2: 'tweede', 3: 'de
 // start); this built-in set covers the common cases in the meantime.
 const SPOKEN_VARIANTS: Record<number, string[]> = {
   19: ['psalm'], // Psalmen
+  // HSV-style spellings (the table carries the 1637 Statenvertaling's):
+  // "Mattheüs 11:28", "Markus", "Lukas 14:27", "Hebreën" — all spoken daily.
+  40: ['mattheus'],
+  41: ['markus'],
+  42: ['lukas'],
   44: ['handelingen'], // Handelingen der apostelen
   46: ['1 korinthe', 'eerste korinthe', '1e korinthe'], // 1 Korinthiers
   47: ['2 korinthe', 'tweede korinthe', '2e korinthe'], // 2 Korintiers
   49: ['efeze'], // Efeziers
   54: ['1 timotheus', 'eerste timotheus', '1e timotheus'],
   55: ['2 timotheus', 'tweede timotheus', '2e timotheus'],
+  58: ['hebreen'], // Hebreeen (Whisper also writes "Hebreën")
   66: ['openbaring', 'openbaringen'], // Openbaring van Johannes
 };
 
-interface AliasEntry { tokens: string[]; bookNumber: number }
+interface AliasEntry {
+  tokens: string[];
+  bookNumber: number;
+  /**
+   * A short form ("Dan", "Mal", "Hand", "Ex"): also an ordinary Dutch word
+   * ("groter dan een ...", "dan 3 mensen"), so it only counts as a book when a
+   * *digit* chapter follows — never a spelled-out one ("dan een" = Daniel 1).
+   */
+  abbr: boolean;
+}
 
 function buildAliasTable(books: BibleBook[]): AliasEntry[] {
   const entries: AliasEntry[] = [];
-  const add = (name: string, n: number) => {
+  const add = (name: string, n: number, abbr = false) => {
     const norm = stripDiacritics(name.toLowerCase().trim());
     if (!norm) return;
-    entries.push({ tokens: norm.split(/\s+/), bookNumber: n });
+    entries.push({ tokens: norm.split(/\s+/), bookNumber: n, abbr });
   };
 
   for (const book of books) {
     add(book.nl, book.n);
-    add(book.abbr, book.n);
+    // An abbr identical to the full name ("Ruth", "Job", "Joel") is just the name.
+    add(book.abbr, book.n, stripDiacritics(book.abbr.toLowerCase()) !== stripDiacritics(book.nl.toLowerCase()));
     for (const variant of SPOKEN_VARIANTS[book.n] ?? []) add(variant, book.n);
 
     // Numbered books ("1 Korinthiers") also get "eerste Korinthiers" / "1e
@@ -155,25 +171,57 @@ function bareWord(norm: string): string {
   return norm.replace(/^[^\w:/]+|[^\w:/]+$/g, '');
 }
 
-function matchBookAt(tokens: Token[], i: number): { bookNumber: number; nextIndex: number } | null {
+function matchBookAt(tokens: Token[], i: number): { bookNumber: number; nextIndex: number; abbr: boolean } | null {
   const maxSpan = Math.min(MAX_BOOK_TOKENS, tokens.length - i);
   for (let span = maxSpan; span >= 1; span--) {
     const candidate = tokens.slice(i, i + span).map(t => bareWord(t.norm)).join(' ');
     const hit = ALIAS_TABLE.find(e => e.tokens.join(' ') === candidate);
-    if (hit) return { bookNumber: hit.bookNumber, nextIndex: i + span };
+    if (hit) return { bookNumber: hit.bookNumber, nextIndex: i + span, abbr: hit.abbr };
   }
   return null;
 }
 
-/** chapter[:verse[-verseEnd]] fused onto one token, e.g. "3:16" or "3:16-18". */
+/**
+ * chapter[:verse[-verseEnd]] fused onto one token, e.g. "3:16" or "3:16-18".
+ * Also the hyphen form Whisper writes when a reference is read out as digits
+ * ("Hebreeën 12-1-3", "Lucas 18-7"); a chapter range like "11-12" is rare in
+ * speech and a wrong guess just fails to match any verse.
+ */
 function parseInlineChapterVerse(token: string): { chapter: number; verseStart: number | null; verseEnd: number | null } | null {
-  const m = bareWord(token).match(/^(\d+):(\d+)(?:[-–](\d+))?$/);
+  const m = bareWord(token).match(/^(\d+)[:\-–](\d+)(?:[-–](\d+))?$/);
   if (!m) return null;
   return { chapter: Number(m[1]), verseStart: Number(m[2]), verseEnd: m[3] ? Number(m[3]) : null };
 }
 
 const VERSE_WORD = new Set(['vers', 'vs']);
 const RANGE_WORD = new Set(['tot', 't/m']);
+
+/** A digit token that can stand as a verse number with no "vers" in front (Psalm 119 has the most verses, 176). */
+function isBareVerse(token: string): boolean {
+  return /^\d{1,3}$/.test(token) && Number(token) >= 1 && Number(token) <= 176;
+}
+
+/** The verse (or "a-b" / "a tot b" / "a t/m b" / "a en b" range) starting at `tokens[index]`, and the index of its last token. */
+function parseVerseRange(
+  tokens: Token[], index: number,
+): { verseStart: number; verseEnd: number | null; endTokenIndex: number } | null {
+  const verseTokenText = bareWord(tokens[index].norm);
+  const fusedRange = verseTokenText.match(/^(\d+)-(\d+)$/);
+  if (fusedRange) return { verseStart: Number(fusedRange[1]), verseEnd: Number(fusedRange[2]), endTokenIndex: index };
+
+  const verseStart = parseNumberToken(verseTokenText);
+  if (verseStart === null) return null;
+  const afterVerse = index + 1;
+  if (afterVerse < tokens.length) {
+    const rangeWord = bareWord(tokens[afterVerse].norm);
+    if (rangeWord === 'en' || RANGE_WORD.has(rangeWord)) {
+      const endValIndex = afterVerse + 1;
+      const endVal = endValIndex < tokens.length ? parseNumberToken(bareWord(tokens[endValIndex].norm)) : null;
+      if (endVal !== null) return { verseStart, verseEnd: endVal, endTokenIndex: endValIndex };
+    }
+  }
+  return { verseStart, verseEnd: null, endTokenIndex: index };
+}
 
 function buildRef(
   bookNumber: number, chapter: number, verseStart: number | null, verseEnd: number | null,
@@ -213,38 +261,27 @@ export function findBibleRef(text: string, fromIndex = 0): BibleRef | null {
       return buildRef(bookMatch.bookNumber, inline.chapter, inline.verseStart, inline.verseEnd, text, tokens[i].start, tokens[j].end);
     }
 
-    const chapter = parseNumberToken(bareWord(tokens[j].norm));
+    const chapterToken = bareWord(tokens[j].norm);
+    // A short-form book name ("dan een") is only a reference with a digit chapter.
+    if (bookMatch.abbr && !/^\d+$/.test(chapterToken)) continue;
+    const chapter = parseNumberToken(chapterToken);
     if (chapter === null) continue; // book name used in ordinary prose, not a reference
     let endTokenIndex = j;
     j++;
 
     let verseStart: number | null = null;
     let verseEnd: number | null = null;
-    if (j < tokens.length && VERSE_WORD.has(bareWord(tokens[j].norm))) {
-      const verseTokenIndex = j + 1;
-      if (verseTokenIndex < tokens.length) {
-        const verseTokenText = bareWord(tokens[verseTokenIndex].norm);
-        const fusedRange = verseTokenText.match(/^(\d+)-(\d+)$/);
-        if (fusedRange) {
-          verseStart = Number(fusedRange[1]);
-          verseEnd = Number(fusedRange[2]);
-          endTokenIndex = verseTokenIndex;
-        } else {
-          const v = parseNumberToken(verseTokenText);
-          if (v !== null) {
-            verseStart = v;
-            endTokenIndex = verseTokenIndex;
-            const afterVerse = verseTokenIndex + 1;
-            if (afterVerse < tokens.length) {
-              const rangeWord = bareWord(tokens[afterVerse].norm);
-              if (rangeWord === 'en' || RANGE_WORD.has(rangeWord)) {
-                const endValIndex = afterVerse + 1;
-                const endVal = endValIndex < tokens.length ? parseNumberToken(bareWord(tokens[endValIndex].norm)) : null;
-                if (endVal !== null) { verseEnd = endVal; endTokenIndex = endValIndex; }
-              }
-            }
-          }
-        }
+    // "Johannes 3 vers 16" — or, for a digit chapter, just "Johannes 3 16" /
+    // "Hebreeën 12 1 tot 3" (how a reference reads when it is spoken as numbers).
+    let verseTokenIndex = -1;
+    if (j < tokens.length && VERSE_WORD.has(bareWord(tokens[j].norm))) verseTokenIndex = j + 1;
+    else if (j < tokens.length && /^\d+$/.test(chapterToken) && isBareVerse(bareWord(tokens[j].norm))) verseTokenIndex = j;
+    if (verseTokenIndex !== -1 && verseTokenIndex < tokens.length) {
+      const range = parseVerseRange(tokens, verseTokenIndex);
+      if (range) {
+        verseStart = range.verseStart;
+        verseEnd = range.verseEnd;
+        endTokenIndex = range.endTokenIndex;
       }
     }
 

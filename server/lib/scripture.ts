@@ -11,7 +11,7 @@
 // recognition exists in exactly one place. See server/lib/sermon-
 // translate.ts for the only caller.
 
-import { getDutchVerseRange, getEnglishVerseRange, dutchToEnglishVerses, hasEnglishVersion, type EnglishVersion } from './bible-store';
+import { getDutchAnchors, getDutchVerseRange, getEnglishVerseRange, dutchToEnglishVerses, hasEnglishVersion, type EnglishVersion } from './bible-store';
 import { getBibleBooks } from './bible-books';
 import { similarity } from './text-similarity';
 import { fetchEsvPassage } from './esv-api';
@@ -21,6 +21,14 @@ import { fetchEsvPassage } from './esv-api';
 // windows starting at the announced verse rather than assuming the reading
 // is exactly one verse long.
 const MAX_WINDOW = 3;
+/**
+ * ...and starting up to this many verses AFTER the candidate: the candidate is
+ * only "the verse after the last one matched", and a paraphrase doesn't match
+ * word for word, so the preacher may well have moved on a verse or two (or the
+ * announced start was itself discussed rather than read). Without this a
+ * reading stalls on its first verse and every later verse scores `ended`.
+ */
+const MAX_LOOKAHEAD = 2;
 
 /** Spoken text this close (or closer) to the Dutch anchor is treated as a verbatim reading — substitute the exact English verse text, no model call. */
 export const VERBATIM_THRESHOLD = 0.72;
@@ -34,8 +42,8 @@ export interface ReadingCandidate {
 }
 
 export type ScriptureVerdict =
-  | { kind: 'verbatim'; verseEnd: number; text: string; version: EnglishVersion; reference: string }
-  | { kind: 'paraphrase'; verseEnd: number; guidance: string; version: EnglishVersion }
+  | { kind: 'verbatim'; verseStart: number; verseEnd: number; text: string; version: EnglishVersion; reference: string }
+  | { kind: 'paraphrase'; verseStart: number; verseEnd: number; guidance: string; version: EnglishVersion }
   | { kind: 'ended' };
 
 export interface AdjudicateOptions {
@@ -71,13 +79,23 @@ export async function adjudicateScripture(
   const book = getBibleBooks()?.find(b => b.n === candidate.bookNumber);
   if (!book) return { kind: 'ended' };
 
-  let best: { verseEnd: number; sim: number } | null = null;
-  for (let span = 1; span <= MAX_WINDOW; span++) {
-    const verseEnd = candidate.verse + span - 1;
-    const dutch = getDutchVerseRange(candidate.bookNumber, candidate.chapter, candidate.verse, verseEnd);
-    if (!dutch) break; // ran past the end of the chapter (or bible data isn't built) — no wider window to try
-    const sim = similarity(spoken, dutch);
-    if (!best || sim > best.sim) best = { verseEnd, sim };
+  // The preacher may read from any Dutch translation we have (Statenvertaling
+  // always, HSV/NBG when built) — score every one and keep the best window.
+  const anchors = getDutchAnchors();
+  let best: { verseStart: number; verseEnd: number; sim: number } | null = null;
+  // Strict `>` keeps the earliest start and the shortest span on a tie.
+  for (let offset = 0; offset <= MAX_LOOKAHEAD; offset++) {
+    const verseStart = candidate.verse + offset;
+    for (let span = 1; span <= MAX_WINDOW; span++) {
+      const verseEnd = verseStart + span - 1;
+      let windowSim = -1;
+      for (const anchor of anchors) {
+        const dutch = getDutchVerseRange(candidate.bookNumber, candidate.chapter, verseStart, verseEnd, anchor);
+        if (dutch) windowSim = Math.max(windowSim, similarity(spoken, dutch));
+      }
+      if (windowSim < 0) break; // ran past the end of the chapter (or bible data isn't built) — no wider window to try
+      if (!best || windowSim > best.sim) best = { verseStart, verseEnd, sim: windowSim };
+    }
   }
 
   if (!best || best.sim < PARAPHRASE_THRESHOLD) return { kind: 'ended' };
@@ -86,7 +104,7 @@ export async function adjudicateScripture(
   // differs in Psalms with a stand-alone title verse (see bible-store.ts). Every
   // English lookup, API call and displayed reference below uses `en`; `verseEnd`
   // in the verdict stays Dutch-numbered because the client uses it to continue the reading.
-  const en = dutchToEnglishVerses(candidate.bookNumber, candidate.chapter, candidate.verse, best.verseEnd);
+  const en = dutchToEnglishVerses(candidate.bookNumber, candidate.chapter, best.verseStart, best.verseEnd);
   if (!en) return { kind: 'ended' }; // only the psalm title was read — no English verse to substitute
 
   if (best.sim >= VERBATIM_THRESHOLD) {
@@ -106,7 +124,7 @@ export async function adjudicateScripture(
     const reference = en.end === en.start
       ? `${book.en} ${candidate.chapter}:${en.start}`
       : `${book.en} ${candidate.chapter}:${en.start}-${en.end}`;
-    return { kind: 'verbatim', verseEnd: best.verseEnd, text, version, reference };
+    return { kind: 'verbatim', verseStart: best.verseStart, verseEnd: best.verseEnd, text, version, reference };
   }
 
   // Paraphrase band: guide the model toward the passage's register from local
@@ -114,5 +132,5 @@ export async function adjudicateScripture(
   const guidanceVersion = resolveLocalVersion(opts.bibleVersion);
   const guidance = getEnglishVerseRange(candidate.bookNumber, candidate.chapter, en.start, en.end, guidanceVersion);
   if (!guidance) return { kind: 'ended' };
-  return { kind: 'paraphrase', verseEnd: best.verseEnd, guidance, version: guidanceVersion };
+  return { kind: 'paraphrase', verseStart: best.verseStart, verseEnd: best.verseEnd, guidance, version: guidanceVersion };
 }

@@ -131,6 +131,19 @@ const MUSIC_NOTE_SPAN_RE = /[♪♫][^♪♫]*[♪♫]/g;
 const MUSIC_NOTE_RE = /[♪♫♬]/g;
 const PAREN_ANNOTATION_RE = /\(([^)]{1,60})\)/g;
 
+// Whisper marks "speech continues" at a chunk edge with an ellipsis: a chunk
+// ends "…de Leidsman en voor eindelijk..." and the next starts "...van het
+// geloof." (14 leading / 34 trailing in a 345-chunk sermon). Left in, the
+// ingest buffer glues them into "......" and reads the trailing "..." as a
+// sentence end, cutting segments mid-sentence. Stripping them leaves the chunk
+// unpunctuated, which is what the ingest buffer expects of a mid-sentence
+// chunk. A single "word... Word" inside a chunk is left alone (a real pause).
+const ELLIPSIS = '(?:\\.{2,}|…)';
+const LEADING_ELLIPSIS_RE = new RegExp(`^\\s*${ELLIPSIS}\\s*`);
+const TRAILING_ELLIPSIS_RE = new RegExp(`\\s*${ELLIPSIS}\\s*$`);
+// "held.. ...de" — a segment's trailing and next segment's leading ellipsis.
+const CONTINUATION_PAIR_RE = new RegExp(`\\s*${ELLIPSIS}\\s*${ELLIPSIS}\\s*`, 'g');
+
 const MIN_REPEATS_SINGLE_WORD = 4; // "heel heel heel" is plausible speech
 const MIN_REPEATS_PHRASE = 3;
 const MAX_LOOP_PHRASE_WORDS = 8;
@@ -192,7 +205,9 @@ export function stripAsrArtifacts(rawText: string, sourceLanguage?: string): str
     if (text === before) break;
   }
 
-  text = collapseRepeatedPhrases(text).replace(/\s{2,}/g, ' ').trim();
+  text = collapseRepeatedPhrases(text);
+  text = text.replace(CONTINUATION_PAIR_RE, ' ').replace(LEADING_ELLIPSIS_RE, '').replace(TRAILING_ELLIPSIS_RE, '');
+  text = text.replace(/\s{2,}/g, ' ').trim();
 
   if (!text || isAsrArtifact(text, sourceLanguage)) return '';
   return text;
