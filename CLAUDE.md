@@ -271,6 +271,27 @@ Wrong transcriptions and caption hallucinations ("Muziek", "TV Gelderland 2021",
   (`transcribeGuarded`, used for both engines in `chunk-transcription.ts`). With the
   guard, a glossary in the prompt measured neutral-to-slightly-positive; without it,
   it doubled the error rate.
+- **Chasing a lost stretch of speech** (`npm run dev:record`, = `ASR_DEBUG_DIR=data/asr-debug`):
+  records each recording into `data/asr-debug/<timestamp>-<id>/` (gitignored via `data/*`) —
+  the server tells the client (`ready.archive`), so there is no client setting and no extra
+  traffic when it's off. Contents: `<idx>.wav/.json` per chunk sent to Whisper (raw / stripped /
+  corrected text, guard retry, the MLX worker's `diag` — every Whisper segment with
+  compression ratio / logprob / no_speech_prob, why our post-filter dropped it, spans >2 s no
+  kept segment covers — plus `transcribedAt/correctedAt/deliveredAt` and the client's
+  `chunk_meta`); `discarded-<startSample>.wav/.json` for audio the **browser speech gate
+  rejected** (sent as archive-only frames, flag bit `0x02`, header field = start sample — never
+  transcribed, never touches `pendingResults`); `telemetry.jsonl` (per audio frame: dBFS, peak,
+  noise floor, VAD silence ms, gate run ms, zero-crossing rate, wall clock `w`); `client.json` +
+  `starts.jsonl` (browser audio config / start messages, API keys removed); `transcript.json`
+  (on-screen segments, posted by `SermonMode.tsx` every 60 s and after stop via
+  `POST /api/asr-debug/transcript`, text/plain because the global JSON parser caps at 100 KB).
+  `npx tsx scripts/asr-session-audio.ts <folder>` joins everything into `full.wav` and prints
+  `timeline.txt` (CHUNK / DISCARDED / GAP per time range, words/s, dropped segments) — read that first.
+  The worker's decode checks that can silently discard speech (`hallucination_silence_threshold`,
+  `no_speech_threshold`, the `keep_segment` post-filter) are overridable per request via
+  `opts` (`DEFAULT_OPTS` in `mlx_worker.py`) so `eval:asr --opts` can A/B them; the server
+  always uses the defaults. On the 4 fixture clips, turning all three off changed nothing
+  (no gaps either way) — don't change the defaults without a clip that actually reproduces a gap.
 
 ---
 
@@ -286,8 +307,11 @@ Don't tune audio/chunking/prompt settings by feel — measure them.
   chunking on recorded clips, transcribes with the local MLX Whisper through the real
   prompt builder / guard / artifact filters, and prints WER/CER/artifact counts per
   chunking setup. Flags: `--glossary <csv|txt> --glossary-terms n`, `--setup <name>`,
-  `--runs n`, `--no-guard`, `--verbose` (per-chunk prompt + raw output). It does NOT
-  include the LLM correction step or the browser mic path.
+  `--runs n`, `--no-guard`, `--opts <json>` (worker decode overrides), `--verbose`
+  (per-chunk prompt + raw output). Besides WER it reports `maxGap` (longest run of
+  reference words missing from the output) and `gaps8+` (runs of >=8 words) — a dropped
+  5-8 s stretch barely moves WER but shows up there. It does NOT include the LLM
+  correction step or the browser mic path.
 - **Scoring** (`normalizeForScoring`, `tests/lib/wer.ts`) ignores spelling-only
   differences: digits vs number words, diacritics/apostrophes/hyphens, fillers, and the
   pairs in `tests/fixtures/spelling-variants.txt`. Add only genuine equivalents there,

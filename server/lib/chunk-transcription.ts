@@ -2,13 +2,13 @@ import { WebSocket as WsWebSocket, WebSocketServer } from 'ws';
 import { transcribeAudio, correctAndTranslateText, correctTranscript, buildWhisperPrompt } from './openai';
 import { correctAndTranslateWithClaude, correctTranscriptWithClaude } from './anthropic';
 import { correctAndTranslateWithOllama, correctTranscriptWithOllama } from './ollama';
-import { transcribeWithMlx } from './mlx-whisper';
+import { transcribeWithMlxDetailed, type MlxDiag } from './mlx-whisper';
 import { isAsrArtifact, stripAsrArtifacts } from './asr-artifacts';
 import { transcribeGuarded, wavDurationSecs } from './whisper-guard';
 import { tmpdir } from 'os';
 import { join } from 'path';
-import { writeFile, unlink } from 'fs/promises';
-import { existsSync } from 'fs';
+import { writeFile, unlink, appendFile } from 'fs/promises';
+import { existsSync, mkdirSync } from 'fs';
 import { randomUUID } from 'crypto';
 import ffmpeg from 'fluent-ffmpeg';
 import { Semaphore } from './semaphore';
@@ -46,11 +46,17 @@ interface ChunkSession {
   // In-flight processChunk() calls, so 'stop' can wait for them to finish
   // and flush before acking — see the 'stop' handler below.
   pendingChunkPromises: Set<Promise<void>>;
+  // Per-recording folder for the ASR_DEBUG_DIR archive; null when disabled.
+  archiveDir: string | null;
+  // chunk_meta messages from the client, keyed by chunk index (arrive just ahead of the audio frame).
+  chunkMeta: Map<number, Record<string, unknown>>;
 }
 
 export interface ChunkResult {
   correctedText: string;
   translatedText: string;
+  // Called by flushInOrder once this result has actually been sent on (archive timestamps).
+  onDelivered?: () => void;
 }
 
 // Whisper occasionally hallucinates literal "***" runs in place of unclear
@@ -103,6 +109,53 @@ const whisperSemaphore = new Semaphore(3);
 // than one transcription at a time would just serialize inside it anyway,
 // so cap concurrency at 1 to avoid extra queueing jitter.
 const mlxSemaphore = new Semaphore(1);
+
+// ASR_DEBUG_DIR=<dir> records each recording as a folder <dir>/<timestamp>-<id>/:
+//   <idx>.wav + <idx>.json        every chunk sent to Whisper (+ raw/stripped/corrected text, worker diag, timings)
+//   discarded-<startSample>.wav/.json   audio the browser's speech gate rejected (never transcribed)
+//   telemetry.jsonl               per-frame level / noise floor / VAD / gate timeline from the browser
+//   starts.jsonl, client.json     the session's start messages (API keys removed) and browser audio config
+//   transcript.json               on-screen segments, posted by the sermon page (see routes.ts)
+// `scripts/asr-session-audio.ts` joins the WAVs into one full.wav. Off by default.
+const ASR_DEBUG_DIR = process.env.ASR_DEBUG_DIR || '';
+const archiveDirs = new Map<string, string>();
+let currentArchiveDir: string | null = null;
+
+export function archiveEnabled(): boolean { return !!ASR_DEBUG_DIR; }
+/** The most recently opened archive folder — the one a transcript snapshot belongs to. */
+export function getCurrentArchiveDir(): string | null { return currentArchiveDir; }
+
+// One folder per recording (the client's archiveId), so a mid-recording WebSocket reconnect —
+// which sends a fresh 'start' — keeps writing into the same folder.
+function resolveArchiveDir(archiveId?: unknown): string | null {
+  if (!ASR_DEBUG_DIR) return null;
+  const id = typeof archiveId === 'string' ? archiveId.replace(/[^a-z0-9]/gi, '').slice(0, 16) : '';
+  const key = id || randomUUID();
+  let dir = archiveDirs.get(key);
+  if (!dir) {
+    dir = join(ASR_DEBUG_DIR, `${new Date().toISOString().replace(/[:.]/g, '-')}${id ? `-${id}` : ''}`);
+    try {
+      mkdirSync(dir, { recursive: true });
+    } catch (err) {
+      console.warn('ASR_DEBUG_DIR unusable — archive disabled:', err);
+      return null;
+    }
+    archiveDirs.set(key, dir);
+  }
+  currentArchiveDir = dir;
+  return dir;
+}
+
+// Reports what the MLX worker dropped or left uncovered, so a lost stretch of
+// speech shows up in the debug overlay instead of vanishing silently.
+function describeDiag(diag: MlxDiag): string[] {
+  const lines: string[] = [];
+  for (const seg of diag.segments) {
+    if (seg.dropped) lines.push(`dropped segment ${seg.start}-${seg.end}s (${seg.dropped}, cr=${seg.compression_ratio}, lp=${seg.avg_logprob}, ns=${seg.no_speech_prob}): "${seg.text.slice(0, 60)}"`);
+  }
+  for (const [start, end] of diag.uncovered) lines.push(`no speech text for ${start}-${end}s (${(end - start).toFixed(1)}s)`);
+  return lines;
+}
 
 async function safeUnlink(path: string): Promise<void> {
   try {
@@ -186,6 +239,7 @@ export function flushInOrder(session: ChunkSessionForTest): void {
       }));
     }
 
+    result.onDelivered?.();
     session.nextExpectedChunk++;
   }
 }
@@ -236,6 +290,15 @@ async function processChunk(
   const { signal } = session.abortController;
   let audioPath: string | null = null;
   const semaphore = session.engine === 'mlx' ? mlxSemaphore : whisperSemaphore;
+  const archive: Record<string, unknown> = { chunkIndex, bytes: audioBuffer.length, receivedAt: new Date().toISOString(), meta: session.chunkMeta.get(chunkIndex) ?? null };
+  session.chunkMeta.delete(chunkIndex);
+  const writeArchive = (): Promise<void> => session.archiveDir
+    ? writeFile(join(session.archiveDir, `${chunkIndex}.json`), JSON.stringify(archive, null, 2)).catch(() => {})
+    : Promise.resolve();
+  if (session.archiveDir) {
+    // Written up front so the audio survives even if transcription crashes.
+    writeFile(join(session.archiveDir, `${chunkIndex}.${isWav ? 'wav' : 'webm'}`), audioBuffer).catch(() => {});
+  }
 
   sendDebug(session, `Chunk #${chunkIndex}: received (${audioBuffer.length} bytes, ${isWav ? 'WAV' : 'webm'}) — waiting for slot`);
   await semaphore.acquire();
@@ -262,12 +325,23 @@ async function processChunk(
     if (session.engine === 'mlx') {
       sendDebug(session, `Chunk #${chunkIndex}: sending to local MLX Whisper (${session.sourceLanguage})…`);
       const initialPrompt = buildWhisperPrompt(session.glossary || undefined, session.sermonContext || undefined, session.previousTranscript || undefined, session.sourceLanguage);
+      const attempts: Array<{ usePrompt: boolean; diag: MlxDiag | null }> = [];
       const guarded = await transcribeGuarded(
-        (usePrompt) => transcribeWithMlx(audioPath!, session.sourceLanguage, usePrompt ? initialPrompt : undefined, signal),
+        async (usePrompt) => {
+          const res = await transcribeWithMlxDetailed(audioPath!, session.sourceLanguage, usePrompt ? initialPrompt : undefined, signal);
+          attempts.push({ usePrompt, diag: res.diag });
+          return res.text;
+        },
         !!initialPrompt, audioDurationSecs,
       );
+      archive.attempts = attempts;
+      archive.guardRetried = guarded.retried;
+      for (const { usePrompt, diag } of attempts) {
+        if (diag) for (const line of describeDiag(diag)) sendDebug(session, `Chunk #${chunkIndex}${usePrompt ? '' : ' (no-prompt retry)'}: ${line}`);
+      }
       if (guarded.retried) sendDebug(session, `Chunk #${chunkIndex}: transcript implausibly short for ${audioDurationSecs.toFixed(1)}s of audio — retried without the prompt`);
       rawText = guarded.text;
+      archive.rawText = rawText;
     } else {
       const hasOpenAIKey = !!(session.openaiApiKey || process.env.OPENAI_API_KEY);
       if (!hasOpenAIKey) {
@@ -324,6 +398,8 @@ async function processChunk(
       sendDebug(session, `Chunk #${chunkIndex}: stripped ASR artifacts ("${rawText.slice(0, 40)}" → "${strippedText.slice(0, 40)}")`);
     }
     rawText = strippedText;
+    archive.strippedText = strippedText;
+    archive.transcribedAt = new Date().toISOString();
 
     sendDebug(session, `Chunk #${chunkIndex}: Whisper → "${rawText.slice(0, 60)}${rawText.length > 60 ? '…' : ''}"`);
 
@@ -421,9 +497,15 @@ async function processChunk(
 
     correctedText = stripAsteriskArtifacts(correctedText);
     translatedText = stripAsteriskArtifacts(translatedText);
+    archive.correctedText = correctedText;
+    archive.correctedAt = new Date().toISOString();
 
     sendDebug(session, `Chunk #${chunkIndex}: ✓ done`);
-    session.pendingResults.set(chunkIndex, { correctedText, translatedText });
+    session.pendingResults.set(chunkIndex, {
+      correctedText, translatedText,
+      // A chunk finished early can wait behind a slower earlier one — record when it actually left.
+      onDelivered: session.archiveDir ? () => { archive.deliveredAt = new Date().toISOString(); void writeArchive(); } : undefined,
+    });
     flushInOrder(session);
 
   } catch (error) {
@@ -447,6 +529,7 @@ async function processChunk(
   } finally {
     semaphore.release();
     if (audioPath) await safeUnlink(audioPath);
+    await writeArchive();
   }
 }
 
@@ -482,9 +565,16 @@ export function setupChunkTranscriptionWebSocket(wss: WebSocketServer): void {
               pendingResults: new Map(),
               abortController: new AbortController(),
               pendingChunkPromises: new Set(),
+              archiveDir: resolveArchiveDir(message.archiveId),
+              chunkMeta: new Map(),
             };
             activeSessions.set(clientWs, session);
-            clientWs.send(JSON.stringify({ type: 'ready' }));
+            if (session.archiveDir) {
+              // API keys are never written to disk.
+              const safe = { ...message, openaiApiKey: undefined, anthropicApiKey: undefined };
+              appendFile(join(session.archiveDir, 'starts.jsonl'), JSON.stringify({ at: new Date().toISOString(), ...safe }) + '\n').catch(() => {});
+            }
+            clientWs.send(JSON.stringify({ type: 'ready', archive: !!session.archiveDir }));
 
           } else if (message.type === 'config') {
             if (session) {
@@ -501,6 +591,25 @@ export function setupChunkTranscriptionWebSocket(wss: WebSocketServer): void {
               if (message.glossary !== undefined) session.glossary = message.glossary;
               if (message.sermonContext !== undefined) session.sermonContext = message.sermonContext;
               if (message.previousTranscript !== undefined) session.previousTranscript = message.previousTranscript;
+            }
+
+          } else if (message.type === 'chunk_meta') {
+            if (session?.archiveDir) {
+              if (message.discarded) {
+                writeFile(join(session.archiveDir, `discarded-${Number(message.startSample)}.json`), JSON.stringify({ ...message, receivedAt: new Date().toISOString() }, null, 2)).catch(() => {});
+              } else if (typeof message.chunkIndex === 'number') {
+                session.chunkMeta.set(message.chunkIndex, message);
+              }
+            }
+
+          } else if (message.type === 'telemetry') {
+            if (session?.archiveDir && Array.isArray(message.rows) && message.rows.length) {
+              appendFile(join(session.archiveDir, 'telemetry.jsonl'), message.rows.map((r: unknown) => JSON.stringify(r)).join('\n') + '\n').catch(() => {});
+            }
+
+          } else if (message.type === 'client_info') {
+            if (session?.archiveDir) {
+              writeFile(join(session.archiveDir, 'client.json'), JSON.stringify(message, null, 2)).catch(() => {});
             }
 
           } else if (message.type === 'stop') {
@@ -539,6 +648,17 @@ export function setupChunkTranscriptionWebSocket(wss: WebSocketServer): void {
           // attribute a hole to — nothing to reconcile, just drop it. In
           // practice the client never sends a frame this short.
           if (buf.length < 4) return;
+
+          // Archive-only frame (flag bit 0x02): audio the browser's speech gate rejected, shipped
+          // so the recording has no holes. Its 4-byte header field is the start sample, not a chunk
+          // index — written to disk and nothing else; it must never reach pendingResults/flushInOrder.
+          if (buf.length > 5 && (buf[4] & 0x02)) {
+            if (activeSession.archiveDir) {
+              writeFile(join(activeSession.archiveDir, `discarded-${buf.readUInt32BE(0)}.wav`), buf.subarray(5)).catch(() => {});
+            }
+            return;
+          }
+
           const chunkIndex = buf.readUInt32BE(0);
 
           // Every exit below THIS point knows chunkIndex, so it must insert

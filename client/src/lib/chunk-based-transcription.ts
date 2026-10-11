@@ -163,6 +163,17 @@ export class ChunkAssembler {
     this.overlap.resize(samples);
   }
 
+  /** The accumulated audio (without any overlap prefix), leaving the assembler untouched. */
+  peek(): Float32Array {
+    const out = new Float32Array(this.count);
+    let offset = 0;
+    for (const seg of this.segments) {
+      out.set(seg, offset);
+      offset += seg.length;
+    }
+    return out;
+  }
+
   /** Returns prefix + accumulated audio, then keeps only the accumulated audio's tail as the next prefix. */
   commit(): Float32Array {
     const prefix = this.overlap.snapshot();
@@ -400,7 +411,19 @@ export class ChunkBasedTranscription {
   private intentionalClose = false;
   private reconnecting = false;
   private reconnectAttempts = 0;
-  private audioQueue: ArrayBuffer[] = [];
+  private audioQueue: Array<ArrayBuffer | string> = [];
+
+  // Session archive (server has ASR_DEBUG_DIR set — see server/lib/chunk-transcription.ts).
+  // When on, gate-discarded audio is shipped too (archive-only frames), every chunk gets a
+  // chunk_meta message, and a per-frame level/VAD timeline is streamed as telemetry. Off = no
+  // extra traffic at all.
+  private archive = false;
+  private archiveId = '';
+  // 16 kHz samples fed to the assembler since start(): the recording's own clock, so
+  // chunk start offsets and telemetry rows line up with the archived audio.
+  private samplesPushed = 0;
+  private telemetryRows: Array<Record<string, number | boolean>> = [];
+  private lastTelemetryFlushAt = 0;
 
   // Resolved when the server's 'stop_complete' message arrives — see stop().
   private stopCompleteResolve: (() => void) | null = null;
@@ -465,6 +488,11 @@ export class ChunkBasedTranscription {
     this.reconnectAttempts = 0;
     this.audioQueue = [];
     this.previousTranscript = '';
+    this.archive = false;
+    this.archiveId = Date.now().toString(36);
+    this.samplesPushed = 0;
+    this.telemetryRows = [];
+    this.lastTelemetryFlushAt = 0;
 
     const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
     const wsUrl = `${protocol}//${window.location.host}/ws/chunk-transcribe`;
@@ -483,6 +511,8 @@ export class ChunkBasedTranscription {
           const message = JSON.parse(event.data as string);
           if (message.type === 'ready') {
             this.events.onDebug?.('Server acknowledged — requesting microphone…');
+            this.archive = !!message.archive;
+            if (this.archive) this.events.onDebug?.('Session archive ON (server has ASR_DEBUG_DIR) — recording all audio + level timeline');
             this.ws = ws;
             this.attachWsHandlers(ws);
             this.startAudioCapture()
@@ -532,6 +562,8 @@ export class ChunkBasedTranscription {
       // arrive (see server/lib/chunk-transcription.ts's nextExpectedChunk).
       nextChunkIndex: this.chunkIndex,
       previousTranscript: this.previousTranscript,
+      // Groups a recording's reconnects into one archive folder server-side.
+      archiveId: this.archiveId,
     };
   }
 
@@ -591,6 +623,7 @@ export class ChunkBasedTranscription {
       try {
         const message = JSON.parse(event.data as string);
         if (message.type === 'ready') {
+          this.archive = !!message.archive;
           this.ws = ws;
           this.reconnecting = false;
           this.reconnectAttempts = 0;
@@ -653,7 +686,12 @@ export class ChunkBasedTranscription {
 
       // RMS for audio level callback
       let sumSq = 0;
-      for (let i = 0; i < input.length; i++) sumSq += input[i] * input[i];
+      let peak = 0;
+      for (let i = 0; i < input.length; i++) {
+        sumSq += input[i] * input[i];
+        const a = Math.abs(input[i]);
+        if (a > peak) peak = a;
+      }
       const rms = Math.sqrt(sumSq / input.length);
       this.events.onAudioLevel?.(rms);
 
@@ -687,7 +725,10 @@ export class ChunkBasedTranscription {
       for (const w of windowMeanAbs(gained, windowSamples)) this.gate.push(w, windowMs);
 
       // Band-limited downsample to 16 kHz (a no-op copy when the context already runs at 16 kHz)
-      this.assembler.push(this.resampler ? this.resampler.process(gained) : gained);
+      const resampled = this.resampler ? this.resampler.process(gained) : gained;
+      if (this.archive) this.recordTelemetry(rms, peak, meanAbs, isSilent, gained);
+      this.assembler.push(resampled);
+      this.samplesPushed += resampled.length;
 
       // VAD-triggered commit: a pause, once enough audio has accumulated.
       if (
@@ -695,11 +736,11 @@ export class ChunkBasedTranscription {
         this.vadSilenceMs >= this.vadSilenceThresholdMs &&
         this.assembler.sampleCount >= this.minChunkSamples()
       ) {
-        this.commitChunk();
+        this.commitChunk('vad');
         this.vadSilenceMs = 0;
       } else if (this.assembler.sampleCount >= this.maxChunkSamples()) {
         // Hard cap (also the only trigger when VAD is off, i.e. fixed-length chunks).
-        this.commitChunk();
+        this.commitChunk('cap');
         this.vadSilenceMs = 0;
       }
     };
@@ -707,6 +748,17 @@ export class ChunkBasedTranscription {
     this.source.connect(this.processor);
     this.processor.connect(this.audioContext.destination);
     this.isRecording = true;
+
+    if (this.archive) {
+      this.sendOrQueue(JSON.stringify({
+        type: 'client_info',
+        nativeRate, frameDurationMs: this.frameDurationMs, ownResampler: !!this.resampler,
+        useVAD: this.useVAD, vadSilenceThresholdMs: this.vadSilenceThresholdMs,
+        minChunkMs: this.minChunkMs, maxChunkMs: this.maxChunkSamples() / TARGET_RATE * 1000, overlapMs: this.overlapMs,
+        normalizationGain: this.normalizationGain, rawAudioCapture: this.rawAudioCapture,
+        userAgent: navigator.userAgent, startedAt: Date.now(),
+      }));
+    }
 
     this.events.onDebug?.(`Audio pipeline started — ${nativeRate}Hz → 16kHz${this.resampler ? ' (own resampler)' : ''}, gain:${this.normalizationGain}, overlap:${this.overlapMs}ms, VAD:${this.useVAD}, chunk ${this.minChunkSamples() / TARGET_RATE}-${this.maxChunkSamples() / TARGET_RATE}s`);
   }
@@ -723,8 +775,13 @@ export class ChunkBasedTranscription {
     return Math.max(this.minChunkSamples(), Math.round((ms / 1000) * TARGET_RATE));
   }
 
-  private commitChunk(): void {
+  private commitChunk(reason: 'vad' | 'cap' | 'stop'): void {
     if (this.assembler.sampleCount === 0) return;
+
+    const ownSamples = this.assembler.sampleCount;
+    const startSample = this.samplesPushed - ownSamples;
+    const gateRunMs = this.gate.longestRunMs;
+    const noiseFloor = this.gate.noiseFloor;
 
     // A chunk is discarded unless it holds a long enough voiced run (see
     // MIN_SPEECH_RUN_MS above). It's dead air, room tone, or transient
@@ -737,6 +794,7 @@ export class ChunkBasedTranscription {
     // that's caught server-side afterwards. This gate only needs to be
     // conservative in one direction: never eat real speech.
     if (!this.gate.keepChunk()) {
+      if (this.archive) this.archiveDiscardedChunk(startSample, reason, gateRunMs, noiseFloor);
       this.assembler.discard();
       this.gate.resetChunk();
       this.events.onDebug?.('Chunk discarded — no sustained speech detected');
@@ -748,6 +806,13 @@ export class ChunkBasedTranscription {
 
     // [overlap prefix from the PREVIOUS chunk][this chunk's audio]
     const total = this.assembler.commit();
+
+    if (this.archive) {
+      this.sendOrQueue(JSON.stringify({
+        type: 'chunk_meta', chunkIndex: currentIndex, startSample, samples: ownSamples,
+        prefixSamples: total.length - ownSamples, cut: reason, gateRunMs, noiseFloor, sentAt: Date.now(),
+      }));
+    }
 
     const pcm16 = floatToPCM16(total);
     const wavBuf = buildWavBuffer(pcm16);
@@ -765,11 +830,68 @@ export class ChunkBasedTranscription {
   }
 
   private sendBinary(buf: ArrayBuffer, _index: number): void {
+    this.sendOrQueue(buf);
+  }
+
+  /** Sends now, or holds for the reconnect flush — keeps chunk_meta ordered just ahead of its audio frame. */
+  private sendOrQueue(data: ArrayBuffer | string): void {
     if (this.ws?.readyState === WebSocket.OPEN) {
-      this.ws.send(buf);
+      this.ws.send(data);
     } else if (this.reconnecting) {
-      this.audioQueue.push(buf);
+      this.audioQueue.push(data);
     }
+  }
+
+  /**
+   * Ships a chunk the speech gate rejected, for the archive only (flag bit 0x02: the server
+   * writes it to disk and never transcribes it). Its 4-byte header field carries the chunk's
+   * start sample instead of a chunk index. This is how a stretch the gate wrongly ate still
+   * ends up in the recording.
+   */
+  private archiveDiscardedChunk(startSample: number, reason: string, gateRunMs: number, noiseFloor: number): void {
+    const audio = this.assembler.peek();
+    this.sendOrQueue(JSON.stringify({
+      type: 'chunk_meta', discarded: true, startSample, samples: audio.length, cut: reason, gateRunMs, noiseFloor, sentAt: Date.now(),
+    }));
+    const wavBuf = buildWavBuffer(floatToPCM16(audio));
+    const frame = new ArrayBuffer(5 + wavBuf.byteLength);
+    const view = new DataView(frame);
+    view.setUint32(0, startSample, false);
+    view.setUint8(4, 0x03); // PCM16 + archive-only
+    new Uint8Array(frame).set(new Uint8Array(wavBuf), 5);
+    this.sendOrQueue(frame);
+  }
+
+  /** One row per audio frame (~85-256 ms): level, noise floor, VAD/gate state. Batched ~every 2 s. */
+  private recordTelemetry(rms: number, peak: number, meanAbs: number, silent: boolean, frame: Float32Array): void {
+    // Zero-crossing rate: a cheap pitch/noisiness proxy (speech vowels low, hiss/fricatives high).
+    let crossings = 0;
+    for (let i = 1; i < frame.length; i++) if ((frame[i - 1] < 0) !== (frame[i] < 0)) crossings++;
+    const round = (n: number, d: number) => Math.round(n * 10 ** d) / 10 ** d;
+    this.telemetryRows.push({
+      t: round(this.samplesPushed / TARGET_RATE, 3),
+      w: Date.now(),
+      rmsDb: rms > 0 ? round(20 * Math.log10(rms), 1) : -120,
+      peak: round(peak, 4),
+      meanAbs: round(meanAbs, 5),
+      noiseFloor: round(this.gate.noiseFloor, 5),
+      silent,
+      vadSilenceMs: Math.round(this.vadSilenceMs),
+      gateRunMs: Math.round(this.gate.longestRunMs),
+      chunkSecs: round(this.assembler.sampleCount / TARGET_RATE, 2),
+      zcr: round(crossings / frame.length, 3),
+    });
+    if (Date.now() - this.lastTelemetryFlushAt >= 2000) this.flushTelemetry();
+  }
+
+  private flushTelemetry(): void {
+    this.lastTelemetryFlushAt = Date.now();
+    if (!this.telemetryRows.length) return;
+    // Dropped (not queued) while the socket is down — the audio frames are what must survive a reconnect.
+    if (this.ws?.readyState === WebSocket.OPEN) {
+      this.ws.send(JSON.stringify({ type: 'telemetry', rows: this.telemetryRows }));
+    }
+    this.telemetryRows = [];
   }
 
   // ── Runtime setters (apply without restarting) ──────────────────────────────
@@ -876,7 +998,8 @@ export class ChunkBasedTranscription {
     this.isRecording = false;
 
     // Flush remaining buffered audio as the final chunk
-    if (this.assembler.sampleCount >= 100) this.commitChunk();
+    if (this.assembler.sampleCount >= 100) this.commitChunk('stop');
+    if (this.archive) this.flushTelemetry();
 
     this.processor?.disconnect();
     this.source?.disconnect();

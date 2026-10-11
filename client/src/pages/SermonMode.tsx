@@ -126,6 +126,42 @@ export default function SermonMode() {
     onError: (message) => toast({ title: 'Recording error', description: message, variant: 'destructive' }),
   });
 
+  // Session archive (server has ASR_DEBUG_DIR — see server/lib/chunk-transcription.ts): while
+  // recording, snapshot what is on screen every minute and once more after stop, so a gap in the
+  // transcript can be traced to the stage that lost it. A no-op when the server archive is off.
+  const archiveActiveRef = useRef(false);
+  useEffect(() => {
+    fetch('/api/asr-debug/status').then(r => r.json()).then(j => { archiveActiveRef.current = !!j.enabled; }).catch(() => {});
+  }, []);
+  const postTranscriptSnapshot = useCallback(() => {
+    if (!archiveActiveRef.current) return;
+    const s = stateRef.current;
+    // An empty page (e.g. just reloaded) must not overwrite the previous session's snapshot.
+    if (!s.ids.length) return;
+    const segments = s.ids.map(id => {
+      const g = s.byId[id];
+      return {
+        id, index: g.index, startTime: g.startTime, endTime: g.endTime, status: g.status,
+        sourceText: g.sourceText, translatedText: g.translatedText,
+        manualOverride: g.manualOverride, lastSourceChangeAt: g.lastSourceChangeAt, error: g.error,
+      };
+    });
+    fetch('/api/asr-debug/transcript', {
+      method: 'POST', headers: { 'Content-Type': 'text/plain' },
+      body: JSON.stringify({ savedAt: Date.now(), sessionId: s.sessionId, segments }),
+    }).catch(() => {});
+  }, []);
+  useEffect(() => {
+    if (!isRecording) {
+      // After stop the last ingest flush / translations may still land a moment later.
+      postTranscriptSnapshot();
+      const late = setTimeout(postTranscriptSnapshot, 4000);
+      return () => clearTimeout(late);
+    }
+    const timer = setInterval(postTranscriptSnapshot, 60_000);
+    return () => clearInterval(timer);
+  }, [isRecording, postTranscriptSnapshot]);
+
   const dirtyCount = useMemo(() => selectDirtyIds(state).length, [state]);
 
   // Cmd/Ctrl+Shift+Enter (refresh all) and Cmd/Ctrl+Enter (refresh the

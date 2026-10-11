@@ -4,8 +4,9 @@ mlx_worker.py — long-lived transcription sidecar for mlx-whisper (Apple Silico
 
 Protocol: JSON-lines over stdin/stdout.
 
-  in  (per request): {"id": <int>, "path": "<wav path>", "language": "en"|null, "initial_prompt": "..."|null}
-  out (per request):  {"id": <int>, "text": "..."}
+  in  (per request): {"id": <int>, "path": "<wav path>", "language": "en"|null, "initial_prompt": "..."|null,
+                      "opts": {...}|null}   # opts: optional decode overrides, see DEFAULT_OPTS
+  out (per request):  {"id": <int>, "text": "...", "diag": {...}}   # diag: per-segment kept/dropped + uncovered spans
                     or {"id": <int>, "error": "..."}
   out (once, after the model is warmed): {"type": "ready"}
 
@@ -18,6 +19,7 @@ import sys
 import os
 import json
 import traceback
+import wave
 
 # Keep noise off stdout before importing anything that might print to it.
 os.environ.setdefault("HF_HUB_DISABLE_PROGRESS_BARS", "1")
@@ -47,12 +49,81 @@ NO_SPEECH_PROB_DROP = 0.6
 AVG_LOGPROB_DROP = -1.0
 
 
+# Decode settings a request may override (the eval script A/B-tests these; the
+# server leaves them at the defaults). None disables the corresponding check.
+DEFAULT_OPTS = {
+    # Whisper's own heuristic: skip a suspicious segment next to >= N s of silence.
+    # It also discards the REST of the decode window after the skipped segment.
+    "hallucination_silence_threshold": 2.0,
+    # Whisper skips a whole window when no_speech_prob > this AND avg_logprob < -1.0.
+    "no_speech_threshold": NO_SPEECH_PROB_DROP,
+    # True = our own post-filter below also drops segments (see keep_segment).
+    "segment_filter": True,
+}
+
+# A span of audio with no kept segment longer than this is reported as uncovered.
+UNCOVERED_GAP_SECS = 2.0
+
+
 def keep_segment(seg: dict) -> bool:
     if seg.get("compression_ratio", 0.0) > MAX_COMPRESSION_RATIO:
         return False
     if seg.get("no_speech_prob", 0.0) > NO_SPEECH_PROB_DROP and seg.get("avg_logprob", 0.0) < AVG_LOGPROB_DROP:
         return False
     return True
+
+
+def drop_reason(seg: dict):
+    if seg.get("compression_ratio", 0.0) > MAX_COMPRESSION_RATIO:
+        return "compression_ratio"
+    if seg.get("no_speech_prob", 0.0) > NO_SPEECH_PROB_DROP and seg.get("avg_logprob", 0.0) < AVG_LOGPROB_DROP:
+        return "no_speech+logprob"
+    return None
+
+
+def wav_duration(path: str):
+    try:
+        with wave.open(path, "rb") as w:
+            return w.getnframes() / float(w.getframerate())
+    except Exception:
+        return None
+
+
+def uncovered_spans(kept: list, duration):
+    """Stretches of the chunk longer than UNCOVERED_GAP_SECS that no kept segment covers —
+    where speech may have been silently lost (also true for genuine pauses; the text
+    around them tells which). Needs a known duration for the leading/trailing edges."""
+    spans = []
+    cursor = 0.0
+    for seg in sorted(kept, key=lambda x: x.get("start", 0.0)):
+        start, end = seg.get("start", 0.0), seg.get("end", 0.0)
+        if start - cursor > UNCOVERED_GAP_SECS:
+            spans.append([round(cursor, 2), round(start, 2)])
+        cursor = max(cursor, end)
+    if duration is not None and duration - cursor > UNCOVERED_GAP_SECS:
+        spans.append([round(cursor, 2), round(duration, 2)])
+    return spans
+
+
+def build_diag(path: str, segments: list, kept_ids: set) -> dict:
+    duration = wav_duration(path)
+    kept = [s for s in segments if id(s) in kept_ids]
+    return {
+        "duration": duration,
+        "segments": [
+            {
+                "start": round(s.get("start", 0.0), 2),
+                "end": round(s.get("end", 0.0), 2),
+                "text": s.get("text", "").strip(),
+                "compression_ratio": round(s.get("compression_ratio", 0.0), 2),
+                "avg_logprob": round(s.get("avg_logprob", 0.0), 2),
+                "no_speech_prob": round(s.get("no_speech_prob", 0.0), 3),
+                "dropped": None if id(s) in kept_ids else drop_reason(s),
+            }
+            for s in segments
+        ],
+        "uncovered": uncovered_spans(kept, duration),
+    }
 
 # Whisper is known to hallucinate fluent-sounding but entirely invented text
 # on silence/background noise (e.g. caption-style artifacts like "[Music]"
@@ -104,6 +175,7 @@ def main() -> None:
         path = req.get("path")
         language = req.get("language") or None
         initial_prompt = req.get("initial_prompt") or None
+        opts = {**DEFAULT_OPTS, **(req.get("opts") or {})}
 
         try:
             if not path or not os.path.exists(path):
@@ -124,21 +196,23 @@ def main() -> None:
                 # Required for hallucination_silence_threshold: when a long
                 # silence is detected around a segment, a suspicious segment
                 # next to it is skipped instead of kept.
-                word_timestamps=True,
-                hallucination_silence_threshold=2.0,
+                word_timestamps=opts["hallucination_silence_threshold"] is not None,
+                hallucination_silence_threshold=opts["hallucination_silence_threshold"],
                 compression_ratio_threshold=MAX_COMPRESSION_RATIO,
-                no_speech_threshold=NO_SPEECH_PROB_DROP,
+                no_speech_threshold=opts["no_speech_threshold"],
             )
             segments = result.get("segments") or []
+            diag = None
             if segments:
-                kept = [seg for seg in segments if keep_segment(seg)]
+                kept = [seg for seg in segments if keep_segment(seg)] if opts["segment_filter"] else list(segments)
                 dropped = len(segments) - len(kept)
                 if dropped:
                     log(f"Request {req_id}: dropped {dropped}/{len(segments)} low-confidence segment(s)")
                 text = " ".join(seg.get("text", "").strip() for seg in kept).strip()
+                diag = build_diag(path, segments, {id(s) for s in kept})
             else:
                 text = result.get("text", "").strip()
-            emit({"id": req_id, "text": text})
+            emit({"id": req_id, "text": text, "diag": diag})
         except Exception as e:
             log(f"Request {req_id} failed: {traceback.format_exc()}")
             emit({"id": req_id, "error": str(e)})

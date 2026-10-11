@@ -24,8 +24,11 @@ function charTokenize(text: string): string[] {
   return text.trim().split('').filter(c => c !== ' ');
 }
 
-// Standard Levenshtein edit distance (Wagner-Fischer DP).
-function editDistance(ref: string[], hyp: string[]): { sub: number; del: number; ins: number } {
+type AlignOp = 'ok' | 'sub' | 'del' | 'ins';
+
+// Standard Levenshtein alignment (Wagner-Fischer DP + back-trace), returned as the
+// sequence of operations from the start of the text to its end.
+function align(ref: string[], hyp: string[]): AlignOp[] {
   const m = ref.length;
   const n = hyp.length;
   const dp: number[][] = Array.from({ length: m + 1 }, (_, i) =>
@@ -41,20 +44,46 @@ function editDistance(ref: string[], hyp: string[]): { sub: number; del: number;
     }
   }
 
-  // Back-trace to count substitutions, deletions, insertions
-  let i = m, j = n, sub = 0, del = 0, ins = 0;
+  const ops: AlignOp[] = [];
+  let i = m, j = n;
   while (i > 0 || j > 0) {
     if (i > 0 && j > 0 && ref[i - 1] === hyp[j - 1]) {
-      i--; j--;
+      ops.push('ok'); i--; j--;
     } else if (i > 0 && j > 0 && dp[i][j] === dp[i - 1][j - 1] + 1) {
-      sub++; i--; j--;
+      ops.push('sub'); i--; j--;
     } else if (i > 0 && dp[i][j] === dp[i - 1][j] + 1) {
-      del++; i--;
+      ops.push('del'); i--;
     } else {
-      ins++; j--;
+      ops.push('ins'); j--;
     }
   }
+  return ops.reverse();
+}
+
+function editDistance(ref: string[], hyp: string[]): { sub: number; del: number; ins: number } {
+  let sub = 0, del = 0, ins = 0;
+  for (const op of align(ref, hyp)) {
+    if (op === 'sub') sub++;
+    else if (op === 'del') del++;
+    else if (op === 'ins') ins++;
+  }
   return { sub, del, ins };
+}
+
+/**
+ * Lengths of every run of consecutive reference words the hypothesis is missing.
+ * A transcript that silently loses a 5-8 s stretch of speech barely moves the
+ * average WER but shows up here as one run of ~15-25 words.
+ */
+export function deletionRuns(reference: string, hypothesis: string): number[] {
+  const runs: number[] = [];
+  let current = 0;
+  for (const op of align(tokenize(reference), tokenize(hypothesis))) {
+    if (op === 'del') { current++; continue; }
+    if (current) { runs.push(current); current = 0; }
+  }
+  if (current) runs.push(current);
+  return runs;
 }
 
 export function normalizeTranscript(text: string): string {

@@ -1,3 +1,4 @@
+import express from 'express';
 import type { Express, Request, Response, NextFunction } from 'express';
 import { createServer, type Server } from 'http';
 import { storage } from './storage';
@@ -15,6 +16,8 @@ import { isAsrArtifact, stripAsrArtifacts } from './lib/asr-artifacts';
 import { translateSegments, type TranslateItemInput, type SermonTranslationProvider } from './lib/sermon-translate';
 import { getGlossaryStatus, reloadGlossary } from './lib/glossary-store';
 import { isSafeGlossaryName } from './lib/glossary-file';
+import { archiveEnabled, getCurrentArchiveDir } from './lib/chunk-transcription';
+import { join as joinPath } from 'path';
 import fs from 'fs';
 import os from 'os';
 import ffmpeg from 'fluent-ffmpeg';
@@ -526,6 +529,24 @@ export async function registerRoutes(app: Express): Promise<Server> {
         details: error instanceof Error ? error.message : 'Unknown error',
       });
     }
+  });
+
+  // Session archive (ASR_DEBUG_DIR — see server/lib/chunk-transcription.ts). The sermon page
+  // asks whether it is on, then posts its on-screen segments so a transcript gap can be traced
+  // to the stage that lost it. text/plain because the global JSON parser caps bodies at 100 KB,
+  // which a whole sermon's segments exceed.
+  app.get('/api/asr-debug/status', (_req, res) => {
+    res.json({ enabled: archiveEnabled(), dir: getCurrentArchiveDir() });
+  });
+
+  app.post('/api/asr-debug/transcript', express.text({ type: '*/*', limit: '20mb' }), (req, res) => {
+    const dir = getCurrentArchiveDir();
+    if (!archiveEnabled() || !dir) return res.status(404).json({ error: 'archive not active' });
+    if (typeof req.body !== 'string' || !req.body) return res.status(400).json({ error: 'empty body' });
+    fs.writeFile(joinPath(dir, 'transcript.json'), req.body, (err) => {
+      if (err) return res.status(500).json({ error: 'write failed' });
+      res.json({ ok: true });
+    });
   });
 
   // Listener mode (CLAUDE.md "Listener mode"): the address(es) the operator

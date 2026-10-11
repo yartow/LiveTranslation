@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { countAsrArtifacts, dutchNumberWords, normalizeForScoring, parseAliases, computeWER } from '../lib/wer';
+import { countAsrArtifacts, dutchNumberWords, normalizeForScoring, parseAliases, computeWER, deletionRuns } from '../lib/wer';
 
 describe('countAsrArtifacts', () => {
   it('counts leftover caption hallucinations', () => {
@@ -65,5 +65,22 @@ describe('parseAliases', () => {
   it('ignores comments, blanks and malformed lines, longest variant first', () => {
     const pairs = parseAliases('# header\n\na b = ab\nx = y\nnonsense\n= z\n');
     expect(pairs).toEqual([['a b', 'ab'], ['x', 'y']]);
+  });
+});
+
+describe('deletionRuns', () => {
+  it('is empty for identical or insertion-only text', () => {
+    expect(deletionRuns('a b c d', 'a b c d')).toEqual([]);
+    expect(deletionRuns('a b c', 'a b x c')).toEqual([]);
+  });
+
+  it('reports a dropped stretch as one run', () => {
+    const ref = 'de heer is mijn herder mij zal niets ontbreken hij doet mij nederliggen in grazige weiden';
+    const hyp = 'de heer is mijn herder in grazige weiden';
+    expect(deletionRuns(ref, hyp)).toEqual([8]);
+  });
+
+  it('reports separate losses separately', () => {
+    expect(deletionRuns('a b c d e f g h', 'a d e h')).toEqual([2, 2]);
   });
 });

@@ -15,6 +15,8 @@
 //   --runs <n>              repeat every setup n times and average (Whisper is not
 //                           deterministic; single runs vary by several WER points)
 //   --no-guard              disable the truncation guard (whisper-guard.ts) to see what it saves
+//   --opts <json>           worker decode overrides, e.g. '{"hallucination_silence_threshold":null,"no_speech_threshold":null,"segment_filter":false}'
+//                           (see DEFAULT_OPTS in server/python/mlx_worker.py) — A/B a fix against the defaults
 //   --verbose               print every chunk's time range, prompt and raw Whisper output
 //   --setup <text>          only setups whose name contains <text> (e.g. "current app")
 //
@@ -38,7 +40,7 @@ import { existsSync, readdirSync, readFileSync, writeFileSync, mkdtempSync, rmSy
 import { tmpdir } from 'os';
 import { join, basename, extname } from 'path';
 import { SpeechGate, windowMeanAbs } from '../client/src/lib/chunk-based-transcription';
-import { computeWER, computeCER, countAsrArtifacts, normalizeForScoring, parseAliases } from '../tests/lib/wer';
+import { computeWER, computeCER, countAsrArtifacts, deletionRuns, normalizeForScoring, parseAliases } from '../tests/lib/wer';
 
 const ROOT = join(import.meta.dirname, '..');
 const AUDIO_DIR = join(ROOT, 'tests/fixtures/audio');
@@ -148,12 +150,20 @@ interface Row {
   clip: string; setup: string; chunks: number; discarded: number; avgChunkSecs: number;
   werRaw: number; werFiltered: number; cerFiltered: number;
   artifactsRaw: number; artifactsFiltered: number; ms: number; hypothesis: string;
+  /** Longest run of reference words missing from the hypothesis, and how many runs are >= 8 words (~3 s). */
+  maxGap: number; gaps8: number;
+  /** Seconds the worker reported as uncovered by any kept segment (includes genuine pauses). */
+  uncoveredSecs: number;
+}
+
+function gapStats(runs: number[]): { maxGap: number; gaps8: number } {
+  return { maxGap: runs.length ? Math.max(...runs) : 0, gaps8: runs.filter(n => n >= 8).length };
 }
 
 // ── CLI / glossary ───────────────────────────────────────────────────────────
 
 function parseArgs(argv: string[]) {
-  const out = { positional: [] as string[], glossary: undefined as string | undefined, glossaryTerms: 15, runs: 1, setup: undefined as string | undefined, verbose: false, guard: true };
+  const out = { positional: [] as string[], glossary: undefined as string | undefined, glossaryTerms: 15, runs: 1, setup: undefined as string | undefined, verbose: false, guard: true, opts: undefined as Record<string, unknown> | undefined };
   for (let i = 0; i < argv.length; i++) {
     if (argv[i] === '--glossary') out.glossary = argv[++i];
     else if (argv[i] === '--glossary-terms') out.glossaryTerms = Math.max(1, Number(argv[++i]) || 15);
@@ -161,6 +171,7 @@ function parseArgs(argv: string[]) {
     else if (argv[i] === '--setup') out.setup = argv[++i];
     else if (argv[i] === '--verbose') out.verbose = true;
     else if (argv[i] === '--no-guard') out.guard = false;
+    else if (argv[i] === '--opts') out.opts = JSON.parse(argv[++i]);
     else out.positional.push(argv[i]);
   }
   return out;
@@ -187,7 +198,7 @@ async function main() {
   try { process.loadEnvFile(join(ROOT, '.env')); } catch { /* optional */ }
   // openai.ts builds a client at import; the key is never used here.
   process.env.OPENAI_API_KEY ??= 'unused-by-asr-eval';
-  const { transcribeWithMlx } = await import('../server/lib/mlx-whisper');
+  const { transcribeWithMlxDetailed } = await import('../server/lib/mlx-whisper');
   const { buildWhisperPrompt } = await import('../server/lib/openai');
   const { isAsrArtifact, stripAsrArtifacts } = await import('../server/lib/asr-artifacts');
   const { transcribeGuarded } = await import('../server/lib/whisper-guard');
@@ -227,15 +238,22 @@ async function main() {
         const rawParts: string[] = [];
         const filteredParts: string[] = [];
         let prev = '';
+        let uncoveredSecs = 0;
         for (let i = 0; i < planned.chunks.length; i++) {
           const { start, end } = planned.chunks[i];
           const path = join(work, `${stem}-${i}.wav`);
           writeFileSync(path, wavBuffer(samples.subarray(start, end)));
           const prompt = buildWhisperPrompt(glossaryText, undefined, setup.context ? prev || undefined : undefined, LANGUAGE, args.glossaryTerms);
+          let chunkUncovered = 0;
           const guarded = await transcribeGuarded(
-            (usePrompt) => transcribeWithMlx(path, LANGUAGE, usePrompt ? prompt : undefined),
+            async (usePrompt) => {
+              const res = await transcribeWithMlxDetailed(path, LANGUAGE, usePrompt ? prompt : undefined, undefined, args.opts);
+              chunkUncovered = (res.diag?.uncovered ?? []).reduce((n, [a, b]) => n + (b - a), 0);
+              return res.text;
+            },
             args.guard && !!prompt, (end - start) / RATE,
           );
+          uncoveredSecs += chunkUncovered;
           const raw = guarded.text.trim();
           if (args.verbose && guarded.retried) console.log('      (guard: retried without the prompt)');
           rmSync(path, { force: true });
@@ -257,9 +275,10 @@ async function main() {
           cerFiltered: computeCER(score(reference), score(filtered)),
           artifactsRaw: countAsrArtifacts(rawText), artifactsFiltered: countAsrArtifacts(filtered),
           ms: Date.now() - t0, hypothesis: filtered,
+          ...gapStats(deletionRuns(score(reference), score(filtered))), uncoveredSecs,
         };
         rows.push(row);
-        console.log(`  ${setup.name.padEnd(52)} chunks=${String(row.chunks).padStart(2)} avg=${row.avgChunkSecs.toFixed(1).padStart(4)}s  WER ${(row.werRaw * 100).toFixed(1).padStart(5)}% -> ${(row.werFiltered * 100).toFixed(1).padStart(5)}% filtered  artifacts ${row.artifactsRaw}->${row.artifactsFiltered}  (${(row.ms / 1000).toFixed(1)}s)`);
+        console.log(`  ${setup.name.padEnd(52)} chunks=${String(row.chunks).padStart(2)} avg=${row.avgChunkSecs.toFixed(1).padStart(4)}s  WER ${(row.werRaw * 100).toFixed(1).padStart(5)}% -> ${(row.werFiltered * 100).toFixed(1).padStart(5)}% filtered  artifacts ${row.artifactsRaw}->${row.artifactsFiltered}  maxGap ${String(row.maxGap).padStart(2)}w gaps8+ ${row.gaps8}  (${(row.ms / 1000).toFixed(1)}s)`);
       }
     }
   } finally {
@@ -269,7 +288,7 @@ async function main() {
   // Summary: mean over clips per setup
   console.log('\n── Mean over clips ─────────────────────────────────────────────────────────');
   console.log(`(${args.runs} run${args.runs > 1 ? 's' : ''} per clip)`);
-  console.log('setup'.padEnd(54) + 'WER%'.padStart(7) + 'CER%'.padStart(7) + 'artif.'.padStart(8) + 'chunks'.padStart(8));
+  console.log('setup'.padEnd(54) + 'WER%'.padStart(7) + 'CER%'.padStart(7) + 'artif.'.padStart(8) + 'chunks'.padStart(8) + 'maxGap'.padStart(8) + 'gaps8+'.padStart(8));
   for (const setup of activeSetups) {
     const r = rows.filter(x => x.setup === setup.name);
     if (!r.length) continue;
@@ -277,7 +296,8 @@ async function main() {
     console.log(
       setup.name.padEnd(54) + (mean(x => x.werFiltered) * 100).toFixed(1).padStart(7) +
       (mean(x => x.cerFiltered) * 100).toFixed(1).padStart(7) + mean(x => x.artifactsFiltered).toFixed(1).padStart(8) +
-      mean(x => x.chunks).toFixed(1).padStart(8),
+      mean(x => x.chunks).toFixed(1).padStart(8) + Math.max(...r.map(x => x.maxGap)).toString().padStart(8) +
+      r.reduce((n, x) => n + x.gaps8, 0).toString().padStart(8),
     );
   }
 

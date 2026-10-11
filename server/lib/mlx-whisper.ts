@@ -43,8 +43,39 @@ const RESTART_BACKOFF_MS = 2_000;
 const MAX_RESTART_BACKOFF_MS = 60_000;
 const MAX_CONSECUTIVE_RESTART_FAILURES = 10;
 
+export interface MlxSegmentDiag {
+  start: number;
+  end: number;
+  text: string;
+  compression_ratio: number;
+  avg_logprob: number;
+  no_speech_prob: number;
+  /** Why our post-filter dropped it, or null when kept. */
+  dropped: string | null;
+}
+
+/** What the worker saw for one chunk — see mlx_worker.py's build_diag. */
+export interface MlxDiag {
+  duration: number | null;
+  segments: MlxSegmentDiag[];
+  /** [start, end] spans (s) longer than 2 s that no kept segment covers. */
+  uncovered: Array<[number, number]>;
+}
+
+export interface MlxResult {
+  text: string;
+  diag: MlxDiag | null;
+}
+
+/** Decode overrides forwarded to the worker (see DEFAULT_OPTS in mlx_worker.py). null disables a check. */
+export interface MlxDecodeOpts {
+  hallucination_silence_threshold?: number | null;
+  no_speech_threshold?: number | null;
+  segment_filter?: boolean;
+}
+
 interface PendingRequest {
-  resolve: (text: string) => void;
+  resolve: (result: MlxResult) => void;
   reject: (err: Error) => void;
   timeout: NodeJS.Timeout;
 }
@@ -53,7 +84,7 @@ interface PendingRequest {
 interface QueuedRequest {
   id: number;
   payload: string;
-  resolve: (text: string) => void;
+  resolve: (result: MlxResult) => void;
   reject: (err: Error) => void;
 }
 
@@ -171,7 +202,7 @@ class MlxWorkerManager {
       if (typeof msg.error === 'string') {
         pending.reject(new Error(msg.error));
       } else {
-        pending.resolve(typeof msg.text === 'string' ? msg.text : '');
+        pending.resolve({ text: typeof msg.text === 'string' ? msg.text : '', diag: msg.diag ?? null });
       }
     }
     this.releaseWorker(msg.id);
@@ -264,15 +295,16 @@ class MlxWorkerManager {
     language?: string,
     initialPrompt?: string,
     signal?: AbortSignal,
-  ): Promise<string> {
+    opts?: MlxDecodeOpts,
+  ): Promise<MlxResult> {
     try {
-      return await this.transcribeOnce(audioFilePath, language, initialPrompt, signal);
+      return await this.transcribeOnce(audioFilePath, language, initialPrompt, signal, opts);
     } catch (err) {
       if (!(err instanceof MlxTimeoutError) || signal?.aborted) throw err;
       // A timeout drops the chunk's speech from the sermon; one more attempt costs little.
       // It goes to the back of the queue, and its clock starts only when the worker is free.
       console.warn('MLX transcription timed out — retrying once');
-      return this.transcribeOnce(audioFilePath, language, initialPrompt, signal);
+      return this.transcribeOnce(audioFilePath, language, initialPrompt, signal, opts);
     }
   }
 
@@ -281,8 +313,9 @@ class MlxWorkerManager {
     language?: string,
     initialPrompt?: string,
     signal?: AbortSignal,
-  ): Promise<string> {
-    if (signal?.aborted) return '';
+    opts?: MlxDecodeOpts,
+  ): Promise<MlxResult> {
+    if (signal?.aborted) return { text: '', diag: null };
 
     await this.waitUntilReady(STARTUP_TIMEOUT_MS);
     if (!this.proc) throw new Error('MLX worker unavailable');
@@ -294,9 +327,10 @@ class MlxWorkerManager {
       path: audioFilePath,
       language: normalizedLanguage,
       initial_prompt: initialPrompt || null,
+      opts: opts ?? null,
     });
 
-    return new Promise<string>((resolve, reject) => {
+    return new Promise<MlxResult>((resolve, reject) => {
       const onAbort = () => {
         const queuedAt = this.queue.findIndex((q) => q.id === id);
         if (queuedAt !== -1) {
@@ -306,13 +340,13 @@ class MlxWorkerManager {
           const pending = this.pending.get(id);
           if (pending) { this.pending.delete(id); clearTimeout(pending.timeout); }
         }
-        resolve('');
+        resolve({ text: '', diag: null });
       };
       signal?.addEventListener('abort', onAbort, { once: true });
       this.queue.push({
         id,
         payload,
-        resolve: (text) => { signal?.removeEventListener('abort', onAbort); resolve(text); },
+        resolve: (result) => { signal?.removeEventListener('abort', onAbort); resolve(result); },
         reject: (err) => { signal?.removeEventListener('abort', onAbort); reject(err); },
       });
       this.pump();
@@ -329,8 +363,20 @@ export async function transcribeWithMlx(
   language?: string,
   initialPrompt?: string,
   signal?: AbortSignal,
+  opts?: MlxDecodeOpts,
 ): Promise<string> {
-  return manager.transcribe(audioFilePath, language, initialPrompt, signal);
+  return (await manager.transcribe(audioFilePath, language, initialPrompt, signal, opts)).text;
+}
+
+/** Same as transcribeWithMlx, but also returns the worker's per-segment diagnostics. */
+export async function transcribeWithMlxDetailed(
+  audioFilePath: string,
+  language?: string,
+  initialPrompt?: string,
+  signal?: AbortSignal,
+  opts?: MlxDecodeOpts,
+): Promise<MlxResult> {
+  return manager.transcribe(audioFilePath, language, initialPrompt, signal, opts);
 }
 
 /** Stops the worker without restarting it — tests only. */

@@ -28,6 +28,17 @@ describe('flushInOrder', () => {
     expect(s.nextExpectedChunk).toBe(1);
   });
 
+  it('calls onDelivered only once a chunk has actually been sent (archive delivery timestamps)', () => {
+    const s = makeSession();
+    const delivered: number[] = [];
+    s.pendingResults.set(1, { correctedText: 'Second', translatedText: '', onDelivered: () => delivered.push(1) });
+    flushInOrder(s);
+    expect(delivered).toEqual([]); // chunk 0 still outstanding — chunk 1 waits behind it
+    s.pendingResults.set(0, { correctedText: 'First', translatedText: '', onDelivered: () => delivered.push(0) });
+    flushInOrder(s);
+    expect(delivered).toEqual([0, 1]);
+  });
+
   it('delivers multiple consecutive chunks in order', () => {
     const s = makeSession();
     s.pendingResults.set(0, { correctedText: 'First', translatedText: '' });
