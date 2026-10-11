@@ -42,8 +42,8 @@ function SegmentRowImpl({ segment, dispatch, activeSegmentIdRef, onRefreshOne, f
             type="button"
             onClick={() => onRefreshOne(segment.id)}
             className="text-muted-foreground hover:text-foreground transition-colors"
-            aria-label="Opnieuw proberen als dit blijft hangen"
-            title="Wordt vertaald — klik om opnieuw te proberen als dit blijft hangen"
+            aria-label="Retry if this stays stuck"
+            title="Translating — click to retry if this stays stuck"
             data-testid={`refresh-${segment.id}`}
           >
             <Loader2 className="w-3.5 h-3.5 animate-spin" />
@@ -54,8 +54,8 @@ function SegmentRowImpl({ segment, dispatch, activeSegmentIdRef, onRefreshOne, f
             type="button"
             onClick={() => onRefreshOne(segment.id)}
             className="text-muted-foreground hover:text-foreground transition-colors"
-            aria-label="Voorlopige tekst nu al vertalen"
-            title={`Voorlopig — nu al vertalen (${REFRESH_ONE_HINT})`}
+            aria-label="Translate this provisional text now"
+            title={`Provisional — translate now (${REFRESH_ONE_HINT})`}
             data-testid={`refresh-${segment.id}`}
           >
             <Clock className="w-3.5 h-3.5" />
@@ -66,7 +66,7 @@ function SegmentRowImpl({ segment, dispatch, activeSegmentIdRef, onRefreshOne, f
             type="button"
             onClick={() => onRefreshOne(segment.id)}
             className="text-destructive hover:opacity-70"
-            aria-label={`Opnieuw proberen — ${segment.error ?? 'fout'}`}
+            aria-label={`Retry — ${segment.error ?? 'error'}`}
             title={segment.error}
             data-testid={`retry-${segment.id}`}
           >
@@ -78,8 +78,8 @@ function SegmentRowImpl({ segment, dispatch, activeSegmentIdRef, onRefreshOne, f
             type="button"
             onClick={() => onRefreshOne(segment.id)}
             className="text-muted-foreground/50 hover:text-foreground transition-colors"
-            aria-label="Dit segment opnieuw vertalen"
-            title={`Alleen dit segment vertalen (${REFRESH_ONE_HINT})`}
+            aria-label="Re-translate this segment"
+            title={`Translate only this segment (${REFRESH_ONE_HINT})`}
             data-testid={`refresh-${segment.id}`}
           >
             <RefreshCw className="w-3.5 h-3.5" />
@@ -90,8 +90,8 @@ function SegmentRowImpl({ segment, dispatch, activeSegmentIdRef, onRefreshOne, f
             type="button"
             onClick={() => dispatch({ type: 'CLEAR_SCRIPTURE', id: segment.id, now: Date.now() })}
             className="text-blue-500/70 hover:text-foreground transition-colors"
-            aria-label={`Schriftcitaat (${segment.scripture?.reference ?? ''}, ${segment.scripture?.version ?? ''}) — klik om als gewone vertaling te behandelen`}
-            title={`${segment.scripture?.reference ?? 'Schriftcitaat'} (${segment.scripture?.version ?? ''}) — exacte verstekst, geen model-vertaling. Klik om als gewone zin te vertalen.`}
+            aria-label={`Scripture quote (${segment.scripture?.reference ?? ''}, ${segment.scripture?.version ?? ''}) — click to treat as a normal translation`}
+            title={`${segment.scripture?.reference ?? 'Scripture quote'} (${segment.scripture?.version ?? ''}) — exact verse text, not a model translation. Click to translate it as a normal sentence.`}
             data-testid={`scripture-badge-${segment.id}`}
           >
             <BookOpen className="w-3.5 h-3.5" />
@@ -100,8 +100,8 @@ function SegmentRowImpl({ segment, dispatch, activeSegmentIdRef, onRefreshOne, f
         {segment.status === 'TRANSLATED' && segment.glossaryWarnings && segment.glossaryWarnings.length > 0 && (
           <span
             role="img"
-            aria-label={`Woordenlijst-controle: ${segment.glossaryWarnings.map(w => `${w.term} → ${w.expected}`).join(', ')}`}
-            title={segment.glossaryWarnings.map(w => `Verwacht "${w.expected}" voor "${w.term}"`).join('\n')}
+            aria-label={`Glossary check: ${segment.glossaryWarnings.map(w => `${w.term} → ${w.expected}`).join(', ')}`}
+            title={segment.glossaryWarnings.map(w => `Expected "${w.expected}" for "${w.term}"`).join('\n')}
           >
             <AlertTriangle
               className="w-3.5 h-3.5 text-amber-500/70"

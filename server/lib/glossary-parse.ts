@@ -96,18 +96,18 @@ function resolveDuplicates(rows: RawRow[], warnings: string[]): { fixed: Glossar
       if (fixedRows.length > 0) {
         const categories = Array.from(new Set(fixedRows.map(r => r.category))).join(', ');
         warnings.push(
-          `'${fixedRows[0].nl}' staat zowel als vaste term (${categories}) als Contextafhankelijk in de CSV — Contextafhankelijk heeft voorrang, de vaste vertaling(en) zijn genegeerd.`,
+          `'${fixedRows[0].nl}' is listed both as a fixed term (${categories}) and as Contextafhankelijk in the CSV — Contextafhankelijk takes precedence and the fixed translation(s) were ignored.`,
         );
       }
       if (contextRows.length > 1) {
-        warnings.push(`'${contextRows[0].nl}' komt meerdere keren voor als Contextafhankelijk; alleen de eerste rij is gebruikt.`);
+        warnings.push(`'${contextRows[0].nl}' appears more than once as Contextafhankelijk; only the first row was used.`);
       }
     } else if (fixedRows.length > 0) {
       fixed.push(fixedRows[0]);
       const distinctEn = Array.from(new Set(fixedRows.map(r => r.en)));
       if (fixedRows.length > 1 && distinctEn.length > 1) {
         warnings.push(
-          `'${fixedRows[0].nl}' komt meerdere keren voor met verschillende vertalingen (${distinctEn.join(' / ')}); de eerste is gebruikt.`,
+          `'${fixedRows[0].nl}' appears several times with different translations (${distinctEn.join(' / ')}); the first one was used.`,
         );
       }
     }
@@ -125,7 +125,7 @@ export function parseGlossaryCsv(text: string): ParsedGlossary {
 
   const header = rows[0].map(f => f.trim());
   if (header.join(',') !== EXPECTED_HEADER.join(',')) {
-    warnings.push(`Onverwachte CSV-header: verwacht "${EXPECTED_HEADER.join(',')}", gevonden "${header.join(',')}".`);
+    warnings.push(`Unexpected CSV header: expected "${EXPECTED_HEADER.join(',')}", found "${header.join(',')}".`);
   }
 
   const dataRows = rows.slice(1);
@@ -142,7 +142,7 @@ export function parseGlossaryCsv(text: string): ParsedGlossary {
       const repaired = repairRow(fields);
       if (!repaired) {
         droppedRows++;
-        warnings.push(`Rij overgeslagen (categorie niet herkend): '${fields[0]}'`);
+        warnings.push(`Row skipped (category not recognised): '${fields[0]}'`);
         continue;
       }
       rec = repaired;
@@ -151,13 +151,13 @@ export function parseGlossaryCsv(text: string): ParsedGlossary {
       rec = { nl: fields[0], en: fields[1], category: fields[2].trim(), note: '' };
     } else {
       droppedRows++;
-      warnings.push(`Rij overgeslagen (te weinig velden): '${fields[0] ?? ''}'`);
+      warnings.push(`Row skipped (too few fields): '${fields[0] ?? ''}'`);
       continue;
     }
 
     if (!KNOWN_CATEGORIES.has(rec.category)) {
       droppedRows++;
-      warnings.push(`Rij overgeslagen (onbekende categorie '${rec.category}'): '${rec.nl}'`);
+      warnings.push(`Row skipped (unknown category '${rec.category}'): '${rec.nl}'`);
       continue;
     }
 
@@ -166,7 +166,7 @@ export function parseGlossaryCsv(text: string): ParsedGlossary {
     const note = sanitizeGlossaryField(rec.note, MAX_NOTE_LEN);
     if (!nl || !en) {
       droppedRows++;
-      warnings.push(`Rij overgeslagen (leeg NL/EN veld na sanitatie): '${rec.nl}'`);
+      warnings.push(`Row skipped (empty NL/EN field after sanitising): '${rec.nl}'`);
       continue;
     }
 
@@ -175,7 +175,7 @@ export function parseGlossaryCsv(text: string): ParsedGlossary {
     // itself, so a Notitie starting with "Niet ..." can never trip this.
     if (looksLikeInjection(`${nl} → ${en}`)) {
       droppedRows++;
-      warnings.push(`Rij overgeslagen (lijkt op prompt-injectie): '${nl}'`);
+      warnings.push(`Row skipped (looks like prompt injection): '${nl}'`);
       continue;
     }
 
@@ -236,12 +236,12 @@ export function crossCheckContextTerms(csvContextTerms: string[], docTerms: stri
 
   for (const term of Array.from(docSet)) {
     if (!csvSet.has(term)) {
-      warnings.push(`'${term}' staat in de disambiguatie-tabel maar is niet als Contextafhankelijk gemarkeerd in de CSV.`);
+      warnings.push(`'${term}' is in the disambiguation table but is not marked Contextafhankelijk in the CSV.`);
     }
   }
   for (const term of Array.from(csvSet)) {
     if (!docSet.has(term)) {
-      warnings.push(`'${term}' is Contextafhankelijk in de CSV maar heeft geen rij in de disambiguatie-tabel.`);
+      warnings.push(`'${term}' is marked Contextafhankelijk in the CSV but has no row in the disambiguation table.`);
     }
   }
   return warnings;

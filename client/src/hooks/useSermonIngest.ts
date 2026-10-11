@@ -237,7 +237,7 @@ export function useSermonIngest(args: SermonIngestArgs) {
       );
       setIsRecording(true);
     } catch (err) {
-      argsRef.current.onError(err instanceof Error ? err.message : 'Kon opname niet starten');
+      argsRef.current.onError(err instanceof Error ? err.message : 'Could not start recording');
       backendRef.current = null;
     } finally {
       setIsProcessing(false);

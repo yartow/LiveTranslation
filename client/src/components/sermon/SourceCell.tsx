@@ -120,7 +120,7 @@ export default function SourceCell({ segment, dispatch, activeSegmentIdRef, flus
           className="absolute top-1.5 right-2 text-[10px] font-medium text-amber-600 dark:text-amber-400 pointer-events-none select-none"
           data-testid={`dirty-badge-${segment.id}`}
         >
-          gewijzigd
+          edited
         </span>
       )}
       {isProvisional && (
@@ -128,7 +128,7 @@ export default function SourceCell({ segment, dispatch, activeSegmentIdRef, flus
           className="absolute top-1.5 right-2 text-[10px] font-medium text-muted-foreground pointer-events-none select-none italic"
           data-testid={`provisional-badge-${segment.id}`}
         >
-          voorlopig
+          provisional
         </span>
       )}
       <textarea

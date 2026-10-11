@@ -135,7 +135,7 @@ function buildBibleBookAliases(fixed: GlossaryRow[], warnings: string[]): Map<st
     if (row.category !== 'Bijbelboek') continue;
     const n = bookNumberByEnglishName(row.en);
     if (n === undefined) {
-      warnings.push(`Bijbelboek-rij '${row.nl}' (Engels: '${row.en}') komt niet overeen met een bekend Bijbelboek — genegeerd.`);
+      warnings.push(`Bijbelboek row '${row.nl}' (English: '${row.en}') does not match a known Bible book — ignored.`);
       continue;
     }
     aliases.set(row.nl.toLowerCase(), n);
@@ -151,12 +151,12 @@ function buildBundle(sel: GlossarySelection): { bundle: GlossaryBundle | null; d
   try {
     csvContent = readGlossaryFile(sel.csv, 'csv');
   } catch (e) {
-    errors.push(`Kon glossary-CSV niet laden ('${sel.csv}'): ${e instanceof Error ? e.message : String(e)}`);
+    errors.push(`Could not load glossary CSV ('${sel.csv}'): ${e instanceof Error ? e.message : String(e)}`);
   }
   try {
     mdContent = readGlossaryFile(sel.prompt, 'md');
   } catch (e) {
-    errors.push(`Kon disambiguatie-prompt niet laden ('${sel.prompt}'): ${e instanceof Error ? e.message : String(e)}`);
+    errors.push(`Could not load disambiguation prompt ('${sel.prompt}'): ${e instanceof Error ? e.message : String(e)}`);
   }
 
   if (!csvContent || !mdContent) {
@@ -171,7 +171,7 @@ function buildBundle(sel: GlossarySelection): { bundle: GlossaryBundle | null; d
   const bibleBookAliases = buildBibleBookAliases(glossary.fixed, warnings);
 
   if (!doc.systemBlock) {
-    errors.push(`Geen fenced code block gevonden in disambiguatie-prompt ('${sel.prompt}').`);
+    errors.push(`No fenced code block found in disambiguation prompt ('${sel.prompt}').`);
     return { bundle: null, diagnostics: { ...emptyDiagnostics(sel, errors), warnings } };
   }
 

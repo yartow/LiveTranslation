@@ -561,6 +561,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
     res.json({
       openaiApiKey: process.env.OPENAI_API_KEY || '',
       anthropicApiKey: process.env.ANTHROPIC_API_KEY || '',
+      esvApiKey: process.env.ESV_API_KEY || '',
     });
   });
 

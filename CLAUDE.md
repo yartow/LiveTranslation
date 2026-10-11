@@ -50,9 +50,9 @@ client/src/
     useSettings.ts                — AppSettings type + localStorage persistence
     useListenerBroadcast.ts       — operator-side publisher for listener mode, see "Listener mode" below
   components/
-    SettingsDialog.tsx            — settings modal (incl. GlossaryPanel for sermon mode)
+    settings/                     — settings dialog, see "Settings" below (settings-index.ts = page/item registry)
     sermon/                       — SegmentGrid, SegmentRow, SourceCell, TargetCell, SermonToolbar,
-                                       ListenerAddressPanel (the "Luisteraars" popover)
+                                       ListenerAddressPanel (the "Listeners" popover)
   lib/
     chunk-based-transcription.ts  — shared ChunkTranscriptionEvents interface
     streaming-transcription.ts    — AssemblyAI WebSocket streaming backend
@@ -105,7 +105,7 @@ The app's default route — a purpose-built UI for translating a live sermon blo
 - **Segment model** (`segment-model.ts`/`segment-store.ts`) — a `Segment` is one or more complete sentences grouped into a block (see "Live ingest" below), the atomic unit of editing/translation. Reducer replaces only the touched segment's object reference, so `SegmentRow` (memoized on `segment ===`) never re-renders unrelated rows while new segments stream in. The store also tracks `activeReading` (see "Scripture pipeline" below).
 - **Live ingest** (`ingest-buffer.ts`) — buffers incoming corrected ASR text and flushes into segments once `sermonMaxLatencySecs` elapses since the current block started: at that point, every complete sentence currently buffered is joined into one segment (so several short sentences spoken back-to-back become one block instead of one segment each), or, if no sentence has completed at all yet, the partial text is flushed mid-sentence as a `PROVISIONAL` segment. `sermonMaxLatencySecs` is thus both the target block duration and the hard ceiling — a complete sentence alone never triggers an immediate flush, it just waits for the next deadline. The block clock **restarts on every flush**: a leftover half-sentence that survives a flush starts a fresh `sermonMaxLatencySecs` window rather than an already-expired one (otherwise it is forced into its own tiny `PROVISIONAL` segment on the very next tick, which renders as a run of short, choppy rows). The per-chunk correction step (`correctTranscript`/`correctTranscriptWithClaude`/`correctTranscriptWithOllama`) deliberately leaves a mid-sentence chunk **unpunctuated** rather than guessing a period, since a chunk boundary (VAD-cut on a ~1.1s pause) frequently lands mid-sentence and a hallucinated period there would cut segments short upstream of the ingest buffer.
 - **Translation** (`translate-client.ts` → `POST /api/sermon/translate` → `server/lib/sermon-translate.ts`) — batches dirty segments, translates via `sermonTranslationProvider`/`sermonCorrectionProvider` (`'openai' | 'claude' | 'ollama'` — sermon mode never offers `'none'`), and returns per-item `warnings?: GlossaryWarning[]` when the file-based glossary is enabled, or `scripture?: {...}` when a Bible reference was checked (see "Scripture pipeline" below).
-- **File-based glossary** — see the "File-based glossary trust boundary" security section and `GLOSSARY_DIR`/`GLOSSARY_CSV`/`GLOSSARY_PROMPT` env vars below. Configured per-user in Settings → "Preekmodus — woordenlijst" (`GlossaryPanel` in `SettingsDialog.tsx`).
+- **File-based glossary** — see the "File-based glossary trust boundary" security section and `GLOSSARY_DIR`/`GLOSSARY_CSV`/`GLOSSARY_PROMPT` env vars below. Configured per-user in Settings → General → Glossary (`GlossaryPanel` in `components/settings/`).
 - **Hotkeys** (`hotkeys.ts`) — pure, DOM-free chord predicates (e.g. Cmd/Ctrl+Shift+Enter = re-translate all dirty segments); wired to `preventDefault`/capture-phase listeners in `SermonMode.tsx`.
 
 ---
@@ -135,7 +135,7 @@ A segment's `scripture?: ScriptureInfo` (`segment-model.ts`) is cleared on any e
 
 ## Listener mode (`/listen`)
 
-Lets non-Dutch-speaking listeners follow the sermon translation live on their own phone, over whatever LAN the MBP is on (home wifi or church wifi). The operator reads the address out of SermonToolbar's "Luisteraars" popover (backed by `GET /api/lan-address`); a listener types it into their phone's browser — no app install, no login.
+Lets non-Dutch-speaking listeners follow the sermon translation live on their own phone, over whatever LAN the MBP is on (home wifi or church wifi). The operator reads the address out of SermonToolbar's "Listeners" popover (backed by `GET /api/lan-address`); a listener types it into their phone's browser — no app install, no login.
 
 - **Relay, not exposure.** Sermon segments live only in the operator's browser (`SegmentStoreState`, `segment-store.ts`) — nothing about a segment reaches the server except one-shot translate calls. Listener mode adds a small in-memory broadcast hub (`server/lib/listener-hub.ts`) so a second device has something to read from at all.
 - **English only, structurally.** The hub's `ListenerLine` type has exactly four fields — `id`, `index`, `text`, `edited` — no `sourceText` field exists on it. `toListenerLine()` reconstructs every incoming line field-by-field rather than trusting a cast, so even a buggy client sending a full segment object can't leak Dutch through. The actual "only English" guarantee still rests on the client only ever calling `selectPublishableLines()` (`segment-store.ts`) — see `useListenerBroadcast.ts`.
@@ -147,6 +147,18 @@ Lets non-Dutch-speaking listeners follow the sermon translation live on their ow
 - **Bare-IP redirect.** A listener typing just the IP with no path would otherwise land on the operator console (`/`, with recording controls) or `/live`. `server/index.ts` redirects exactly those two paths to `/listen` for any HTML navigation from a non-loopback socket address — checked on `req.socket.remoteAddress`, not a spoofable header. Set `ALLOW_REMOTE_OPERATOR=true` to disable (e.g. to run the console itself from another device).
 - **Not an authentication boundary.** Anyone on the same LAN who can reach the server can read the transcript at `/listen`, and (if `ALLOW_REMOTE_OPERATOR=true`) the operator console too. This is intended for this feature — do not present it as access control.
 - Church guest wifi with AP/client isolation blocks phone→laptop traffic entirely and can't be fixed in code — test on the actual venue's network ahead of time; a personal hotspot from the MBP is the fallback.
+
+---
+
+## Settings (`client/src/components/settings/`)
+
+iOS/Android-style dialog: grouped category list (General / Sermon mode / Live mode / Advanced) that drills into one page per category on a phone and shows two columns on desktop, plus a search box. The whole UI is English (the Dutch strings that remain are deliberate: the Whisper prompt sentence, Dutch correction examples, prompt tag names like `{DOELVERTALING}`, and CSV category values like `Bijbelboek`/`Contextafhankelijk` — all data-file or model contracts).
+
+- **`settings-index.ts` is the registry.** Every page (`SETTINGS_PAGES`) and every individual setting (`SETTINGS_ITEMS`: label, description, search keywords, optional mode override) is declared there with its mode (`sermon` / `live` / `both`). Pages render a setting with `<SettingItem id="…">` (`primitives.tsx`), which takes label/description/mode badge from the index — so what a page shows and what search finds can't drift apart. **A new setting must be added to the index**, or it won't be searchable and won't carry a mode badge. `tests/unit/settings-index.test.ts` checks the registry's integrity.
+- `SettingsDialog` takes a `mode` prop (`SermonMode.tsx` passes `sermon`, `Home.tsx` passes `live`): that mode's group is listed right after General, marked "(this mode)", and opened by default on desktop.
+- Shared across both modes (and therefore under General, not under a mode): API keys (incl. the ESV key), languages, speech-recognition engine, microphone, Ollama URL/model, glossary. Sermon mode only honours the `whisper`/`mlx` engines (anything else falls back to OpenAI Whisper).
+- Two glossaries on one page: **Vocabulary hints** (`theologicalGlossary`, free text, both modes — the only list Whisper and the per-chunk correction see) and **Glossary files** (`sermonGlossary*`, CSV + markdown, sermon translation only, replaces the hints for that step).
+- `useTranscriptAsWhisperContext` has no UI (it was dead — nothing outside settings/profiles reads it); the field stays in `AppSettings`/`DeviceProfile` so saved profiles still load.
 
 ---
 
@@ -383,8 +395,8 @@ interface AppSettings {
 | POST | `/api/sermon/translate` | Sermon mode — translate a batch of dirty segments |
 | GET | `/api/sermon/glossary/status` | Sermon mode — file-based glossary load status/diagnostics |
 | POST | `/api/sermon/glossary/reload` | Sermon mode — force a fresh read+parse of the glossary files |
-| GET | `/api/dev-config` | Dev mode only (403 in production) — returns `OPENAI_API_KEY`/`ANTHROPIC_API_KEY` from `.env` so the client can auto-fill Settings |
-| GET | `/api/lan-address` | Listener mode — the MBP's non-internal LAN IPv4 address(es) + port, for the "Luisteraars" popover |
+| GET | `/api/dev-config` | Dev mode only (403 in production) — returns `OPENAI_API_KEY`/`ANTHROPIC_API_KEY`/`ESV_API_KEY` from `.env` so the client can auto-fill Settings (`useDevKeyAutofill`, run by both Sermon and Live pages) |
+| GET | `/api/lan-address` | Listener mode — the MBP's non-internal LAN IPv4 address(es) + port, for the "Listeners" popover |
 
 WebSocket: `ws://host/ws/transcribe` — binary PCM16 frames + JSON control messages (`start`, `stop`, `config`). Listener mode: `ws://host/ws/sermon-broadcast` (operator publish) and `ws://host/ws/sermon-listen` (listener receive) — see "Listener mode" above.
 

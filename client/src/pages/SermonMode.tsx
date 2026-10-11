@@ -2,9 +2,10 @@ import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from 'r
 import Header from '@/components/Header';
 import SermonToolbar from '@/components/sermon/SermonToolbar';
 import SegmentGrid from '@/components/sermon/SegmentGrid';
-import SettingsDialog from '@/components/SettingsDialog';
+import SettingsDialog from '@/components/settings/SettingsDialog';
 import { useToast } from '@/hooks/use-toast';
 import { useSettings } from '@/hooks/useSettings';
+import { useDevKeyAutofill } from '@/hooks/useDevKeyAutofill';
 import { segmentReducer, initState, selectDirtyIds, type SegmentAction } from '@/lib/sermon/segment-store';
 import { isRefreshAllChord, isRefreshOneChord, type KeyChord } from '@/lib/sermon/hotkeys';
 import { useTranslationQueue, type TranslationRuntimeConfig } from '@/hooks/useTranslationQueue';
@@ -26,6 +27,7 @@ const SERMON_MIN_BLOCK_WORDS = 12;
 
 export default function SermonMode() {
   const { settings, updateSettings } = useSettings();
+  useDevKeyAutofill(settings, updateSettings);
   const { toast } = useToast();
 
   const sessionIdRef = useRef(`s${Date.now().toString(36)}`);
@@ -58,7 +60,7 @@ export default function SermonMode() {
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
 
   // Settings (persisted, useSettings) is the single source of truth for both
-  // the full "Preekmodus" section in SettingsDialog and the two most-used
+  // the Sermon mode pages in SettingsDialog and the two most-used
   // controls duplicated inline in the toolbar (plan §"Risico's", point 5) —
   // no separate local state to fall out of sync with the dialog.
   const autoTranslateRef = useRef(settings.sermonAutoTranslate);
@@ -121,7 +123,7 @@ export default function SermonMode() {
     debugMode: settings.debugMode,
     normalizationGain: settings.audioNormalizationGain,
     rawAudioCapture: settings.rawAudioCapture,
-    onError: (message) => toast({ title: 'Opnamefout', description: message, variant: 'destructive' }),
+    onError: (message) => toast({ title: 'Recording error', description: message, variant: 'destructive' }),
   });
 
   const dirtyCount = useMemo(() => selectDirtyIds(state).length, [state]);
@@ -158,7 +160,7 @@ export default function SermonMode() {
         isProcessing={isProcessing}
         onToggleRecording={() => {
           if (isRecording) {
-            stop().catch((err) => toast({ title: 'Opnamefout', description: err instanceof Error ? err.message : 'Kon opname niet stoppen', variant: 'destructive' }));
+            stop().catch((err) => toast({ title: 'Recording error', description: err instanceof Error ? err.message : 'Could not stop recording', variant: 'destructive' }));
           } else {
             start();
           }
@@ -185,6 +187,7 @@ export default function SermonMode() {
         onClose={() => setIsSettingsOpen(false)}
         settings={settings}
         onUpdate={updateSettings}
+        mode="sermon"
       />
     </div>
   );

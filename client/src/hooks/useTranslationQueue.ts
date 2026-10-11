@@ -201,7 +201,7 @@ export function useTranslationQueue(
     const dirty = selectDirtyIds(stateRef.current);
     if (dirty.length === 0) return;
     if (dirty.length > CONFIRM_ABOVE_DIRTY_COUNT) {
-      const ok = window.confirm(`Refresh hervertaalt ${dirty.length} segmenten — doorgaan?`);
+      const ok = window.confirm(`Refresh will re-translate ${dirty.length} segments — continue?`);
       if (!ok) return;
     }
     runBatch(dirty);
