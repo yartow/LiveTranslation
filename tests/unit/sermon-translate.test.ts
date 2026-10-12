@@ -162,13 +162,25 @@ describe('translateSegments — scripture (Bijbelcitaten AC11/AC12)', () => {
     ];
     const callModel = vi.fn(async () => 'should never be called');
 
-    const results = await translateSegments(items, baseOpts, { callModel });
+    const results = await translateSegments(items, { ...baseOpts, bibleVersion: 'KJV' }, { callModel });
 
     expect(callModel).not.toHaveBeenCalled();
     expect(results[0]).toMatchObject({
       id: 'a', status: 'ok', translation: expect.stringContaining('For God so loved the world'),
       scripture: { verbatim: true, readingEnded: false, version: 'KJV' },
     });
+  }));
+
+  it('substitutes the operator-chosen version (LSB) from local text, and "none" does not decline it', () => withBibleFixture(async () => {
+    const items: TranslateItemInput[] = [
+      { id: 'a', text: JOHN_3_16, before: [], after: [], readingCandidate: { bookNumber: 43, chapter: 3, verse: 16 } },
+    ];
+    const callModel = vi.fn(async () => 'should never be called');
+
+    const results = await translateSegments(items, { ...baseOpts, bibleVersion: 'LSB', scriptureFallback: 'none' }, { callModel });
+
+    expect(callModel).not.toHaveBeenCalled();
+    expect(results[0]).toMatchObject({ id: 'a', status: 'ok', scripture: { verbatim: true, version: 'LSB' } });
   }));
 
   it('a paraphrase is translated normally, with the verse text passed as <VERSTEKST_ESV> guidance (AC12)', () => withBibleFixture(async () => {
@@ -189,7 +201,8 @@ describe('translateSegments — scripture (Bijbelcitaten AC11/AC12)', () => {
     expect(capturedUserMessage).toContain('For God so loved the world');
     expect(capturedUserMessage).toContain(`<TE_VERTALEN>\n${paraphrase}\n</TE_VERTALEN>`);
     expect(results[0]).toMatchObject({ id: 'a', status: 'ok', translation: 'His own paraphrase, translated.' });
-    expect((results[0] as { scripture?: unknown }).scripture).toBeUndefined();
+    // Flagged so the client knows the announced reading is really under way, but never substituted.
+    expect((results[0] as { scripture?: unknown }).scripture).toEqual({ verbatim: false, readingEnded: false, paraphrase: true, verseStart: 16 });
   }));
 
   it('an unrelated sentence is translated normally and flags readingEnded so the client stops checking further segments', () => withBibleFixture(async () => {
@@ -223,7 +236,7 @@ describe('translateSegments — scripture (Bijbelcitaten AC11/AC12)', () => {
     ];
     const callModel = vi.fn(async () => 'Model-translated instead of substituted.');
 
-    const results = await translateSegments(items, { ...baseOpts, scriptureFallback: 'none' }, { callModel });
+    const results = await translateSegments(items, { ...baseOpts, bibleVersion: 'NASB', scriptureFallback: 'none' }, { callModel });
 
     expect(callModel).toHaveBeenCalledTimes(1);
     expect(results[0]).toMatchObject({

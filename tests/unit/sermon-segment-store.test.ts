@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import {
-  initState, segmentReducer, selectDirtyIds, selectTranslatable, selectOrdered, selectContext, canWriteLive,
+  initState, segmentReducer, selectDirtyIds, selectTranslatable, selectOrdered, selectContext, canWriteLive, READING_GRACE_SEGMENTS,
   selectPublishableLines,
   type SegmentStoreState,
 } from '../../client/src/lib/sermon/segment-store.js';
@@ -427,14 +427,43 @@ describe('segmentReducer — scripture (Bijbelcitaten)', () => {
     expect(state.activeReading).toBeNull();
 
     state = segmentReducer(state, { type: 'SET_ACTIVE_READING', bookNumber: 43, chapter: 3, verse: 16 });
-    expect(state.activeReading).toEqual({ bookNumber: 43, chapter: 3, nextVerse: 16 });
+    expect(state.activeReading).toEqual({ bookNumber: 43, chapter: 3, nextVerse: 16, matched: false, misses: 0 });
 
     // A fresh reference replaces (doesn't merge with) the previous one.
     state = segmentReducer(state, { type: 'SET_ACTIVE_READING', bookNumber: 45, chapter: 8, verse: 28 });
-    expect(state.activeReading).toEqual({ bookNumber: 45, chapter: 8, nextVerse: 28 });
+    expect(state.activeReading).toEqual({ bookNumber: 45, chapter: 8, nextVerse: 28, matched: false, misses: 0 });
 
     state = segmentReducer(state, { type: 'CLEAR_ACTIVE_READING' });
     expect(state.activeReading).toBeNull();
+  });
+
+  it('an announced reading survives READING_GRACE_SEGMENTS misses before it matches', () => {
+    let state = segmentReducer(initState('t'), { type: 'SET_ACTIVE_READING', bookNumber: 58, chapter: 12, verse: 1 });
+    for (let i = 1; i < READING_GRACE_SEGMENTS; i++) {
+      state = segmentReducer(state, { type: 'NOTE_READING_MISS' });
+      expect(state.activeReading).toMatchObject({ nextVerse: 1, matched: false, misses: i });
+    }
+    state = segmentReducer(state, { type: 'NOTE_READING_MISS' });
+    expect(state.activeReading).toBeNull();
+  });
+
+  it('a matched reading ends on its first miss', () => {
+    let state = segmentReducer(initState('t'), { type: 'SET_ACTIVE_READING', bookNumber: 58, chapter: 12, verse: 1 });
+    state = segmentReducer(state, { type: 'NOTE_READING_MISS' });
+    state = segmentReducer(state, { type: 'SET_ACTIVE_READING', bookNumber: 58, chapter: 12, verse: 1, matched: true });
+    expect(state.activeReading).toMatchObject({ matched: true, misses: 0 });
+    state = segmentReducer(state, { type: 'NOTE_READING_MISS' });
+    expect(state.activeReading).toBeNull();
+  });
+
+  it('SET_ACTIVE_READING with matched: true (a verbatim advance) starts matched', () => {
+    const state = segmentReducer(initState('t'), { type: 'SET_ACTIVE_READING', bookNumber: 58, chapter: 12, verse: 4, matched: true });
+    expect(state.activeReading).toMatchObject({ nextVerse: 4, matched: true });
+  });
+
+  it('NOTE_READING_MISS with no reading is a no-op', () => {
+    const state = initState('t');
+    expect(segmentReducer(state, { type: 'NOTE_READING_MISS' })).toBe(state);
   });
 
   it('a stale APPLY_SCRIPTURE reply recovers a TRANSLATING row to EDITED, same as APPLY_TRANSLATION', () => {
@@ -526,5 +555,29 @@ describe('selectPublishableLines', () => {
     state = segmentReducer(state, { type: 'APPLY_TRANSLATION', id, translation: '', requestHash: hashText('Zin.') });
     expect(state.byId[id].status).toBe('TRANSLATED');
     expect(selectPublishableLines(state)).toEqual([]);
+  });
+});
+
+describe('selectTranslatable — live (PROVISIONAL) rows', () => {
+  const cfg = { stabilityMs: 1200 };
+
+  function withProvisional(): SegmentStoreState {
+    return segmentReducer(initState('t'), {
+      type: 'APPEND_SEGMENT', id: 'a', sourceText: 'Een halve zin', startTime: 0, endTime: 5000, status: 'PROVISIONAL', now: 0,
+    });
+  }
+
+  it('does not translate a row that is still growing, even once it is stable', () => {
+    expect(selectTranslatable(withProvisional(), cfg, 10_000)).toEqual([]);
+  });
+
+  it('translates it once it is finalized (PENDING)', () => {
+    const state = segmentReducer(withProvisional(), { type: 'COMPLETE_PROVISIONAL', id: 'a', sourceText: 'Een hele zin.', endTime: 5000, now: 10_000 });
+    expect(selectTranslatable(state, cfg, 12_000)).toEqual(['a']);
+  });
+
+  it('treats a row that has not grown for 30 s as abandoned (recording stopped mid-block) and translates it', () => {
+    expect(selectTranslatable(withProvisional(), cfg, 29_999)).toEqual([]);
+    expect(selectTranslatable(withProvisional(), cfg, 30_000)).toEqual(['a']);
   });
 });

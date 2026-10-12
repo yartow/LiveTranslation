@@ -136,6 +136,40 @@ describe('findBibleRef — no false positives', () => {
   });
 });
 
+describe('findBibleRef — spellings and formats seen in a real sermon', () => {
+  it.each([
+    ['Lukas 14:27', 42, 14, 27, null],
+    ['Matteüs 11:28', 40, 11, 28, null],
+    ['Mattheüs 11 vers 28', 40, 11, 28, null],
+    ['Markus 4:39', 41, 4, 39, null],
+    ['Hebreën 12:1', 58, 12, 1, null],
+    ['Hebreeën 12-1-3', 58, 12, 1, 3],
+    ['Lucas 18-7', 42, 18, 7, null],
+    ['Johannes 3 16', 43, 3, 16, null],
+    ['Hebreeën 12 1 tot 3', 58, 12, 1, 3],
+    ['Hebreeën 12, vers 1 tot 3', 58, 12, 1, 3],
+  ])('parses %j', (text, bookNumber, chapter, verseStart, verseEnd) => {
+    expect(findBibleRef(text)).toMatchObject({ bookNumber, chapter, verseStart, verseEnd });
+  });
+
+  it('does not read a bare number after a chapter as a verse unless it fits', () => {
+    expect(findBibleRef('Hebreeën 12 2023')).toMatchObject({ chapter: 12, verseStart: null });
+  });
+});
+
+describe('findBibleRef — short book forms inside ordinary prose', () => {
+  it('does not read "dan een" as Daniel 1', () => {
+    expect(findBibleRef('Dat is een andere koek dan een grote sintelbaan toch?')).toBeNull();
+    expect(findBibleRef('dan... Een')).toBeNull();
+  });
+
+  it('still reads the short and full forms with a digit chapter', () => {
+    expect(findBibleRef('Dan 1:1')).toMatchObject({ bookNumber: 27, chapter: 1, verseStart: 1 });
+    expect(findBibleRef('Daniël 1:1')).toMatchObject({ bookNumber: 27, chapter: 1, verseStart: 1 });
+    expect(findBibleRef('Daniël drie')).toMatchObject({ bookNumber: 27, chapter: 3 });
+  });
+});
+
 describe('findAllBibleRefs', () => {
   it('finds two references in one segment', () => {
     const refs = findAllBibleRefs('Lees eerst Johannes 3:16, en dan Romeinen 8:28.');

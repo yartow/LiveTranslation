@@ -5,7 +5,7 @@
 // reference used across sermons) doesn't re-hit the API — keeping well
 // within the free tier's ~5,000 queries/day, 500 verses/query limits.
 //
-// Falls back to the bundled KJV (bible-store.ts) whenever this returns
+// Now only a fallback: scripture.ts prefers locally built ESV text and calls this just when that file is missing. Falls back to the bundled KJV (bible-store.ts) whenever this returns
 // null: no ESV_API_KEY configured, the request errors, or the network is
 // unavailable — scripture.ts is the only caller and treats every failure
 // mode here as "use KJV instead", never as a reason to fail the translate

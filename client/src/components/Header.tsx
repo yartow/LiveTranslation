@@ -23,12 +23,12 @@ export default function Header({ onThemeToggle, onSettingsOpen, isDark }: Header
           <Link
             href={inLiveMode ? '/' : '/live'}
             className="flex items-center gap-1.5 text-muted-foreground hover:text-foreground px-2.5 py-2 rounded-md transition-colors text-sm"
-            aria-label={inLiveMode ? 'Preekmodus' : 'Live modus'}
-            title={inLiveMode ? 'Naar preekmodus (dual-pane vertaaleditor)' : 'Naar live modus (ondertitels)'}
+            aria-label={inLiveMode ? 'Sermon mode' : 'Live mode'}
+            title={inLiveMode ? 'Go to Sermon mode (side-by-side translation editor)' : 'Go to Live mode (subtitles)'}
             data-testid="link-sermon-mode-toggle"
           >
             {inLiveMode ? <BookOpenText className="w-4 h-4" /> : <Mic className="w-4 h-4" />}
-            <span className="hidden sm:inline">{inLiveMode ? 'Preekmodus' : 'Live modus'}</span>
+            <span className="hidden sm:inline">{inLiveMode ? 'Sermon mode' : 'Live mode'}</span>
           </Link>
           {onThemeToggle && (
             <button

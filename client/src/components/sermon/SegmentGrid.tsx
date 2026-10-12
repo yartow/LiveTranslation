@@ -63,7 +63,7 @@ export default function SegmentGrid({ state, dispatch, activeSegmentIdRef, onRef
       <div ref={containerRef} onScroll={handleScroll} className="h-full overflow-y-auto pb-14" data-testid="segment-grid">
         {segments.length === 0 && (
           <div className="flex items-center justify-center h-full text-sm text-muted-foreground px-6 text-center">
-            Nog geen segmenten. Start de opname om te beginnen.
+            No segments yet. Start recording to begin.
           </div>
         )}
         {segments.map(segment => (
@@ -84,7 +84,7 @@ export default function SegmentGrid({ state, dispatch, activeSegmentIdRef, onRef
           className="absolute bottom-3 left-1/2 -translate-x-1/2 flex items-center gap-1 rounded-full bg-primary text-primary-foreground text-xs font-medium px-3 py-1.5 shadow-md hover-elevate"
           data-testid="button-jump-to-new"
         >
-          {pendingNew} nieuw{pendingNew === 1 ? ' segment' : 'e segmenten'} <ChevronDown className="w-3.5 h-3.5" />
+          {pendingNew} new {pendingNew === 1 ? 'segment' : 'segments'} <ChevronDown className="w-3.5 h-3.5" />
         </button>
       )}
     </div>

@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { isAsrArtifact } from '../../server/lib/asr-artifacts.js';
+import { isAsrArtifact, stripAsrArtifacts } from '../../server/lib/asr-artifacts.js';
 
 describe('isAsrArtifact', () => {
   it('treats an empty/whitespace-only string as not-an-artifact (handled by the caller\'s own empty check)', () => {
@@ -39,6 +39,15 @@ describe('isAsrArtifact', () => {
   });
 
   it.each([
+    'TV Gelderland 2021',
+    'TV Gelderland 2021.',
+    'Omroep Gelderland',
+    'Ondertitels ingediend door de Amara.org gemeenschap',
+  ])('flags broadcaster-credit hallucination %j', (text) => {
+    expect(isAsrArtifact(text, 'nl')).toBe(true);
+  });
+
+  it.each([
     'Music',
     'Applause.',
     'Thank you.',
@@ -66,5 +75,70 @@ describe('isAsrArtifact', () => {
   it('is case- and punctuation-insensitive', () => {
     expect(isAsrArtifact('  muziek!!  ', 'nl')).toBe(true);
     expect(isAsrArtifact('MUZIEK.', 'nl')).toBe(true);
+  });
+});
+
+describe('stripAsrArtifacts', () => {
+  it.each([
+    ['[Muziek] Goedemorgen allemaal.', 'Goedemorgen allemaal.'],
+    ['Muziek. Muziek. Goedemorgen allemaal.', 'Goedemorgen allemaal.'],
+    ['Goedemorgen allemaal. Muziek.', 'Goedemorgen allemaal.'],
+    ['♪ la la la ♪ en toen zei Jezus', 'en toen zei Jezus'],
+    ['*zang* Wij lezen uit Johannes.', 'Wij lezen uit Johannes.'],
+    ['Wij lezen uit Johannes. Ondertiteling door de Amara.org gemeenschap', 'Wij lezen uit Johannes.'],
+    ['MUZIEK Dank u wel dat u er bent.', 'Dank u wel dat u er bent.'],
+    ['Het is goed (applaus) om hier te zijn.', 'Het is goed om hier te zijn.'],
+  ])('removes the artifact in %j', (input, expected) => {
+    expect(stripAsrArtifacts(input, 'nl')).toBe(expected);
+  });
+
+  it.each([
+    'Muziek is een gave van God.',
+    'We danken u voor deze mooie muziek in de dienst.',
+    'Wat een mooie muziek.',
+    'Dank u wel dat u geluisterd heeft.',
+    'Lees mee in Johannes (3:16) en let op.',
+    'Heel, heel goed.',
+  ])('leaves real speech untouched: %j', (text) => {
+    expect(stripAsrArtifacts(text, 'nl')).toBe(text);
+  });
+
+  it('strips a trailing broadcaster credit', () => {
+    expect(stripAsrArtifacts('Wij lezen uit Johannes. TV Gelderland 2021', 'nl')).toBe('Wij lezen uit Johannes.');
+  });
+
+  it('returns empty when nothing real is left', () => {
+    expect(stripAsrArtifacts('[Muziek] Muziek.', 'nl')).toBe('');
+    expect(stripAsrArtifacts('♪ ♪', 'nl')).toBe('');
+  });
+
+  it('collapses a decoder loop repeating one phrase', () => {
+    expect(stripAsrArtifacts('Amen amen amen amen amen amen', 'nl')).toBe('Amen');
+    expect(stripAsrArtifacts('ik ben het licht ik ben het licht ik ben het licht van de wereld', 'nl'))
+      .toBe('ik ben het licht van de wereld');
+  });
+
+  it('keeps a short genuine repetition', () => {
+    expect(stripAsrArtifacts('heel heel goed', 'nl')).toBe('heel heel goed');
+  });
+  describe('chunk-edge continuation ellipses', () => {
+    it.each([
+      ['...van het geloof. Hij heeft het kruis verdragen.', 'van het geloof. Hij heeft het kruis verdragen.'],
+      ['…vragen, maar die steunen op Christus', 'vragen, maar die steunen op Christus'],
+      ['de Leidsman en voor eindelijk...', 'de Leidsman en voor eindelijk'],
+      ['Zwakke getuigen in het…', 'Zwakke getuigen in het'],
+      ['Zwakke getuigen in het.. ...geloof. Die doorgaan', 'Zwakke getuigen in het geloof. Die doorgaan'],
+      ['die......vol gas bezig', 'die vol gas bezig'],
+    ])('strips the ellipsis in %j', (input, expected) => {
+      expect(stripAsrArtifacts(input, 'nl')).toBe(expected);
+    });
+
+    it('leaves a single inner pause alone', () => {
+      expect(stripAsrArtifacts('Dat is het verhaal... Zwakke mensen.', 'nl')).toBe('Dat is het verhaal... Zwakke mensen.');
+    });
+
+    it('still returns empty for an ellipsis-only chunk', () => {
+      expect(stripAsrArtifacts('...', 'nl')).toBe('');
+    });
   });
 });

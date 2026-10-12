@@ -5,7 +5,7 @@
 // plan doc §4 for the full design.
 
 import { client as openaiClient } from './openai';
-import { makeClient as ollamaClient } from './ollama';
+import { makeClient as ollamaClient, OLLAMA_NO_THINKING } from './ollama';
 import { buildSystemPrompt, buildUserMessage, getFileGlossaryContext } from './sermon-prompt';
 import { getGlossaryBundle } from './glossary-store';
 import { checkGlossaryAdherence, type GlossaryWarning } from './glossary-check';
@@ -30,9 +30,13 @@ export interface ScriptureResultInfo {
   verbatim: boolean;
   /** True when this segment was checked against an ongoing reading and the match dropped below threshold (or scripture substitution is policy-disabled) — tells the client to stop treating subsequent segments as a continuation of that reading. */
   readingEnded: boolean;
+  /** True when the segment was recognised as the preacher's own words around the announced passage (the paraphrase band) — the client uses it to treat the reading as really under way. */
+  paraphrase?: boolean;
+  /** Paraphrase only: the first verse the match started at (>= the checked candidate) — the client moves the reading up to it. */
+  verseStart?: number;
   text?: string;
   reference?: string;
-  version?: 'ESV' | 'KJV';
+  version?: 'ESV' | 'LSB' | 'KJV';
   verseEnd?: number;
 }
 
@@ -139,6 +143,7 @@ export async function translateSegments(
 
       if (scriptureEnabled && item.readingCandidate) {
         const verdict = await adjudicateScripture(item.text, item.readingCandidate, {
+          bibleVersion: opts.bibleVersion,
           esvApiKey: opts.esvApiKey,
           signal: combinedSignal,
         });
@@ -169,6 +174,7 @@ export async function translateSegments(
           // be able to close that block early. Mirrors the same guard on
           // the glossary's disambiguation doc (CLAUDE.md "Security notes").
           scriptureGuidance = verdict.guidance.replace(/```+/g, "'");
+          scriptureInfo = { verbatim: false, readingEnded: false, paraphrase: true, verseStart: verdict.verseStart };
         } else {
           scriptureInfo = { verbatim: false, readingEnded: true };
         }
@@ -247,12 +253,13 @@ async function callOpenAI(systemPrompt: string, userMessage: string, opts: Trans
 async function callOllama(systemPrompt: string, userMessage: string, opts: TranslateOptions, signal: AbortSignal): Promise<string> {
   const response = await ollamaClient(opts.ollamaBaseUrl || 'http://localhost:11434').chat.completions.create(
     {
-      model: opts.ollamaModel || 'qwen2.5:14b',
+      model: opts.ollamaModel || 'qwen3.6:latest',
       messages: [
         { role: 'system', content: systemPrompt },
         { role: 'user', content: userMessage },
       ],
       response_format: { type: 'json_object' },
+      ...OLLAMA_NO_THINKING,
       temperature: 0.2,
     },
     { signal },

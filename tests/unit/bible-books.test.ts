@@ -20,7 +20,7 @@ describe('bible-books', () => {
   it('loads and caches the books table from BIBLE_DIR', () => {
     const books = getBibleBooks();
     expect(books).not.toBeNull();
-    expect(books).toHaveLength(3);
+    expect(books).toHaveLength(4);
     expect(books![0]).toEqual({ n: 1, nl: 'Genesis', en: 'Genesis', abbr: 'Gen' });
   });
 

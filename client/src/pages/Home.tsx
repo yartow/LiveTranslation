@@ -4,7 +4,7 @@ import LanguageSelector, { getLanguageRTL, getLanguageName } from '@/components/
 import RecordButton from '@/components/RecordButton';
 import TranscriptionDisplay from '@/components/TranscriptionDisplay';
 import SubtitleView from '@/components/SubtitleView';
-import SettingsDialog from '@/components/SettingsDialog';
+import SettingsDialog from '@/components/settings/SettingsDialog';
 import LiveAudioPanel from '@/components/LiveAudioPanel';
 import AudioNormalizationWizard from '@/components/AudioNormalizationWizard';
 import { Label } from '@/components/ui/label';
@@ -13,6 +13,7 @@ import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/component
 import { ArrowLeftRight, ChevronDown, ChevronUp, Download, History, Loader2, Wand2 } from 'lucide-react';
 import { useToast } from '@/hooks/use-toast';
 import { useSettings } from '@/hooks/useSettings';
+import { useDevKeyAutofill } from '@/hooks/useDevKeyAutofill';
 import type { SpeechMode, DisplayContent, TextDisplay } from '@/hooks/useSettings';
 import ExportDialog from '@/components/ExportDialog';
 import SessionHistoryDialog from '@/components/SessionHistoryDialog';
@@ -72,22 +73,8 @@ function splitLastTwo(text: string): [string, string] {
 export default function Home() {
   const { settings, updateSettings } = useSettings();
 
-  // In development, auto-fill API keys from server env vars so you don't have
-  // to retype them every reload. The endpoint returns 403 in production.
-  useEffect(() => {
-    if (import.meta.env.DEV) {
-      fetch('/api/dev-config')
-        .then(r => r.ok ? r.json() : null)
-        .then(data => {
-          if (!data) return;
-          const updates: Record<string, string> = {};
-          if (data.openaiApiKey && !settings.openaiApiKey) updates.openaiApiKey = data.openaiApiKey;
-          if (data.anthropicApiKey && !settings.anthropicApiKey) updates.anthropicApiKey = data.anthropicApiKey;
-          if (Object.keys(updates).length) updateSettings(updates);
-        })
-        .catch(() => {});
-    }
-  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+  // Dev only: fill empty API keys from the server's .env (see the hook).
+  useDevKeyAutofill(settings, updateSettings);
 
   const [sourceLanguage, setSourceLanguage] = useState(() => settings.defaultSourceLanguage || 'en');
   const [targetLanguage, setTargetLanguage] = useState(() => settings.defaultTargetLanguage || 'nl');
@@ -513,6 +500,7 @@ export default function Home() {
         );
       } else if (settings.transcriptionProvider === 'whisper' || settings.transcriptionProvider === 'mlx') {
         const chunkBackend = new ChunkBasedTranscription(events, chunkDurationSecs * 1000);
+        chunkBackend.setRawAudioCapture(settings.rawAudioCapture);
         backend = chunkBackend;
         backendRef.current = backend;
         const engine = settings.transcriptionProvider === 'mlx' ? 'mlx' : 'openai';
@@ -1024,6 +1012,7 @@ export default function Home() {
         settings={settings}
         onUpdate={updateSettings}
         webGpuSupported={webGpuSupported}
+        mode="live"
       />
 
       <SessionHistoryDialog

@@ -1,5 +1,26 @@
 [
-  { "n": 1, "nl": "Genesis", "en": "Genesis", "abbr": "Gen" },
-  { "n": 43, "nl": "Johannes", "en": "John", "abbr": "Joh" },
-  { "n": 66, "nl": "Openbaring van Johannes", "en": "Revelation", "abbr": "Openb" }
+  {
+    "n": 1,
+    "nl": "Genesis",
+    "en": "Genesis",
+    "abbr": "Gen"
+  },
+  {
+    "n": 19,
+    "nl": "Psalmen",
+    "en": "Psalms",
+    "abbr": "Ps"
+  },
+  {
+    "n": 43,
+    "nl": "Johannes",
+    "en": "John",
+    "abbr": "Joh"
+  },
+  {
+    "n": 66,
+    "nl": "Openbaring van Johannes",
+    "en": "Revelation",
+    "abbr": "Openb"
+  }
 ]

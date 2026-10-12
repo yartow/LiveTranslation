@@ -80,12 +80,12 @@ export default function TargetCell({ segment, dispatch, activeSegmentIdRef }: Ta
       }}
     >
       {segment.manualOverride && (
-        <Lock className="inline-block w-3 h-3 mr-1 mb-0.5 text-blue-500" aria-label="Handmatig aangepast" />
+        <Lock className="inline-block w-3 h-3 mr-1 mb-0.5 text-blue-500" aria-label="Manually edited" />
       )}
       {isScripture && !segment.manualOverride && segment.scripture && (
         <span
           className="inline-flex items-center gap-1 mr-1.5 mb-0.5 align-middle text-[10px] font-medium text-indigo-500 dark:text-indigo-400"
-          title={`${segment.scripture.reference} (${segment.scripture.version}) — exacte verstekst, geen model-vertaling`}
+          title={`${segment.scripture.reference} (${segment.scripture.version}) — exact verse text, not a model translation`}
           data-testid={`scripture-reference-${segment.id}`}
         >
           <BookOpen className="w-3 h-3" />
@@ -97,7 +97,7 @@ export default function TargetCell({ segment, dispatch, activeSegmentIdRef }: Ta
         type="button"
         onClick={() => setEditing(true)}
         className="absolute top-1.5 right-1.5 text-muted-foreground/60 hover:text-foreground p-0.5 rounded transition-colors"
-        aria-label="Vertaling handmatig bewerken"
+        aria-label="Edit translation manually"
         data-testid={`target-edit-button-${segment.id}`}
       >
         <Pencil className="w-3 h-3" />

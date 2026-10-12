@@ -1,0 +1,8 @@
+# Spellings the scorer treats as the SAME word (asr-eval.ts), one `variant = canonical` per line.
+# Add only genuine equivalents (colloquial vs standard spelling). Do NOT add real
+# mishearings (e.g. Filippense = Filippenzen) -- those are the errors we measure.
+# Both sides are normalised first (lowercase, no diacritics/apostrophes/hyphens,
+# digits as words), so write them in plain lowercase.
+goeie = goede
+comma = komma
+d'r voor = ervoor

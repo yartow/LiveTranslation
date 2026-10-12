@@ -21,6 +21,7 @@ import {
   computeCER,
   countGlossaryHits,
   formatResultsTable,
+  countAsrArtifacts,
   type BenchmarkResult,
 } from '../lib/wer';
 
@@ -183,12 +184,13 @@ describe('WER Benchmark', () => {
           cer,
           glossaryHits,
           glossaryTotal,
+          artifacts: countAsrArtifacts(hypothesis),
           durationMs,
           hypothesis,
         });
 
         console.log(
-          `  ${fixtureName} | ${cfg.chunkDurationSecs}s | overlap=${cfg.chunkOverlapMs}ms | ctx=${cfg.useTranscriptContext} → WER=${(wer * 100).toFixed(1)}% (${durationMs}ms)`,
+          `  ${fixtureName} | ${cfg.chunkDurationSecs}s | overlap=${cfg.chunkOverlapMs}ms | ctx=${cfg.useTranscriptContext} → WER=${(wer * 100).toFixed(1)}% artifacts=${countAsrArtifacts(hypothesis)} (${durationMs}ms)`,
         );
       }
     }

@@ -2,6 +2,7 @@
 // Ollama must be running on the machine and serving on ollamaBaseUrl.
 import OpenAI from 'openai';
 import { sanitizeGlossary } from './prompt-safety';
+import { homophoneExamples, NO_ANNOTATIONS_RULE, guardCorrection } from './correction-prompt';
 
 const LANGUAGE_NAMES: Record<string, string> = {
   en: 'English', es: 'Spanish', fr: 'French', de: 'German', nl: 'Dutch',
@@ -43,6 +44,15 @@ export function makeClient(baseUrl: string): OpenAI {
     baseURL: `${base}/v1`,
   });
 }
+
+// Turns off the "thinking" phase of reasoning models (Qwen3.x etc.) served by
+// Ollama's OpenAI-compatible endpoint. Measured on qwen3.6:latest for one
+// translated sentence: ~23-48 s with thinking (1,300+ reasoning tokens before a
+// ~54-token answer) vs ~1 s without, with the same translation — and a batch
+// would hit the 60 s timeout. Models without thinking support ignore it.
+// Ollama accepts 'none', but the OpenAI SDK's ReasoningEffort type doesn't list
+// it, hence the loosely-typed object to spread into the request.
+export const OLLAMA_NO_THINKING: Record<string, unknown> = { reasoning_effort: 'none' };
 
 // Guarded JSON parse, modeled on server/lib/anthropic.ts's
 // parseJsonResponse — Ollama-served local models are more prone to
@@ -99,6 +109,7 @@ Tasks:
         { role: 'user', content: `Transcription: "${originalText}"` },
       ],
       response_format: { type: 'json_object' },
+      ...OLLAMA_NO_THINKING,
       temperature: 0.1,
     },
     { signal: combinedSignal },
@@ -120,6 +131,7 @@ export async function correctTranscriptWithOllama(
   glossary?: string,
   previousTranscript?: string,
   signal?: AbortSignal,
+  sourceLanguage?: string,
 ): Promise<{ correctedText: string }> {
   const contextParts: string[] = [];
   if (glossary?.trim()) {
@@ -143,23 +155,25 @@ export async function correctTranscriptWithOllama(
           content: `You correct raw speech-recognition output from a spoken sermon. Do NOT translate (${LANGUAGE_NAMES[targetLanguage] ?? targetLanguage} is only for a later step).${contextSection}
 
 Tasks:
-1. Fix ASR homophones/near-misses and spelling of proper nouns and theological terms
+1. Fix ASR homophones/near-misses (e.g. ${homophoneExamples(sourceLanguage)}) and spelling of proper nouns and theological terms
 2. Apply the glossary above where it applies
 3. This chunk is cut on a pause and may begin/end mid-sentence. Only add sentence-ending punctuation (. ? !) and capitalise the next word if the chunk actually ends/starts a new sentence — if it ends mid-sentence, leave it WITHOUT a period; do not invent one. A pause is not a sentence end. Prefer a comma over a full stop when unsure.
 4. Remove filler words, stutters, false starts
 5. Do NOT paraphrase, summarise, or reorder — only fix errors
-6. Return ONLY valid JSON: { "correctedText": "..." }`,
+6. ${NO_ANNOTATIONS_RULE}
+7. Return ONLY valid JSON: { "correctedText": "..." }`,
         },
         { role: 'user', content: `Raw transcription chunk: "${rawText}"` },
       ],
       response_format: { type: 'json_object' },
+      ...OLLAMA_NO_THINKING,
       temperature: 0.1,
     },
     { signal: combinedSignal },
   );
 
   const result = parseJsonResponse(response.choices[0].message.content || '{}', { correctedText: rawText });
-  return { correctedText: result.correctedText || rawText };
+  return { correctedText: guardCorrection(rawText, result.correctedText) };
 }
 
 export async function retroactiveCorrectionWithOllama(
@@ -206,6 +220,7 @@ Tasks:
         { role: 'user', content: `Text to review: "${accumulatedText}"` },
       ],
       response_format: { type: 'json_object' },
+      ...OLLAMA_NO_THINKING,
       temperature: 0.1,
     },
     { signal: combinedSignal },

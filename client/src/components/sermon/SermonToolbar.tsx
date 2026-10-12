@@ -36,7 +36,7 @@ export default function SermonToolbar({
         onClick={onToggleRecording}
         disabled={isProcessing && !isRecording}
         data-testid="button-sermon-record"
-        aria-label={isRecording ? 'Stop opname' : 'Start opname'}
+        aria-label={isRecording ? 'Stop recording' : 'Start recording'}
         className={
           'inline-flex items-center justify-center h-9 w-9 rounded-full transition-colors ' +
           (isRecording ? 'bg-red-600 text-white' : 'bg-primary text-primary-foreground hover:opacity-90') +
@@ -54,7 +54,7 @@ export default function SermonToolbar({
         onClick={onRefreshAll}
         disabled={dirtyCount === 0}
         data-testid="button-refresh-all"
-        title={`Hervertaal alle gewijzigde segmenten (${refreshHint})`}
+        title={`Re-translate all changed segments (${refreshHint})`}
       >
         <RefreshCw className="w-3.5 h-3.5" />
         Refresh {dirtyCount > 0 && `(${dirtyCount})`}
@@ -63,7 +63,7 @@ export default function SermonToolbar({
 
       <div className="flex items-center gap-2">
         <Label htmlFor="sermon-auto-translate" className="text-xs text-muted-foreground whitespace-nowrap">
-          Auto-vertalen
+          Auto-translate
         </Label>
         <Switch
           id="sermon-auto-translate"
@@ -75,7 +75,7 @@ export default function SermonToolbar({
 
       <div className="flex items-center gap-2">
         <Label htmlFor="sermon-max-latency" className="text-xs text-muted-foreground whitespace-nowrap">
-          Max. vertraging
+          Block length
         </Label>
         <input
           id="sermon-max-latency"
@@ -105,10 +105,10 @@ export default function SermonToolbar({
             variant="outline"
             size="sm"
             data-testid="button-listeners"
-            title="Adres voor luisteraars"
+            title="Listener address"
           >
             <Users className="w-3.5 h-3.5" />
-            Luisteraars {listenerCount > 0 && `(${listenerCount})`}
+            Listeners {listenerCount > 0 && `(${listenerCount})`}
           </Button>
         </PopoverTrigger>
         <PopoverContent align="end" className="w-80">
@@ -119,7 +119,7 @@ export default function SermonToolbar({
       <button
         onClick={onOpenSettings}
         className="text-muted-foreground hover:text-foreground p-2 rounded-md transition-colors"
-        aria-label="Preekmodus-instellingen"
+        aria-label="Sermon mode settings"
         data-testid="button-sermon-settings"
       >
         <Settings className="w-4 h-4" />

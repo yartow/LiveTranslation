@@ -2,9 +2,10 @@ import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from 'r
 import Header from '@/components/Header';
 import SermonToolbar from '@/components/sermon/SermonToolbar';
 import SegmentGrid from '@/components/sermon/SegmentGrid';
-import SettingsDialog from '@/components/SettingsDialog';
+import SettingsDialog from '@/components/settings/SettingsDialog';
 import { useToast } from '@/hooks/use-toast';
 import { useSettings } from '@/hooks/useSettings';
+import { useDevKeyAutofill } from '@/hooks/useDevKeyAutofill';
 import { segmentReducer, initState, selectDirtyIds, type SegmentAction } from '@/lib/sermon/segment-store';
 import { isRefreshAllChord, isRefreshOneChord, type KeyChord } from '@/lib/sermon/hotkeys';
 import { useTranslationQueue, type TranslationRuntimeConfig } from '@/hooks/useTranslationQueue';
@@ -12,6 +13,10 @@ import { useSermonIngest } from '@/hooks/useSermonIngest';
 import { useListenerBroadcast } from '@/hooks/useListenerBroadcast';
 import type { IngestConfig } from '@/lib/sermon/ingest-buffer';
 import { isMacPlatform } from '@/lib/platform';
+
+// A sermon row shorter than this holds for an extra half-window before it
+// flushes alone — see ingest-buffer.ts's IngestConfig.minBlockWords.
+const SERMON_MIN_BLOCK_WORDS = 12;
 
 // Sermon mode is its own page/route ("/", see App.tsx) rather than a mode of
 // Home.tsx — Home's TranscriptionSegment model is chunk-level, id-less, and
@@ -22,6 +27,7 @@ import { isMacPlatform } from '@/lib/platform';
 
 export default function SermonMode() {
   const { settings, updateSettings } = useSettings();
+  useDevKeyAutofill(settings, updateSettings);
   const { toast } = useToast();
 
   const sessionIdRef = useRef(`s${Date.now().toString(36)}`);
@@ -54,7 +60,7 @@ export default function SermonMode() {
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
 
   // Settings (persisted, useSettings) is the single source of truth for both
-  // the full "Preekmodus" section in SettingsDialog and the two most-used
+  // the Sermon mode pages in SettingsDialog and the two most-used
   // controls duplicated inline in the toolbar (plan §"Risico's", point 5) —
   // no separate local state to fall out of sync with the dialog.
   const autoTranslateRef = useRef(settings.sermonAutoTranslate);
@@ -88,9 +94,9 @@ export default function SermonMode() {
   const translationConfigRef = useRef<TranslationRuntimeConfig>(buildTranslationConfig());
   useEffect(() => { translationConfigRef.current = buildTranslationConfig(); }, [settings]);
 
-  const ingestConfigRef = useRef<IngestConfig>({ maxLatencyMs: settings.sermonMaxLatencySecs * 1000 });
+  const ingestConfigRef = useRef<IngestConfig>({ maxLatencyMs: settings.sermonMaxLatencySecs * 1000, minBlockWords: SERMON_MIN_BLOCK_WORDS, showEarly: true });
   useEffect(() => {
-    ingestConfigRef.current = { maxLatencyMs: settings.sermonMaxLatencySecs * 1000 };
+    ingestConfigRef.current = { maxLatencyMs: settings.sermonMaxLatencySecs * 1000, minBlockWords: SERMON_MIN_BLOCK_WORDS, showEarly: true };
   }, [settings.sermonMaxLatencySecs]);
 
   const { refreshAll, refreshOne } = useTranslationQueue(stateRef, applyAction, translationConfigRef, autoTranslateRef, flushersRef);
@@ -108,6 +114,7 @@ export default function SermonMode() {
     targetLanguage: settings.defaultTargetLanguage || 'en',
     engine: settings.transcriptionProvider === 'mlx' ? 'mlx' : 'openai',
     correctionProvider: settings.sermonCorrectionProvider,
+    asrCorrection: settings.sermonAsrCorrection,
     openaiApiKey: settings.openaiApiKey,
     anthropicApiKey: settings.anthropicApiKey,
     ollamaBaseUrl: settings.ollamaBaseUrl,
@@ -115,8 +122,45 @@ export default function SermonMode() {
     glossary: settings.theologicalGlossary,
     debugMode: settings.debugMode,
     normalizationGain: settings.audioNormalizationGain,
-    onError: (message) => toast({ title: 'Opnamefout', description: message, variant: 'destructive' }),
+    rawAudioCapture: settings.rawAudioCapture,
+    onError: (message) => toast({ title: 'Recording error', description: message, variant: 'destructive' }),
   });
+
+  // Session archive (server has ASR_DEBUG_DIR — see server/lib/chunk-transcription.ts): while
+  // recording, snapshot what is on screen every minute and once more after stop, so a gap in the
+  // transcript can be traced to the stage that lost it. A no-op when the server archive is off.
+  const archiveActiveRef = useRef(false);
+  useEffect(() => {
+    fetch('/api/asr-debug/status').then(r => r.json()).then(j => { archiveActiveRef.current = !!j.enabled; }).catch(() => {});
+  }, []);
+  const postTranscriptSnapshot = useCallback(() => {
+    if (!archiveActiveRef.current) return;
+    const s = stateRef.current;
+    // An empty page (e.g. just reloaded) must not overwrite the previous session's snapshot.
+    if (!s.ids.length) return;
+    const segments = s.ids.map(id => {
+      const g = s.byId[id];
+      return {
+        id, index: g.index, startTime: g.startTime, endTime: g.endTime, status: g.status,
+        sourceText: g.sourceText, translatedText: g.translatedText,
+        manualOverride: g.manualOverride, lastSourceChangeAt: g.lastSourceChangeAt, error: g.error,
+      };
+    });
+    fetch('/api/asr-debug/transcript', {
+      method: 'POST', headers: { 'Content-Type': 'text/plain' },
+      body: JSON.stringify({ savedAt: Date.now(), sessionId: s.sessionId, segments }),
+    }).catch(() => {});
+  }, []);
+  useEffect(() => {
+    if (!isRecording) {
+      // After stop the last ingest flush / translations may still land a moment later.
+      postTranscriptSnapshot();
+      const late = setTimeout(postTranscriptSnapshot, 4000);
+      return () => clearTimeout(late);
+    }
+    const timer = setInterval(postTranscriptSnapshot, 60_000);
+    return () => clearInterval(timer);
+  }, [isRecording, postTranscriptSnapshot]);
 
   const dirtyCount = useMemo(() => selectDirtyIds(state).length, [state]);
 
@@ -152,7 +196,7 @@ export default function SermonMode() {
         isProcessing={isProcessing}
         onToggleRecording={() => {
           if (isRecording) {
-            stop().catch((err) => toast({ title: 'Opnamefout', description: err instanceof Error ? err.message : 'Kon opname niet stoppen', variant: 'destructive' }));
+            stop().catch((err) => toast({ title: 'Recording error', description: err instanceof Error ? err.message : 'Could not stop recording', variant: 'destructive' }));
           } else {
             start();
           }
@@ -179,6 +223,7 @@ export default function SermonMode() {
         onClose={() => setIsSettingsOpen(false)}
         settings={settings}
         onUpdate={updateSettings}
+        mode="sermon"
       />
     </div>
   );

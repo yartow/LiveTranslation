@@ -23,6 +23,8 @@ export interface TranslateItem {
 export interface ScriptureResult {
   verbatim: boolean;
   readingEnded: boolean;
+  paraphrase?: boolean;
+  verseStart?: number;
   text?: string;
   reference?: string;
   version?: 'ESV' | 'KJV';

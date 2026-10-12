@@ -9,7 +9,7 @@
 // server/lib/listener-hub.ts.
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { ArrowDown, Wifi, WifiOff } from 'lucide-react';
+import { ArrowDown, RefreshCw, Wifi, WifiOff } from 'lucide-react';
 
 /** Mirrors server/lib/listener-hub.ts's ListenerLine — client/server share no code, see sermon-prompt.ts's header comment for the established pattern of documenting these mirrors explicitly. */
 interface ListenerLine {
@@ -21,11 +21,23 @@ interface ListenerLine {
 
 type ConnectionState = 'connecting' | 'connected' | 'reconnecting';
 
-// Same reconnect backoff shape used throughout the client (see
-// chunk-based-transcription.ts's reconnectWs and useListenerBroadcast.ts).
+// Same doubling backoff shape used throughout the client (see
+// chunk-based-transcription.ts's reconnectWs and useListenerBroadcast.ts), but
+// capped lower: a phone waiting on a restarting server should be back within
+// seconds of it returning, and a reconnect attempt costs next to nothing.
 function backoffDelay(attempt: number): number {
-  return Math.min(1000 * Math.pow(2, attempt), 30_000);
+  return Math.min(1000 * Math.pow(2, attempt), 10_000);
 }
+
+// A socket that died silently (server restart, phone asleep, wifi handover)
+// never fires 'close', so it would sit on "Connected" showing stale text. The
+// hub sends a {type:'ping'} every 15 s (listener-hub.ts); if nothing at all has
+// arrived for STALE_MS the connection is treated as dead and replaced. When the
+// phone wakes up / comes back online we are stricter (RESUME_STALE_MS), since
+// one missed heartbeat is already proof.
+const STALE_MS = 40_000;
+const RESUME_STALE_MS = 20_000;
+const WATCHDOG_MS = 5_000;
 
 // Distance (px) from the bottom of the scroll container within which we
 // still consider the listener "at the live edge" — used both to decide when
@@ -59,6 +71,12 @@ export default function ListenerMode() {
 
   useEffect(() => {
     closedRef.current = false;
+    let lastMessageAt = Date.now();
+
+    function detach(ws: WebSocket) {
+      ws.onopen = ws.onmessage = ws.onerror = ws.onclose = null;
+      try { ws.close(); } catch { /* already closed */ }
+    }
 
     function connect() {
       if (closedRef.current) return;
@@ -66,12 +84,15 @@ export default function ListenerMode() {
       const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
       const ws = new WebSocket(`${protocol}//${window.location.host}/ws/sermon-listen`);
       wsRef.current = ws;
+      lastMessageAt = Date.now();
 
       ws.onopen = () => {
         reconnectAttemptsRef.current = 0;
+        lastMessageAt = Date.now();
         setConnection('connected');
       };
       ws.onmessage = (evt) => {
+        lastMessageAt = Date.now();
         let msg: any;
         try {
           msg = JSON.parse(typeof evt.data === 'string' ? evt.data : '');
@@ -91,10 +112,12 @@ export default function ListenerMode() {
         } else if (msg?.type === 'clear') {
           setLinesById({});
         }
+        // {type:'ping'} needs nothing beyond the lastMessageAt update above.
       };
       ws.onerror = () => {};
       ws.onclose = () => {
         if (closedRef.current) return;
+        if (wsRef.current === ws) wsRef.current = null;
         setConnection('reconnecting');
         const delay = backoffDelay(reconnectAttemptsRef.current);
         reconnectAttemptsRef.current++;
@@ -102,9 +125,37 @@ export default function ListenerMode() {
       };
     }
 
+    // Drop whatever socket exists (it may be half-dead) and open a fresh one
+    // right away; the new connection's snapshot replaces the whole view.
+    function reconnectNow() {
+      if (closedRef.current) return;
+      if (reconnectTimerRef.current) { clearTimeout(reconnectTimerRef.current); reconnectTimerRef.current = null; }
+      if (wsRef.current) { detach(wsRef.current); wsRef.current = null; }
+      reconnectAttemptsRef.current = 0;
+      connect();
+    }
+
+    function checkAfterResume() {
+      if (document.visibilityState === 'hidden') return;
+      const ws = wsRef.current;
+      if (!ws || ws.readyState !== WebSocket.OPEN || Date.now() - lastMessageAt > RESUME_STALE_MS) reconnectNow();
+    }
+
     connect();
+
+    const watchdog = setInterval(() => {
+      if (wsRef.current && Date.now() - lastMessageAt > STALE_MS) reconnectNow();
+    }, WATCHDOG_MS);
+    document.addEventListener('visibilitychange', checkAfterResume);
+    window.addEventListener('online', checkAfterResume);
+    window.addEventListener('pageshow', checkAfterResume);
+
     return () => {
       closedRef.current = true;
+      clearInterval(watchdog);
+      document.removeEventListener('visibilitychange', checkAfterResume);
+      window.removeEventListener('online', checkAfterResume);
+      window.removeEventListener('pageshow', checkAfterResume);
       if (reconnectTimerRef.current) clearTimeout(reconnectTimerRef.current);
       wsRef.current?.close();
       wsRef.current = null;
@@ -144,22 +195,35 @@ export default function ListenerMode() {
     <div className="flex flex-col h-screen bg-background text-foreground">
       <header className="flex items-center justify-between px-4 py-3 border-b border-border">
         <span className="text-sm font-medium text-muted-foreground">Live translation</span>
-        <span
-          className="flex items-center gap-1.5 text-xs text-muted-foreground"
-          aria-live="polite"
-        >
-          {connection === 'connected' ? (
-            <>
-              <Wifi className="w-3.5 h-3.5" />
-              Connected
-            </>
-          ) : (
-            <>
-              <WifiOff className="w-3.5 h-3.5 animate-pulse" />
-              {connection === 'connecting' ? 'Connecting…' : 'Reconnecting…'}
-            </>
-          )}
-        </span>
+        <div className="flex items-center gap-3">
+          <span
+            className="flex items-center gap-1.5 text-xs text-muted-foreground"
+            aria-live="polite"
+          >
+            {connection === 'connected' ? (
+              <>
+                <Wifi className="w-3.5 h-3.5" />
+                Connected
+              </>
+            ) : (
+              <>
+                <WifiOff className="w-3.5 h-3.5 animate-pulse" />
+                {connection === 'connecting' ? 'Connecting…' : 'Reconnecting…'}
+              </>
+            )}
+          </span>
+          {/* A full reload, not just a reconnect: it also picks up a newer
+              version of this page after the operator restarted the app. */}
+          <button
+            onClick={() => window.location.reload()}
+            aria-label="Refresh"
+            data-testid="button-refresh"
+            className="flex items-center gap-1.5 rounded-full border border-border px-3 py-1.5 text-xs font-medium text-foreground"
+          >
+            <RefreshCw className="w-3.5 h-3.5" />
+            Refresh
+          </button>
+        </div>
       </header>
 
       <div

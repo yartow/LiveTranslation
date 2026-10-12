@@ -2,6 +2,7 @@ import OpenAI from 'openai';
 import fs from 'fs';
 import { createHash } from 'crypto';
 import { sanitizeGlossary } from './prompt-safety';
+import { homophoneExamples, NO_ANNOTATIONS_RULE, guardCorrection } from './correction-prompt';
 
 const sharedClient = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 
@@ -49,26 +50,62 @@ const LANGUAGE_NAMES: Record<string, string> = {
   ko: 'Korean',
 };
 
-// Build a short Whisper prompt from glossary + sermon context + previous transcript.
-// Whisper uses this as "previous context" to prime the decoder toward domain vocabulary.
-// The last 2 sentences of previousTranscript give inter-chunk continuity.
-export function buildWhisperPrompt(glossary?: string, sermonContext?: string, previousTranscript?: string): string | undefined {
-  const parts: string[] = [];
-  if (previousTranscript?.trim()) {
-    const sentences = previousTranscript.trim().split(/(?<=[.!?])\s+/).filter(Boolean);
-    const last2 = sentences.slice(-2).join(' ');
-    if (last2) parts.push(`...${last2}`);
-  }
-  if (sermonContext?.trim()) parts.push(`Sermon: ${sermonContext.trim()}.`);
+// Whisper treats its prompt as text that PRECEDES the audio, and imitates its
+// style. Two consequences drive this layout:
+//  - What comes last has the most influence, so the previous transcript (real
+//    continuity) goes last, right before the audio.
+//  - A bare keyword list ("Terms: a, b, c") right before the audio teaches the
+//    decoder that output is a list of words — a known trigger for it to emit
+//    prompt terms during silence/noise. The glossary is therefore phrased as an
+//    ordinary sentence in the SPOKEN language, and goes first.
+// Whisper only reads the last ~224 tokens, so everything is length-capped, with
+// the glossary trimmed before the previous transcript is.
+const PROMPT_MAX_CHARS = 500;
+const PROMPT_MAX_TERMS = 15;
+const PROMPT_PREVIOUS_CHARS = 200;
+
+const GLOSSARY_SENTENCE: Record<string, (terms: string) => string> = {
+  nl: (t) => `In deze preek komen onder andere deze namen en begrippen voor: ${t}.`,
+  en: (t) => `This sermon mentions names and terms such as ${t}.`,
+  de: (t) => `In dieser Predigt kommen unter anderem folgende Namen und Begriffe vor: ${t}.`,
+  fr: (t) => `Ce sermon mentionne notamment les noms et termes suivants : ${t}.`,
+  es: (t) => `Este sermón menciona, entre otros, los siguientes nombres y términos: ${t}.`,
+};
+
+export function buildWhisperPrompt(
+  glossary?: string,
+  sermonContext?: string,
+  previousTranscript?: string,
+  language?: string,
+  maxTerms: number = PROMPT_MAX_TERMS,
+): string | undefined {
+  const head: string[] = [];
+  if (sermonContext?.trim()) head.push(`${sermonContext.trim().replace(/[.\s]+$/, '')}.`);
   if (glossary?.trim()) {
     const terms = glossary.split('\n')
       .map(line => line.split('=')[0].trim())
       .filter(Boolean)
-      .slice(0, 25)
+      .slice(0, maxTerms)
       .join(', ');
-    if (terms) parts.push(`Terms: ${terms}.`);
+    if (terms) {
+      const lang = (language || '').split('-')[0].toLowerCase();
+      head.push((GLOSSARY_SENTENCE[lang] ?? GLOSSARY_SENTENCE.en)(terms));
+    }
   }
-  return parts.length ? parts.join(' ') : undefined;
+
+  // Tail of what was already transcribed, cut at a word boundary.
+  let tail = '';
+  const prev = previousTranscript?.trim();
+  if (prev) {
+    tail = prev.slice(-PROMPT_PREVIOUS_CHARS);
+    if (prev.length > PROMPT_PREVIOUS_CHARS) tail = tail.replace(/^\S*\s+/, '');
+  }
+
+  let headText = head.join(' ');
+  const room = PROMPT_MAX_CHARS - (tail ? tail.length + 1 : 0);
+  if (headText.length > room) headText = room > 40 ? headText.slice(0, room).replace(/\s+\S*$/, '') : '';
+  const prompt = [headText, tail].filter(Boolean).join(' ');
+  return prompt || undefined;
 }
 
 // Guarded JSON parse — mirrors server/lib/anthropic.ts's parseJsonResponse so
@@ -113,7 +150,7 @@ export async function transcribeAudio(
   const timeout = AbortSignal.timeout(60_000);
   const combinedSignal = signal ? AbortSignal.any([timeout, signal]) : timeout;
   const audioReadStream = fs.createReadStream(audioFilePath);
-  const whisperPrompt = buildWhisperPrompt(glossary, sermonContext, previousTranscript);
+  const whisperPrompt = buildWhisperPrompt(glossary, sermonContext, previousTranscript, language);
   try {
     const transcription = await client(apiKey).audio.transcriptions.create(
       {
@@ -279,6 +316,7 @@ export async function correctTranscript(
   glossary?: string,
   previousTranscript?: string,
   signal?: AbortSignal,
+  sourceLanguage?: string,
 ): Promise<{ correctedText: string }> {
   const contextSection = buildContextSection(glossary, undefined);
   const tailSection = previousTranscript?.trim()
@@ -296,14 +334,15 @@ export async function correctTranscript(
           content: `You are correcting raw speech-recognition output from a spoken sermon. Do NOT translate — the source language stays exactly as spoken (target language for later translation is ${targetLanguage}; ignore that, it is informational only).${contextSection}${tailSection}
 
 CORRECTION RULES:
-1. Fix ASR homophones and near-misses using context (e.g. pray/prey, altar/alter, their/there/they're, to/too/two, word/world, profit/prophet)
+1. Fix ASR homophones and near-misses using context (e.g. ${homophoneExamples(sourceLanguage)})
 2. Correct spelling of proper nouns and theological terms
 3. Apply the glossary above — replace any transcribed word that sounds like a glossary term with the correct term
 4. This chunk is an arbitrary slice of continuous speech, cut on a pause — it may begin and end mid-sentence. Add punctuation and capitalisation only where the speech actually calls for it: if the chunk does not end on a finished sentence, leave it with NO terminating . ? or ! — do not invent one just to round it off — and if it does not begin a new sentence, do not capitalise the first word. A pause is not a sentence end; a preacher pauses mid-clause constantly. When in doubt between a comma and a full stop, use the comma — never split one spoken sentence into several short ones.
 5. Remove filler words (um, uh, like, you know), stutters, and false starts
 6. Do NOT paraphrase, summarise, reorder, or change the speaker's meaning or word choice beyond fixing the errors above
 7. If this chunk restates the tail of the previous chunk (see context above), drop the repeated words rather than emitting them twice
-8. Return ONLY valid JSON: { "correctedText": "..." }`,
+8. ${NO_ANNOTATIONS_RULE}
+9. Return ONLY valid JSON: { "correctedText": "..." }`,
         },
         { role: 'user', content: `Raw transcription chunk: "${rawText}"` },
       ],
@@ -313,7 +352,7 @@ CORRECTION RULES:
   );
 
   const result = parseJsonResponse(response.choices[0].message.content || '{}', { correctedText: rawText });
-  return { correctedText: result.correctedText || rawText };
+  return { correctedText: guardCorrection(rawText, result.correctedText) };
 }
 
 export async function formatForExport(

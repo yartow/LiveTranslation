@@ -1,3 +1,4 @@
+import express from 'express';
 import type { Express, Request, Response, NextFunction } from 'express';
 import { createServer, type Server } from 'http';
 import { storage } from './storage';
@@ -11,10 +12,12 @@ import {
 import { correctAndTranslateWithClaude, retroactiveCorrectionWithClaude } from './lib/anthropic';
 import { correctAndTranslateWithOllama, retroactiveCorrectionWithOllama, isValidOllamaBaseUrl } from './lib/ollama';
 import { transcribeWithMlx } from './lib/mlx-whisper';
-import { isAsrArtifact } from './lib/asr-artifacts';
+import { isAsrArtifact, stripAsrArtifacts } from './lib/asr-artifacts';
 import { translateSegments, type TranslateItemInput, type SermonTranslationProvider } from './lib/sermon-translate';
 import { getGlossaryStatus, reloadGlossary } from './lib/glossary-store';
 import { isSafeGlossaryName } from './lib/glossary-file';
+import { archiveEnabled, getCurrentArchiveDir } from './lib/chunk-transcription';
+import { join as joinPath } from 'path';
 import fs from 'fs';
 import os from 'os';
 import ffmpeg from 'fluent-ffmpeg';
@@ -71,7 +74,7 @@ async function runCorrectAndTranslate(
     return correctAndTranslateWithClaude(text, targetLanguage, detectSpeakers, anthropicApiKey || '', glossary, sermonContext);
   }
   if (provider === 'ollama') {
-    return correctAndTranslateWithOllama(text, targetLanguage, detectSpeakers, ollamaModel || 'qwen2.5:14b', ollamaBaseUrl || 'http://localhost:11434', glossary, sermonContext);
+    return correctAndTranslateWithOllama(text, targetLanguage, detectSpeakers, ollamaModel || 'qwen3.6:latest', ollamaBaseUrl || 'http://localhost:11434', glossary, sermonContext);
   }
   if (provider === 'none') {
     return { correctedText: text, translatedText: '' };
@@ -95,7 +98,7 @@ async function runRetroactiveCorrection(
     return retroactiveCorrectionWithClaude(accumulatedText, targetLanguage, detectSpeakers, anthropicApiKey || '', glossary, sermonContext);
   }
   if (provider === 'ollama') {
-    return retroactiveCorrectionWithOllama(accumulatedText, targetLanguage, detectSpeakers, ollamaModel || 'qwen2.5:14b', ollamaBaseUrl || 'http://localhost:11434', glossary, sermonContext);
+    return retroactiveCorrectionWithOllama(accumulatedText, targetLanguage, detectSpeakers, ollamaModel || 'qwen3.6:latest', ollamaBaseUrl || 'http://localhost:11434', glossary, sermonContext);
   }
   if (provider === 'none') {
     return { correctedText: accumulatedText, translatedText: '' };
@@ -122,7 +125,7 @@ function parseProvider(value: unknown): TranslationProvider | null {
 // Sermon mode never accepts 'none' — a correction/translation call is always
 // required (see client/src/hooks/useSettings.ts's SermonTranslationProvider).
 const VALID_SERMON_TRANSLATION_PROVIDERS = new Set(['openai', 'claude', 'ollama']);
-const VALID_BIBLE_VERSIONS = new Set(['KJV', 'ESV', 'NASB', 'NKJV']);
+const VALID_BIBLE_VERSIONS = new Set(['KJV', 'ESV', 'LSB', 'NASB', 'NKJV']);
 const SERMON_MAX_ITEMS = 100;
 const SERMON_MAX_TEXT_LEN = 2000;
 const SERMON_MAX_CONTEXT_SENTENCES = 5;
@@ -255,10 +258,13 @@ export async function registerRoutes(app: Express): Promise<Server> {
       // This endpoint is a separate code path from the WebSocket chunk
       // pipeline (server/lib/chunk-transcription.ts) and shares none of its
       // filtering, so it needs its own check rather than inheriting one.
-      const { correctedText, translatedText } = isAsrArtifact(rawTranscript, sourceLanguage)
+      const cleanedTranscript = isAsrArtifact(rawTranscript, sourceLanguage)
+        ? ''
+        : stripAsrArtifacts(rawTranscript, sourceLanguage);
+      const { correctedText, translatedText } = !cleanedTranscript
         ? { correctedText: '', translatedText: '' }
         : await runCorrectAndTranslate(
-          rawTranscript, targetLanguage, detectSpeakers, provider, openaiApiKey, anthropicApiKey,
+          cleanedTranscript, targetLanguage, detectSpeakers, provider, openaiApiKey, anthropicApiKey,
         );
 
       if (webmFilePath && fs.existsSync(webmFilePath)) fs.unlinkSync(webmFilePath);
@@ -525,6 +531,24 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
+  // Session archive (ASR_DEBUG_DIR — see server/lib/chunk-transcription.ts). The sermon page
+  // asks whether it is on, then posts its on-screen segments so a transcript gap can be traced
+  // to the stage that lost it. text/plain because the global JSON parser caps bodies at 100 KB,
+  // which a whole sermon's segments exceed.
+  app.get('/api/asr-debug/status', (_req, res) => {
+    res.json({ enabled: archiveEnabled(), dir: getCurrentArchiveDir() });
+  });
+
+  app.post('/api/asr-debug/transcript', express.text({ type: '*/*', limit: '20mb' }), (req, res) => {
+    const dir = getCurrentArchiveDir();
+    if (!archiveEnabled() || !dir) return res.status(404).json({ error: 'archive not active' });
+    if (typeof req.body !== 'string' || !req.body) return res.status(400).json({ error: 'empty body' });
+    fs.writeFile(joinPath(dir, 'transcript.json'), req.body, (err) => {
+      if (err) return res.status(500).json({ error: 'write failed' });
+      res.json({ ok: true });
+    });
+  });
+
   // Listener mode (CLAUDE.md "Listener mode"): the address(es) the operator
   // reads out to the congregation, shown in SermonToolbar's "Luisteraars"
   // popover. The MBP's LAN IP changes with the network (home vs. church), so
@@ -558,6 +582,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
     res.json({
       openaiApiKey: process.env.OPENAI_API_KEY || '',
       anthropicApiKey: process.env.ANTHROPIC_API_KEY || '',
+      esvApiKey: process.env.ESV_API_KEY || '',
     });
   });
 

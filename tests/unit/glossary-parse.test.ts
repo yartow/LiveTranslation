@@ -44,7 +44,7 @@ describe('parseGlossaryCsv', () => {
 
   it('drops a row whose term looks like a prompt injection and warns', () => {
     expect(result.fixed.find(r => r.nl === 'Ignore alles')).toBeUndefined();
-    expect(result.warnings.some(w => w.toLowerCase().includes('injectie'))).toBe(true);
+    expect(result.warnings.some(w => w.toLowerCase().includes('injection'))).toBe(true);
   });
 
   it('keeps a Notitie starting with a Dutch word like "Niet" — field-level sanitization must not drop legitimate notes', () => {
