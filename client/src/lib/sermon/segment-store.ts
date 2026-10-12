@@ -53,15 +53,19 @@ export function nextSegmentId(state: SegmentStoreState): string {
 
 /**
  * True when a segment is safe for a live/automatic write (UPDATE_PROVISIONAL,
- * COMPLETE_PROVISIONAL) — it exists, and the human hasn't taken it over via a
- * manual override or a source edit ("nooit over een mens heen" — plan §2/§3).
+ * COMPLETE_PROVISIONAL) — it exists, is still a live PROVISIONAL row, and the
+ * human hasn't taken it over via a manual override or a source edit ("nooit over
+ * een mens heen" — plan §2/§3). A row that has moved on (finalized, translating,
+ * translated — e.g. auto-translated after a long pause) is no longer live: the
+ * ingest buffer releases it and the speaker's next words open a new row, instead
+ * of growing a row that already carries a translation.
  * Exported so useSermonIngest.ts can make the identical decision *before*
  * dispatching, and fall back to opening a new segment instead of silently
  * losing live text to what would otherwise be a no-op write inside the
  * reducer — see its applyEffects for the fallback.
  */
 export function canWriteLive(seg: Segment | undefined): seg is Segment {
-  return !!seg && !seg.manualOverride && seg.status !== 'EDITED';
+  return !!seg && !seg.manualOverride && seg.status === 'PROVISIONAL';
 }
 
 export type SegmentAction =
@@ -81,7 +85,7 @@ export type SegmentAction =
   | { type: 'APPLY_TRANSLATION'; id: string; translation: string; requestHash: string; warnings?: GlossaryWarning[] }
   | { type: 'SET_ERROR'; id: string; error: string; requestHash: string }
   // Scripture pipeline (see ActiveReading above and CLAUDE.md "Scripture pipeline").
-  | { type: 'APPLY_SCRIPTURE'; id: string; text: string; reference: string; version: 'ESV' | 'KJV'; requestHash: string }
+  | { type: 'APPLY_SCRIPTURE'; id: string; text: string; reference: string; version: ScriptureInfo['version']; requestHash: string }
   | { type: 'CLEAR_SCRIPTURE'; id: string; now: number }
   | { type: 'SET_ACTIVE_READING'; bookNumber: number; chapter: number; verse: number; matched?: boolean }
   | { type: 'NOTE_READING_MISS' }
@@ -324,7 +328,11 @@ export interface TranslatableConfig {
   stabilityMs: number;
 }
 
-/** A live row untouched this long is no longer growing — chunks arrive at least every ~20 s (the sermon max chunk length). */
+/**
+ * A live row untouched this long is no longer growing — chunks arrive at least
+ * every ~15 s (the sermon max chunk length) plus transcription latency. Only a
+ * backstop: the ingest buffer's hard cap and stop() finalize rows explicitly.
+ */
 const PROVISIONAL_IDLE_MS = 30_000;
 
 /**

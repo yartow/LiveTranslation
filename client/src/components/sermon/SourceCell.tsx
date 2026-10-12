@@ -46,16 +46,21 @@ export default function SourceCell({ segment, dispatch, activeSegmentIdRef, flus
   // effect run able to reconcile them, since the effect's deps wouldn't
   // change again on their own. handleBlur below catches up once focus moves
   // away.
-  useEffect(() => {
+  // Layout effect: the DOM must be current before the browser can deliver the
+  // operator's next keystroke, which would otherwise be applied to stale text.
+  useLayoutEffect(() => {
     if (segment.sourceRevision === revisionRef.current) return;
     const el = ref.current;
     if (!el) return;
     if (document.activeElement === el) {
-      // Focused but not yet typed in, on a still-live row: keep showing what
-      // the store has, so the operator's first keystroke edits the current
-      // text rather than overwriting words that arrived after focus. Live
-      // provisional text only grows at the end, so the caret offsets stay valid.
-      if (segment.status !== 'PROVISIONAL' || pendingRef.current !== null) return;
+      // Focused but not yet typed in: keep showing what the store has, so the
+      // operator's first keystroke edits the current text rather than
+      // overwriting words that arrived after focus (or resurrecting text a
+      // finalized row no longer holds — completing a live row can cut it back
+      // to its complete sentences). Only a write landing on a row the operator
+      // has typed into is held back; handleBlur catches that one up. The
+      // selection is restored; the browser clamps it if the text got shorter.
+      if (pendingRef.current !== null) return;
       const { selectionStart, selectionEnd } = el;
       revisionRef.current = segment.sourceRevision;
       el.value = segment.sourceText;

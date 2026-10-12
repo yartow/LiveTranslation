@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { ChunkBasedTranscription, type ChunkTranscriptionEvents, type TranscriptionEngine } from '@/lib/chunk-based-transcription';
-import { initIngestState, appendChunk, releaseProvisional, tick as ingestTick, type IngestConfig, type IngestEffect } from '@/lib/sermon/ingest-buffer';
+import { initIngestState, appendChunk, finalizeBuffer, releaseProvisional, tick as ingestTick, type IngestConfig, type IngestEffect } from '@/lib/sermon/ingest-buffer';
 import { canWriteLive, type SegmentAction, type SegmentStoreState } from '@/lib/sermon/segment-store';
 import type { SermonTranslationProvider } from '@/hooks/useSettings';
 
@@ -188,9 +188,24 @@ export function useSermonIngest(args: SermonIngestArgs) {
     return () => clearInterval(interval);
   }, [applyEffects, releaseIfTakenOver]);
 
+  // End the current block now: whatever is buffered becomes a finished segment
+  // (the open row is completed, so it gets translated at once instead of
+  // waiting out the idle heuristic in selectTranslatable).
+  const finalizeIngest = useCallback(() => {
+    const now = Date.now();
+    releaseIfTakenOver(now);
+    const step = finalizeBuffer(ingestStateRef.current);
+    ingestStateRef.current = step.state;
+    applyEffects(step.effects, now);
+  }, [applyEffects, releaseIfTakenOver]);
+
   const start = useCallback(async () => {
     const a = argsRef.current;
     setIsProcessing(true);
+    // A previous session that ended without stop() (e.g. a transport error)
+    // may still have an open row — finalize it before the state is reset and
+    // its token is forgotten.
+    finalizeIngest();
     ingestStateRef.current = initIngestState();
     tokenToIdRef.current.clear();
     liveSeqRef.current = 0;
@@ -247,14 +262,17 @@ export function useSermonIngest(args: SermonIngestArgs) {
     } finally {
       setIsProcessing(false);
     }
-  }, [handleCorrected]);
+  }, [handleCorrected, finalizeIngest]);
 
   const stop = useCallback(async () => {
     const backend = backendRef.current;
     backendRef.current = null;
     setIsRecording(false);
+    // backend.stop() drains in-flight chunks, so their text is in the buffer
+    // by the time it resolves — only then finalize the last block.
     if (backend) await backend.stop();
-  }, []);
+    finalizeIngest();
+  }, [finalizeIngest]);
 
   // Stop any active mic/WebSocket session on unmount (e.g. navigating away
   // from SermonMode mid-recording) — otherwise the backend keeps running
