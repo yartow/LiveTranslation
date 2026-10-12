@@ -324,6 +324,9 @@ export interface TranslatableConfig {
   stabilityMs: number;
 }
 
+/** A live row untouched this long is no longer growing — chunks arrive at least every ~20 s (the sermon max chunk length). */
+const PROVISIONAL_IDLE_MS = 30_000;
+
 /**
  * Segments eligible for *automatic* translation: dirty, not already in
  * flight, not manually overridden, and unchanged for at least stabilityMs —
@@ -342,6 +345,12 @@ export function selectTranslatable(state: SegmentStoreState, cfg: TranslatableCo
     // an ERROR row is a deliberate human action (the AlertCircle button in
     // SegmentRow.tsx) or part of a manual "Refresh all" (selectDirtyIds).
     if (seg.manualOverride || seg.status === 'TRANSLATING' || seg.status === 'ERROR') return false;
+    // A live row is still growing (ingest-buffer's early display keeps one open
+    // for the whole block) — translating its half-sentence would be redone, and
+    // shown, a few seconds later. It becomes PENDING when the block is finalized.
+    // One that hasn't grown for PROVISIONAL_IDLE_MS is abandoned (recording
+    // stopped mid-block, a long silence) and is translated as it stands.
+    if (seg.status === 'PROVISIONAL' && now - seg.lastSourceChangeAt < PROVISIONAL_IDLE_MS) return false;
     if (!isDirty(seg)) return false;
     return now - seg.lastSourceChangeAt >= cfg.stabilityMs;
   });

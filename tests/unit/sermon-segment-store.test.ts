@@ -557,3 +557,27 @@ describe('selectPublishableLines', () => {
     expect(selectPublishableLines(state)).toEqual([]);
   });
 });
+
+describe('selectTranslatable — live (PROVISIONAL) rows', () => {
+  const cfg = { stabilityMs: 1200 };
+
+  function withProvisional(): SegmentStoreState {
+    return segmentReducer(initState('t'), {
+      type: 'APPEND_SEGMENT', id: 'a', sourceText: 'Een halve zin', startTime: 0, endTime: 5000, status: 'PROVISIONAL', now: 0,
+    });
+  }
+
+  it('does not translate a row that is still growing, even once it is stable', () => {
+    expect(selectTranslatable(withProvisional(), cfg, 10_000)).toEqual([]);
+  });
+
+  it('translates it once it is finalized (PENDING)', () => {
+    const state = segmentReducer(withProvisional(), { type: 'COMPLETE_PROVISIONAL', id: 'a', sourceText: 'Een hele zin.', endTime: 5000, now: 10_000 });
+    expect(selectTranslatable(state, cfg, 12_000)).toEqual(['a']);
+  });
+
+  it('treats a row that has not grown for 30 s as abandoned (recording stopped mid-block) and translates it', () => {
+    expect(selectTranslatable(withProvisional(), cfg, 29_999)).toEqual([]);
+    expect(selectTranslatable(withProvisional(), cfg, 30_000)).toEqual(['a']);
+  });
+});

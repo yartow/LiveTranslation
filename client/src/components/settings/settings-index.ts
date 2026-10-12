@@ -112,7 +112,7 @@ export const SETTINGS_ITEMS: SettingsItem[] = [
   { id: 'sermon-context', page: 'sermon-translation', label: 'Context sentences', description: 'How many neighbouring segments are sent along as context: before (0–5) and after (0–3).', keywords: ['context', 'before', 'after', 'neighbours', 'surrounding'] },
 
   // ── Sermon: timing ──
-  { id: 'sermon-max-latency', page: 'sermon-timing', label: 'Block length', description: 'Target and maximum time before text is grouped into a segment. Longer blocks read more smoothly; shorter ones appear sooner. Applies to a running session.', keywords: ['latency', 'delay', 'bracket', 'segment', 'seconds', 'vertraging'] },
+  { id: 'sermon-max-latency', page: 'sermon-timing', label: 'Block length', description: 'How long a block of speech runs before it is finalized as one segment and translated. Transcribed text already shows (and can be edited) as soon as it arrives; longer blocks read more smoothly, shorter ones are translated sooner. Applies to a running session.', keywords: ['latency', 'delay', 'bracket', 'segment', 'seconds', 'vertraging'] },
   { id: 'sermon-stability', page: 'sermon-timing', label: 'Stability delay', description: 'How long a segment must stay unchanged before it is auto-translated.', keywords: ['debounce', 'stable', 'wait', 'delay', 'stabiliteit'] },
 
   // ── Sermon: scripture ──

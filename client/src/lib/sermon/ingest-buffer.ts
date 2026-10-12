@@ -32,6 +32,13 @@
 // carried-over partial actually wait out a full block before it's forced
 // out mid-sentence.)
 //
+// EARLY DISPLAY (cfg.showEarly, sermon mode): the block-duration hold above is
+// what made text appear ~8 s after it had been transcribed. With showEarly the
+// buffer is shown at once in a provisional row that grows with every chunk, and
+// the deadline only decides when that row is FINALIZED (completeProvisional with
+// the joined complete sentences — the surviving partial opens the next row). The
+// row is the same row the human edits, so a correction can start immediately.
+//
 // If the human edits an open provisional row, releaseProvisional() hands that
 // row over: the text it already shows leaves the buffer and only newer text
 // goes into the next row.
@@ -68,6 +75,12 @@ export interface IngestConfig {
    * become a row of its own. Omitted/0 disables the rule.
    */
   minBlockWords?: number;
+  /**
+   * Show buffered text in an open provisional row as soon as it arrives instead
+   * of holding it until the block deadline — see the EARLY DISPLAY note above.
+   * Off by default.
+   */
+  showEarly?: boolean;
 }
 
 export type IngestEffect =
@@ -130,6 +143,28 @@ function trimPiecesTo(pieces: Piece[], k: number): Piece[] {
   return survivors;
 }
 
+/**
+ * Early display: make sure the open provisional row shows exactly what is in the
+ * buffer — open one if there is text and no row, update it if the text changed
+ * since the last send, do nothing otherwise (so the 250 ms tick stays quiet).
+ */
+function syncEarlyRow(state: IngestState): IngestStep {
+  const text = bufferText(state).trim();
+  if (!text) return { state, effects: [] };
+  if (state.provisionalToken == null) {
+    const token = `p${state.provisionalSeq}`;
+    return {
+      state: { ...state, provisionalToken: token, provisionalSeq: state.provisionalSeq + 1, provisionalText: text },
+      effects: [{ type: 'emit', text, provisional: true, token }],
+    };
+  }
+  if (text === state.provisionalText) return { state, effects: [] };
+  return {
+    state: { ...state, provisionalText: text },
+    effects: [{ type: 'updateProvisional', token: state.provisionalToken, text }],
+  };
+}
+
 function evaluate(state: IngestState, cfg: IngestConfig, now: number): IngestStep {
   const buf = bufferText(state);
   if (!buf.trim()) {
@@ -145,7 +180,7 @@ function evaluate(state: IngestState, cfg: IngestConfig, now: number): IngestSte
   // complete sentences stay buffered and start a fresh block clock, instead of
   // being emitted as extra short rows in the same step (the old behaviour,
   // which is what produced "provisional row + a lone 'Amen.' row").
-  if (state.provisionalToken && lastB >= 0) {
+  if (!cfg.showEarly && state.provisionalToken && lastB >= 0) {
     const firstEnd = findBoundaries(buf)[0];
     const sentence = buf.slice(0, firstEnd).trim();
     const survivingPieces = trimPiecesTo(state.pieces, firstEnd);
@@ -175,23 +210,42 @@ function evaluate(state: IngestState, cfg: IngestConfig, now: number): IngestSte
     const wordCount = head.trim().split(/\s+/).filter(Boolean).length;
     const minWords = cfg.minBlockWords ?? 0;
     if (wordCount < minWords && now - state.anchorAt! < cfg.maxLatencyMs * 1.5) {
-      return { state, effects: [] };
+      return cfg.showEarly ? syncEarlyRow(state) : { state, effects: [] };
     }
 
     const survivingPieces = trimPiecesTo(state.pieces, lastB);
-    return {
-      state: {
-        ...state,
-        pieces: survivingPieces,
-        // Restart the block clock: a surviving partial begins a fresh
-        // cfg.maxLatencyMs window rather than inheriting the one that just
-        // expired — see the header comment for why this is the actual fix.
-        anchorAt: survivingPieces.some(p => p.text.trim()) ? now : null,
-        recentTail: tail80(head),
-      },
-      effects: sentences.length > 0 ? [{ type: 'emit', text: sentences.join(' '), provisional: false }] : [],
+    const flushed: IngestState = {
+      ...state,
+      pieces: survivingPieces,
+      // Restart the block clock: a surviving partial begins a fresh
+      // cfg.maxLatencyMs window rather than inheriting the one that just
+      // expired — see the header comment for why this is the actual fix.
+      anchorAt: survivingPieces.some(p => p.text.trim()) ? now : null,
+      recentTail: tail80(head),
     };
+    if (!cfg.showEarly) {
+      return {
+        state: flushed,
+        effects: sentences.length > 0 ? [{ type: 'emit', text: sentences.join(' '), provisional: false }] : [],
+      };
+    }
+
+    // Early display: the block was already on screen in the open row — finalize
+    // that row with the complete sentences (no row open, e.g. the human took it
+    // over: emit as a plain segment) and show the leftover partial in a new row.
+    const effects: IngestEffect[] = [];
+    if (sentences.length > 0) {
+      const text = sentences.join(' ');
+      effects.push(state.provisionalToken
+        ? { type: 'completeProvisional', token: state.provisionalToken, text }
+        : { type: 'emit', text, provisional: false });
+    }
+    const next = syncEarlyRow({ ...flushed, provisionalToken: null, provisionalText: null });
+    return { state: next.state, effects: [...effects, ...next.effects] };
   }
+
+  // Early display: nothing to flush (yet) — keep the open row showing the buffer.
+  if (cfg.showEarly) return syncEarlyRow(state);
 
   // (b) No complete sentence at all — only act once the cap has expired.
   if (lastB < 0 && capExpired) {

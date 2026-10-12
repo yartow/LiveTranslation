@@ -94,9 +94,9 @@ export default function SermonMode() {
   const translationConfigRef = useRef<TranslationRuntimeConfig>(buildTranslationConfig());
   useEffect(() => { translationConfigRef.current = buildTranslationConfig(); }, [settings]);
 
-  const ingestConfigRef = useRef<IngestConfig>({ maxLatencyMs: settings.sermonMaxLatencySecs * 1000, minBlockWords: SERMON_MIN_BLOCK_WORDS });
+  const ingestConfigRef = useRef<IngestConfig>({ maxLatencyMs: settings.sermonMaxLatencySecs * 1000, minBlockWords: SERMON_MIN_BLOCK_WORDS, showEarly: true });
   useEffect(() => {
-    ingestConfigRef.current = { maxLatencyMs: settings.sermonMaxLatencySecs * 1000, minBlockWords: SERMON_MIN_BLOCK_WORDS };
+    ingestConfigRef.current = { maxLatencyMs: settings.sermonMaxLatencySecs * 1000, minBlockWords: SERMON_MIN_BLOCK_WORDS, showEarly: true };
   }, [settings.sermonMaxLatencySecs]);
 
   const { refreshAll, refreshOne } = useTranslationQueue(stateRef, applyAction, translationConfigRef, autoTranslateRef, flushersRef);

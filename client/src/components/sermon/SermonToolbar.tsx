@@ -75,7 +75,7 @@ export default function SermonToolbar({
 
       <div className="flex items-center gap-2">
         <Label htmlFor="sermon-max-latency" className="text-xs text-muted-foreground whitespace-nowrap">
-          Max delay
+          Block length
         </Label>
         <input
           id="sermon-max-latency"
