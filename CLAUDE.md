@@ -317,6 +317,15 @@ Don't tune audio/chunking/prompt settings by feel — measure them.
   reference words missing from the output) and `gaps8+` (runs of >=8 words) — a dropped
   5-8 s stretch barely moves WER but shows up there. It does NOT include the LLM
   correction step or the browser mic path.
+- **Replaying a recorded service against today's code**: `npx tsx scripts/asr-session-audio.ts <session>`
+  → `full.wav`, then `npx tsx scripts/asr-replay.ts <session>/full.wav [--from s --to s] [--glossary f]`
+  re-chunks it with the app's current limits (`client/src/lib/sermon/chunk-limits.ts`) and runs the server's
+  per-chunk path (Whisper → guard → artifact filters; no LLM correction) into `data/asr-debug/replay-<ts>/`,
+  in the same archive format as a session. `npx tsx scripts/asr-compare.ts <old> <new>` prints totals (words,
+  guard retries, artifacts, leftover `...`) and writes `<new>/compare.md` with the most-different 30 s windows
+  side by side; `asr-compare.ts --score <session> <reference.txt> <from> <to>` scores a session's text for a time
+  range against a hand-corrected reference. Shared chunk planning/transcription lives in `scripts/lib/asr-chunks.ts`
+  (also used by `eval:asr`). A difference between two runs says they differ, not which is right — check by ear.
 - **Scoring** (`normalizeForScoring`, `tests/lib/wer.ts`) ignores spelling-only
   differences: digits vs number words, diacritics/apostrophes/hyphens, fillers, and the
   pairs in `tests/fixtures/spelling-variants.txt`. Add only genuine equivalents there,

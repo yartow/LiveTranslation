@@ -88,6 +88,8 @@ describe('stripAsrArtifacts', () => {
     ['Wij lezen uit Johannes. Ondertiteling door de Amara.org gemeenschap', 'Wij lezen uit Johannes.'],
     ['MUZIEK Dank u wel dat u er bent.', 'Dank u wel dat u er bent.'],
     ['Het is goed (applaus) om hier te zijn.', 'Het is goed om hier te zijn.'],
+    ['U wordt er zo blij van. ***', 'U wordt er zo blij van.'],
+    ['Aan de voeten van... *** Jezus', 'Aan de voeten van... Jezus'],
   ])('removes the artifact in %j', (input, expected) => {
     expect(stripAsrArtifacts(input, 'nl')).toBe(expected);
   });
