@@ -106,7 +106,7 @@ export default function SermonMode() {
   // re-runs its diff on every render, same as the dirtyCount useMemo below.
   const { listenerCount } = useListenerBroadcast(stateRef, state);
 
-  const { isRecording, isProcessing, start, stop } = useSermonIngest({
+  const { isRecording, isProcessing, isPaused, start, stop, pause, resume } = useSermonIngest({
     dispatch: applyAction,
     stateRef,
     ingestConfigRef,
@@ -194,6 +194,8 @@ export default function SermonMode() {
       <SermonToolbar
         isRecording={isRecording}
         isProcessing={isProcessing}
+        isPaused={isPaused}
+        onTogglePause={isPaused ? resume : pause}
         onToggleRecording={() => {
           if (isRecording) {
             stop().catch((err) => toast({ title: 'Recording error', description: err instanceof Error ? err.message : 'Could not stop recording', variant: 'destructive' }));

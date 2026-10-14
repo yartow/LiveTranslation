@@ -58,6 +58,7 @@ export function useSermonIngest(args: SermonIngestArgs) {
 
   const [isRecording, setIsRecording] = useState(false);
   const [isProcessing, setIsProcessing] = useState(false);
+  const [isPaused, setIsPaused] = useState(false);
 
   const backendRef = useRef<ChunkBasedTranscription | null>(null);
   const ingestStateRef = useRef(initIngestState());
@@ -186,6 +187,7 @@ export function useSermonIngest(args: SermonIngestArgs) {
   const start = useCallback(async () => {
     const a = argsRef.current;
     setIsProcessing(true);
+    setIsPaused(false);
     // A previous session that ended without stop() (e.g. a transport error)
     // may still have an open row — finalize it before the state is reset and
     // its token is forgotten.
@@ -207,9 +209,10 @@ export function useSermonIngest(args: SermonIngestArgs) {
       onError: (message) => {
         argsRef.current.onError(message);
         setIsRecording(false);
+        setIsPaused(false);
         setIsProcessing(false);
       },
-      onClose: () => { setIsRecording(false); },
+      onClose: () => { setIsRecording(false); setIsPaused(false); },
       onDebug: (message) => { if (argsRef.current.debugMode) console.debug('[sermon-ingest]', message); },
     };
 
@@ -252,11 +255,27 @@ export function useSermonIngest(args: SermonIngestArgs) {
     const backend = backendRef.current;
     backendRef.current = null;
     setIsRecording(false);
+    setIsPaused(false);
     // backend.stop() drains in-flight chunks, so their text is in the buffer
     // by the time it resolves — only then finalize the last block.
     if (backend) await backend.stop();
     finalizeIngest();
   }, [finalizeIngest]);
+
+  // Pause keeps the session (mic, socket, open block) alive: the last words are
+  // still transcribed and land in the ingest buffer, which flushes them on its
+  // normal block deadline — no finalize here, the final chunk hasn't arrived yet.
+  const pause = useCallback(() => {
+    if (!backendRef.current) return;
+    backendRef.current.pause();
+    setIsPaused(true);
+  }, []);
+
+  const resume = useCallback(() => {
+    if (!backendRef.current) return;
+    backendRef.current.resume();
+    setIsPaused(false);
+  }, []);
 
   // Stop any active mic/WebSocket session on unmount (e.g. navigating away
   // from SermonMode mid-recording) — otherwise the backend keeps running
@@ -265,5 +284,5 @@ export function useSermonIngest(args: SermonIngestArgs) {
     return () => { backendRef.current?.stop(); };
   }, []);
 
-  return { isRecording, isProcessing, start, stop };
+  return { isRecording, isProcessing, isPaused, start, stop, pause, resume };
 }

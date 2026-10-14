@@ -83,6 +83,7 @@ The app's default view — a UI purpose-built for translating a live sermon bloc
 
 - **Segment-based review** — incoming transcript is grouped into ~5–20 second blocks (configurable, "Max. vertraging" in Settings), each cut on a sentence boundary so a block is never split mid-sentence; each segment is independently editable and re-translatable without disturbing the others.
 - **Dual-pane layout** — editable source on one side, translation on the other, row-aligned.
+- **Pause / resume** — the Pause button next to Stop stops listening without ending the session (the last words are still transcribed). Press it again to continue; no new microphone prompt. Audio spoken while paused is dropped, not queued.
 - **Keyboard-driven workflow** — hotkeys for re-translating one segment or all pending segments (e.g. Cmd/Ctrl+Shift+Enter).
 - **File-based theological glossary (optional)** — a CSV of fixed Dutch→English terms plus a markdown doc of context-dependent disambiguation rules, loaded from files in `data/` (directory configurable via `GLOSSARY_DIR` in `.env`). Configure and reload it from Settings → "Preekmodus — woordenlijst". Segments whose translation appears to be missing an expected glossary term show a non-blocking warning icon — it's a hint for the human reviewer, not a blocker.
 - **Scripture quoting (optional)** — detects a spoken Bible reference ("Johannes 3:16") and substitutes the exact English verse text (ESV via API, falling back to the bundled KJV) instead of a model translation when the preacher reads verbatim; a paraphrase is still translated in his own words. Requires a one-time data build — see `scripts/build-bible-data.ts` and `CLAUDE.md`'s "Scripture pipeline". Configure from Settings → "Preekmodus — Schriftcitaten".
@@ -182,6 +183,41 @@ Unlike `npm run dev`, this port is **fixed at `5001`** even if your `.env` sets 
 The container runs the production build (Vite client + esbuild server bundle). ffmpeg is included in the image.
 
 > **⚠️ The `mlx` (local LLM / on-device Whisper) transcription provider does not work in Docker.** The Docker image (`Dockerfile`) is based on `node:20-alpine`, a Linux container — `mlx-whisper` depends on Apple's MLX framework, which only runs on Apple Silicon macOS, not Linux, and not inside a container even when Docker Desktop is hosted on an Apple Silicon Mac (the container's own kernel/CPU access is Linux/x86-virtualized, not native macOS). If you select `mlx` as the transcription provider while running via Docker, transcription requests will fail. Use `npm run dev` / `npm start` directly on macOS instead if you want the `mlx` provider — see [Local MLX Transcription](#local-mlx-transcription-apple-silicon-only). The other three transcription backends (`whisper` via OpenAI, `browser`, `transformers`) all work fine in Docker.
+
+---
+
+## Learning From Your Edits
+
+Every correction you make in sermon mode tells you where the transcription goes wrong. `scripts/asr-edits.ts` compares what Whisper heard with what was left on screen, so you can see the mistakes it makes repeatedly and fix them at the source (glossary, vocabulary hints).
+
+**1. Record with the session archive on** (works with both the `whisper` and `mlx` engines):
+
+```bash
+npm run dev:record
+```
+
+This is `npm run dev` plus `ASR_DEBUG_DIR=data/asr-debug`: each recording is written to `data/asr-debug/<timestamp>-<id>/` (gitignored). Open `http://localhost:PORT/`, record, and correct the Dutch text as you go, as usual.
+
+**2. Stop the recording, wait ~5 seconds, and keep the page open.** The page saves what is on screen to the archive every minute and once more after you stop. Edits made after the last save are not included, so don't close the tab straight after your last edit.
+
+**3. Run the comparison** on that session's folder (the newest one is the last in `ls data/asr-debug`):
+
+```bash
+npm run edits:asr -- data/asr-debug/<session-folder>
+```
+
+You get a summary in the terminal (how many words you changed, and which corrections you made more than once) and the full list in `<session-folder>/edits.md`: for every edit its timestamp, segment number, a bit of context, what Whisper heard and what you made of it.
+
+Options: `--stage raw|stripped|corrected` (default `corrected`, the text as it reached the screen; `raw` is Whisper's output untouched), `--context 6` (words of context shown around each edit), `--gap 2` (changes closer together than this many unchanged words are shown as one edit).
+
+**4. Use it to improve the app:**
+
+- **A correction you make again and again** (it appears under "Recurring substitutions") is a glossary candidate. Add the right word as a row in your glossary CSV (`data/*.csv`, Settings → General → Glossary → reload) or, for the free-text list, to Settings → General → *Vocabulary hints*. That list is what Whisper hears as context, so a name or term it keeps mishearing gets recognised.
+- **Mishearings of a Bible reference** (a book or number) show up in `edits.md` too; if a book-name spelling is the problem, add it as a `Bijbelboek` row in the CSV.
+- **Not sure whether Whisper or you was right?** Run `npx tsx scripts/asr-session-audio.ts <session-folder>` and listen to `full.wav` at the timestamp from `edits.md`.
+- **Want to know if a change helped?** Save the stretch as a corrected reference and score it — see `CLAUDE.md`'s "Evaluating ASR changes" (`npm run eval:asr`, `asr-compare.ts --score`).
+
+Notes: only the final text is stored, so an edit you later undid doesn't appear. Changes of more than 40 words in a row (a block you deleted, a chunk the page never showed) are listed apart in an "Unexplained" section and are not counted as edits. Punctuation, capitals, spelling variants and digits-versus-words are ignored; only changed words count.
 
 ---
 

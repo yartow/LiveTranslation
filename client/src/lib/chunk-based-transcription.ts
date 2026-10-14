@@ -358,6 +358,8 @@ export class ChunkBasedTranscription {
   private chunkDurationMs: number;
   private chunkIndex = 0;
   private isRecording = false;
+  // True between pause() and resume(): the mic and socket stay open, but audio frames are dropped.
+  private paused = false;
   private engine: TranscriptionEngine;
   private translationProvider: TranslationProvider;
   private openaiApiKey: string;
@@ -682,6 +684,7 @@ export class ChunkBasedTranscription {
 
     this.processor.onaudioprocess = (event) => {
       if (!this.isRecording) return;
+      if (this.paused) { this.events.onAudioLevel?.(0); return; }
       const input = event.inputBuffer.getChannelData(0);
 
       // RMS for audio level callback
@@ -992,10 +995,37 @@ export class ChunkBasedTranscription {
     }
   }
 
+  /**
+   * Stops listening without ending the session. What was said up to now is
+   * committed as a final chunk (so the last words are still transcribed and
+   * delivered); audio while paused is dropped, not buffered. The mic and the
+   * socket stay open, so resume() is instant and needs no new permission prompt.
+   * Archive `startSample`s count only recorded audio, so a paused stretch
+   * leaves no gap in a session's `full.wav`.
+   */
+  pause(): void {
+    if (!this.isRecording || this.paused) return;
+    if (this.assembler.sampleCount >= 100) this.commitChunk('stop');
+    this.assembler.discard(); // also drops the overlap prefix — it must not lead the first chunk after the pause
+    this.gate.resetChunk();
+    this.vadSilenceMs = 0;
+    this.paused = true;
+    this.events.onAudioLevel?.(0);
+    this.events.onDebug?.('Paused');
+  }
+
+  resume(): void {
+    if (!this.isRecording || !this.paused) return;
+    this.paused = false;
+    this.vadSilenceMs = 0;
+    this.events.onDebug?.('Resumed');
+  }
+
   async stop(): Promise<void> {
     this.intentionalClose = true;
     this.reconnecting = false;
     this.isRecording = false;
+    this.paused = false;
 
     // Flush remaining buffered audio as the final chunk
     if (this.assembler.sampleCount >= 100) this.commitChunk('stop');

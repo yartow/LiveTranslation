@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { Loader2, Mic, RefreshCw, Settings, Square, Users } from 'lucide-react';
+import { Loader2, Mic, Pause, Play, RefreshCw, Settings, Square, Users } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Switch } from '@/components/ui/switch';
 import { Label } from '@/components/ui/label';
@@ -9,6 +9,9 @@ import ListenerAddressPanel from './ListenerAddressPanel';
 interface SermonToolbarProps {
   isRecording: boolean;
   isProcessing: boolean;
+  /** Recording is on but listening is paused — see useSermonIngest's pause(). */
+  isPaused: boolean;
+  onTogglePause: () => void;
   onToggleRecording: () => void;
   dirtyCount: number;
   onRefreshAll: () => void;
@@ -23,7 +26,7 @@ interface SermonToolbarProps {
 }
 
 export default function SermonToolbar({
-  isRecording, isProcessing, onToggleRecording, dirtyCount, onRefreshAll,
+  isRecording, isProcessing, isPaused, onTogglePause, onToggleRecording, dirtyCount, onRefreshAll,
   autoTranslate, onToggleAutoTranslate, maxLatencySecs, onChangeMaxLatencySecs,
   listenerCount, onOpenSettings, isMac,
 }: SermonToolbarProps) {
@@ -47,6 +50,21 @@ export default function SermonToolbar({
           ? <Loader2 className="h-4 w-4 animate-spin" />
           : isRecording ? <Square className="h-3.5 w-3.5 fill-current" /> : <Mic className="h-4 w-4" />}
       </button>
+
+      {isRecording && (
+        <button
+          onClick={onTogglePause}
+          data-testid="button-sermon-pause"
+          aria-label={isPaused ? 'Resume recording' : 'Pause recording'}
+          title={isPaused ? 'Resume recording' : 'Pause recording'}
+          className={
+            'inline-flex items-center justify-center h-9 w-9 rounded-full border transition-colors ' +
+            (isPaused ? 'bg-amber-500 border-amber-500 text-white' : 'border-input bg-background text-foreground hover:bg-accent')
+          }
+        >
+          {isPaused ? <Play className="h-3.5 w-3.5 fill-current" /> : <Pause className="h-3.5 w-3.5 fill-current" />}
+        </button>
+      )}
 
       <Button
         variant="outline"

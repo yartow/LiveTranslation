@@ -18,6 +18,8 @@ npm run check        # TypeScript type-check (tsc --noEmit)
 npm test             # Unit + integration tests (Vitest)
 npm run test:regression  # Regression test suite
 npm run db:push      # Push Drizzle schema to Neon PostgreSQL
+npm run dev:record   # Dev server + session archive (ASR_DEBUG_DIR=data/asr-debug), see "Audio capture & hallucination handling"
+npm run edits:asr -- <session folder>   # What the human changed vs the ASR text, see "Learning from the human's edits"
 ```
 
 Always run `npm run check` after editing TypeScript files.
@@ -106,6 +108,7 @@ The app's default route — a purpose-built UI for translating a live sermon blo
 - **Live ingest** (`ingest-buffer.ts`) — **early display** (`IngestConfig.showEarly`, on in `SermonMode.tsx`): buffered text is shown *at once* in an open `PROVISIONAL` row that grows with every chunk and is editable immediately (the first keystroke flips it to `EDITED` and `releaseProvisional()` hands it over — the speaker's next words then open a new row, so an early edit can split a sentence across two rows; neighbouring rows are sent as translation context). The deadline below only decides when that row is *finalized* (`completeProvisional` with the joined sentences; the leftover partial opens the next row), and `selectTranslatable` skips `PROVISIONAL` rows (a row untouched for 30 s counts as abandoned and is translated) so a half-sentence is never translated. A buffer with no sentence boundary at all is finalized whole at 2× `sermonMaxLatencySecs` (`finalizeBuffer`, also called by `useSermonIngest`'s `stop()`/`start()` so the last words are translated at once), and `canWriteLive` only accepts `PROVISIONAL` rows — a row that was finalized or idle-translated is released, and the next words open a new row. Measured on a 51 min sermon: speech start → text visible dropped from median 19 s / p90 26 s to 11 s / 16 s. Without `showEarly` (the default, kept for tests) the buffer behaves as follows: it flushes into segments once `sermonMaxLatencySecs` (labelled "Block length" in the UI) elapses since the current block started: at that point, every complete sentence currently buffered is joined into one segment (so several short sentences spoken back-to-back become one block instead of one segment each), or, if no sentence has completed at all yet, the partial text is flushed mid-sentence as a `PROVISIONAL` segment. `sermonMaxLatencySecs` is thus both the target block duration and the hard ceiling — a complete sentence alone never triggers an immediate flush, it just waits for the next deadline. The block clock **restarts on every flush**: a leftover half-sentence that survives a flush starts a fresh `sermonMaxLatencySecs` window rather than an already-expired one (otherwise it is forced into its own tiny `PROVISIONAL` segment on the very next tick, which renders as a run of short, choppy rows). The per-chunk correction step (`correctTranscript`/`correctTranscriptWithClaude`/`correctTranscriptWithOllama`) deliberately leaves a mid-sentence chunk **unpunctuated** rather than guessing a period, since a chunk boundary (VAD-cut on a ~1.1s pause) frequently lands mid-sentence and a hallucinated period there would cut segments short upstream of the ingest buffer.
 - **Translation** (`translate-client.ts` → `POST /api/sermon/translate` → `server/lib/sermon-translate.ts`) — batches dirty segments, translates via `sermonTranslationProvider`/`sermonCorrectionProvider` (`'openai' | 'claude' | 'ollama'` — sermon mode never offers `'none'`), and returns per-item `warnings?: GlossaryWarning[]` when the file-based glossary is enabled, or `scripture?: {...}` when a Bible reference was checked (see "Scripture pipeline" below).
 - **File-based glossary** — see the "File-based glossary trust boundary" security section and `GLOSSARY_DIR`/`GLOSSARY_CSV`/`GLOSSARY_PROMPT` env vars below. Configured per-user in Settings → General → Glossary (`GlossaryPanel` in `components/settings/`).
+- **Pause / resume** (`SermonToolbar`'s Pause button, shown while recording; `useSermonIngest`'s `pause()`/`resume()` → `ChunkBasedTranscription.pause()`/`resume()`) — stops listening without ending the session. `pause()` commits the buffered audio as a final chunk (so the last words are still transcribed), then `onaudioprocess` drops frames until `resume()`; the mic and `/ws/chunk-transcribe` socket stay open (no permission prompt, no reconnect). The ingest buffer is *not* finalized on pause — that chunk is still in flight — it flushes on its normal block deadline. Because the archive's `startSample` counts only recorded audio, a paused stretch leaves no gap in `asr-session-audio.ts`'s `full.wav`. Sermon mode only; `Home.tsx` has no Pause.
 - **Hotkeys** (`hotkeys.ts`) — pure, DOM-free chord predicates (e.g. Cmd/Ctrl+Shift+Enter = re-translate all dirty segments); wired to `preventDefault`/capture-phase listeners in `SermonMode.tsx`.
 
 ---
@@ -338,6 +341,26 @@ Don't tune audio/chunking/prompt settings by feel — measure them.
   whole-clip single pass 7.8%.
 - **Whisper cost on an M1 MBP (large-v3)**: ~1.0 s for a 3 s buffer, 1.6 s for 15 s,
   2.3 s for 25 s — relevant if a rolling-window streaming transcriber is ever built.
+
+---
+
+## Learning from the human's edits (`npm run edits:asr`)
+
+Sermon-mode edits are not stored as an edit log, but both ends of every edit are in a `dev:record` session (`data/asr-debug/<timestamp>-<id>/`): the ASR text per chunk (`<idx>.json`: `rawText` / `strippedText` / `correctedText`) and the on-screen segments (`transcript.json`, `sourceText` = the edited Dutch). `scripts/asr-edits.ts` diffs them.
+
+```bash
+npm run dev:record                                        # record + edit as usual, then stop; keep the page open ~5 s
+npm run edits:asr -- data/asr-debug/<session folder>      # = npx tsx scripts/asr-edits.ts <folder>
+#   --stage raw|stripped|corrected   which pipeline stage is "the original" (default corrected = what reached the screen)
+#   --context n                      words of context around an edit (default 6)
+#   --gap n                          merge changes closer than n unchanged words (default 2)
+```
+
+Output: a summary + recurring substitutions on stdout, the full list in `<session>/edits.md` (timestamp, segment, context, ASR vs edited text).
+
+- **Method**: original = chunk texts in time order with the ingest buffer's own `dedupeOverlap`; edited = segments' `sourceText` in index order. Both are normalised with `normalizeForScoring` (`tests/lib/wer.ts`, incl. `spelling-variants.txt`) per word, then aligned with a Myers diff. So segment boundaries, sentence splitting, punctuation and spelling-only changes are invisible; only changed words are. A stretch >40 words on either side is reported as "unexplained" (a chunk never shown, a deleted block, a stale snapshot) and left out of the statistics.
+- **Limits**: `transcript.json` is a snapshot — posted every 60 s while recording and ~4 s after stop (`SermonMode.tsx`'s `postTranscriptSnapshot`) — so later edits are missing (the script warns when the snapshot is older than the last delivered chunk). Only the final text exists: an edit that was reverted leaves no trace, and there's no per-segment "edited" flag (`lastSourceChangeAt` moves on any source change).
+- **Turning findings into improvements**: a substitution that recurs → a glossary row (`glossary-file.ts`'s CSV; the `Bijbelboek` category for book-name spellings) or a *Vocabulary hints* line (`theologicalGlossary`, the only list Whisper and the per-chunk correction see). Check by ear before trusting either side (`asr-session-audio.ts` → `full.wav`), and measure a change with `eval:asr` / `asr-compare.ts --score` — don't tune by feel. Add to `spelling-variants.txt` only genuine spelling equivalents, never an edit that fixes a real mishearing.
 
 ---
 
