@@ -1,6 +1,9 @@
 import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from 'react';
 import Header from '@/components/Header';
 import SermonToolbar from '@/components/sermon/SermonToolbar';
+import AudioBar from '@/components/sermon/AudioBar';
+import AddToGlossaryBubble, { type SourceSelection } from '@/components/sermon/AddToGlossaryBubble';
+import AddToGlossaryDialog, { type GlossarySaved } from '@/components/sermon/AddToGlossaryDialog';
 import SegmentGrid from '@/components/sermon/SegmentGrid';
 import SettingsDialog from '@/components/settings/SettingsDialog';
 import { useToast } from '@/hooks/use-toast';
@@ -11,8 +14,11 @@ import { isRefreshAllChord, isRefreshOneChord, type KeyChord } from '@/lib/sermo
 import { useTranslationQueue, type TranslationRuntimeConfig } from '@/hooks/useTranslationQueue';
 import { useSermonIngest } from '@/hooks/useSermonIngest';
 import { useListenerBroadcast } from '@/hooks/useListenerBroadcast';
+import { useMicDevices } from '@/hooks/useMicDevices';
+import { LevelStore } from '@/lib/sermon/audio-level';
 import type { IngestConfig } from '@/lib/sermon/ingest-buffer';
 import { isMacPlatform } from '@/lib/platform';
+import { replacePhrase } from '@/lib/sermon/glossary-fix';
 
 // A sermon row shorter than this holds for an extra half-window before it
 // flushes alone — see ingest-buffer.ts's IngestConfig.minBlockWords.
@@ -104,9 +110,17 @@ export default function SermonMode() {
   // Listener mode (CLAUDE.md "Listener mode") — pushes finished translations
   // to any connected phones. Reads `state` directly (not stateRef) so it
   // re-runs its diff on every render, same as the dirtyCount useMemo below.
-  const { listenerCount } = useListenerBroadcast(stateRef, state);
+  // The "send to listeners" switch. Session-only on purpose (not a setting): it
+  // starts on at every page load so it can't stay off by accident into the next service.
+  const [listenersEnabled, setListenersEnabled] = useState(true);
+  const { listenerCount } = useListenerBroadcast(stateRef, state, listenersEnabled);
 
-  const { isRecording, isProcessing, start, stop } = useSermonIngest({
+  // Audio bar: which mic is in use and how loud it is. The level store is an
+  // external store so ~10 audio frames a second only re-render the meter.
+  const [levelStore] = useState(() => new LevelStore());
+  const mic = useMicDevices();
+
+  const { isRecording, isProcessing, isPaused, start, stop, pause, resume } = useSermonIngest({
     dispatch: applyAction,
     stateRef,
     ingestConfigRef,
@@ -123,8 +137,22 @@ export default function SermonMode() {
     debugMode: settings.debugMode,
     normalizationGain: settings.audioNormalizationGain,
     rawAudioCapture: settings.rawAudioCapture,
+    micDeviceId: settings.micDeviceId,
+    onAudioLevel: (rms, peak) => levelStore.push(rms, peak),
+    onStreamReady: (stream) => mic.attachStream(stream, () => toast({
+      title: 'Microphone disconnected',
+      description: 'The recording is no longer receiving audio. Stop, reconnect the microphone and start again.',
+      variant: 'destructive',
+    })),
+    onNotice: (message) => toast({ title: 'Microphone', description: message }),
     onError: (message) => toast({ title: 'Recording error', description: message, variant: 'destructive' }),
   });
+
+  // No signal while stopped or paused: clear the meter and the "recording from" label.
+  useEffect(() => {
+    if (!isRecording || isPaused) levelStore.reset();
+    if (!isRecording) mic.clearActive();
+  }, [isRecording, isPaused, levelStore, mic.clearActive]);
 
   // Session archive (server has ASR_DEBUG_DIR — see server/lib/chunk-transcription.ts): while
   // recording, snapshot what is on screen every minute and once more after stop, so a gap in the
@@ -162,6 +190,35 @@ export default function SermonMode() {
     return () => clearInterval(timer);
   }, [isRecording, postTranscriptSnapshot]);
 
+  // "Add to glossary": highlighted words in a source cell -> floating bubble -> dialog.
+  const [selection, setSelection] = useState<SourceSelection | null>(null);
+  const [glossarySelection, setGlossarySelection] = useState<SourceSelection | null>(null);
+  const handleSelectText = useCallback((sel: SourceSelection | null) => setSelection(sel), []);
+  const dismissBubble = useCallback(() => setSelection(null), []);
+
+  const handleGlossarySaved = useCallback((r: GlossarySaved) => {
+    setGlossarySelection(null);
+    let rowNote = '';
+    if (r.fixRow) {
+      const { segmentId, start } = r.selection;
+      // Commit anything typed in the last moments before reading the row's text.
+      flushersRef.current.get(segmentId)?.();
+      const seg = stateRef.current.byId[segmentId];
+      // The phrase as finally typed (it may be narrower than the highlight); live updates may have moved it, so take the closest match.
+      const fixed = seg ? replacePhrase(seg.sourceText, r.heard || r.selection.text, r.dutch, start) : null;
+      if (seg && fixed !== null) {
+        applyAction({ type: 'REPLACE_SOURCE', id: segmentId, sourceText: fixed, now: Date.now() });
+        rowNote = ' This row was corrected.';
+      } else {
+        rowNote = ' The row had changed, so it was left as it is.';
+      }
+    }
+    toast({
+      title: 'Added to glossary',
+      description: (r.correctionAdded ? 'New transcripts are corrected automatically.' : 'Saved.') + rowNote,
+    });
+  }, [applyAction, toast]);
+
   const dirtyCount = useMemo(() => selectDirtyIds(state).length, [state]);
 
   // Cmd/Ctrl+Shift+Enter (refresh all) and Cmd/Ctrl+Enter (refresh the
@@ -194,6 +251,8 @@ export default function SermonMode() {
       <SermonToolbar
         isRecording={isRecording}
         isProcessing={isProcessing}
+        isPaused={isPaused}
+        onTogglePause={isPaused ? resume : pause}
         onToggleRecording={() => {
           if (isRecording) {
             stop().catch((err) => toast({ title: 'Recording error', description: err instanceof Error ? err.message : 'Could not stop recording', variant: 'destructive' }));
@@ -208,8 +267,23 @@ export default function SermonMode() {
         maxLatencySecs={settings.sermonMaxLatencySecs}
         onChangeMaxLatencySecs={(v) => updateSettings({ sermonMaxLatencySecs: v })}
         listenerCount={listenerCount}
+        listenersEnabled={listenersEnabled}
+        onToggleListeners={() => setListenersEnabled(v => !v)}
         onOpenSettings={() => setIsSettingsOpen(true)}
         isMac={isMacPlatform}
+      />
+      <AudioBar
+        levelStore={levelStore}
+        isRecording={isRecording}
+        micDeviceId={settings.micDeviceId}
+        onChangeMicDeviceId={(deviceId) => {
+          updateSettings({ micDeviceId: deviceId });
+          if (isRecording) toast({ title: 'Microphone changed', description: 'The new microphone is used from the next recording.' });
+        }}
+        devices={mic.devices}
+        defaultLabel={mic.defaultLabel}
+        hasLabels={mic.hasLabels}
+        activeLabel={mic.activeLabel}
       />
       <SegmentGrid
         state={state}
@@ -217,6 +291,20 @@ export default function SermonMode() {
         activeSegmentIdRef={activeSegmentIdRef}
         onRefreshOne={refreshOne}
         flushersRef={flushersRef}
+        onSelectText={handleSelectText}
+      />
+      {selection && !glossarySelection && (
+        <AddToGlossaryBubble
+          selection={selection}
+          onAdd={() => { setGlossarySelection(selection); setSelection(null); }}
+          onDismiss={dismissBubble}
+        />
+      )}
+      <AddToGlossaryDialog
+        selection={glossarySelection}
+        glossaryCsv={settings.sermonGlossaryCsv}
+        onClose={() => setGlossarySelection(null)}
+        onSaved={handleGlossarySaved}
       />
       <SettingsDialog
         isOpen={isSettingsOpen}

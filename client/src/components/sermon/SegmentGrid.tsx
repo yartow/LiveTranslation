@@ -2,6 +2,7 @@ import { useRef, useState, useEffect, useCallback } from 'react';
 import { ChevronDown } from 'lucide-react';
 import { selectOrdered, type SegmentStoreState, type SegmentAction } from '@/lib/sermon/segment-store';
 import SegmentRow from './SegmentRow';
+import type { SourceSelection } from './AddToGlossaryBubble';
 
 interface SegmentGridProps {
   state: SegmentStoreState;
@@ -9,6 +10,7 @@ interface SegmentGridProps {
   activeSegmentIdRef: React.MutableRefObject<string | null>;
   onRefreshOne: (id: string) => void;
   flushersRef: React.MutableRefObject<Map<string, () => void>>;
+  onSelectText: (selection: SourceSelection | null) => void;
 }
 
 const NEAR_BOTTOM_PX = 80;
@@ -17,7 +19,7 @@ const NEAR_BOTTOM_PX = 80;
 // is already near it AND nothing inside the grid is focused. Otherwise a
 // "N nieuwe segmenten" pill appears instead of yanking the view out from
 // under someone mid-edit or mid-read.
-export default function SegmentGrid({ state, dispatch, activeSegmentIdRef, onRefreshOne, flushersRef }: SegmentGridProps) {
+export default function SegmentGrid({ state, dispatch, activeSegmentIdRef, onRefreshOne, flushersRef, onSelectText }: SegmentGridProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const [pendingNew, setPendingNew] = useState(0);
   const prevCountRef = useRef(state.ids.length);
@@ -74,6 +76,7 @@ export default function SegmentGrid({ state, dispatch, activeSegmentIdRef, onRef
             activeSegmentIdRef={activeSegmentIdRef}
             onRefreshOne={onRefreshOne}
             flushersRef={flushersRef}
+            onSelectText={onSelectText}
           />
         ))}
       </div>

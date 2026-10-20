@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { ChunkBasedTranscription, type ChunkTranscriptionEvents, type TranscriptionEngine } from '@/lib/chunk-based-transcription';
-import { initIngestState, appendChunk, releaseProvisional, tick as ingestTick, type IngestConfig, type IngestEffect } from '@/lib/sermon/ingest-buffer';
+import { initIngestState, appendChunk, finalizeBuffer, releaseProvisional, tick as ingestTick, type IngestConfig, type IngestEffect } from '@/lib/sermon/ingest-buffer';
 import { canWriteLive, type SegmentAction, type SegmentStoreState } from '@/lib/sermon/segment-store';
+import { SERMON_VAD_SILENCE_MS, SERMON_MIN_CHUNK_MS, SERMON_MAX_CHUNK_MS } from '@/lib/sermon/chunk-limits';
 import type { SermonTranslationProvider } from '@/hooks/useSettings';
 
 export interface SermonIngestArgs {
@@ -31,27 +32,18 @@ export interface SermonIngestArgs {
   normalizationGain?: number;
   /** Settings.rawAudioCapture — see chunk-based-transcription.ts's setRawAudioCapture. */
   rawAudioCapture?: boolean;
+  /** Settings.micDeviceId ('' = system default) — see chunk-based-transcription.ts's setInputDeviceId. Read at start(), so a change applies from the next recording. */
+  micDeviceId?: string;
+  /** Per audio frame while recording (0 while paused) — feeds the level meter. */
+  onAudioLevel?: (rms: number, peak?: number) => void;
+  /** The microphone stream the recording opened — to show which device is really in use. */
+  onStreamReady?: (stream: MediaStream) => void;
+  /** Non-fatal heads-up (e.g. the chosen mic was missing and the default was used). */
+  onNotice?: (message: string) => void;
   onError: (message: string) => void;
 }
 
 const CAP_TICK_MS = 250;
-// Sermon-mode chunking. Whisper is trained on up-to-30 s windows and is much
-// more accurate (and far less prone to hallucinating) on several seconds of
-// context than on the 1-3 s fragments a short pause threshold produces — a
-// preacher pauses constantly. So: a VAD cut is only allowed once
-// SERMON_MIN_CHUNK_MS of audio is buffered, the pause that triggers it is a
-// natural-sentence-gap length, and SERMON_MAX_CHUNK_MS is a hard cap kept well
-// under Whisper's 30 s window. Cutting on silence (rather than a fixed
-// duration) also means boundaries land between words, which is what makes
-// chunkOverlapMs:0 safe here.
-//
-// 4 s / 15 s (was 6 s / 20 s): text only appears once its chunk is transcribed,
-// so chunk length is most of what the operator waits for. `npm run eval:asr`
-// (4 clips, 2 runs): 4 s min = 7.6% WER, same as 6 s min, no worse gaps, avg
-// chunk 6.6 s vs ~9 s; 3 s min = 8.9% WER and two 8+ word gaps — too short.
-const SERMON_VAD_SILENCE_MS = 700;
-const SERMON_MIN_CHUNK_MS = 4_000;
-const SERMON_MAX_CHUNK_MS = 15_000;
 // How much of the already-transcribed text is fed back to Whisper as its
 // prompt for the next chunk (server trims further, see buildWhisperPrompt).
 const WHISPER_CONTEXT_CHARS = 300;
@@ -74,6 +66,7 @@ export function useSermonIngest(args: SermonIngestArgs) {
 
   const [isRecording, setIsRecording] = useState(false);
   const [isProcessing, setIsProcessing] = useState(false);
+  const [isPaused, setIsPaused] = useState(false);
 
   const backendRef = useRef<ChunkBasedTranscription | null>(null);
   const ingestStateRef = useRef(initIngestState());
@@ -188,9 +181,25 @@ export function useSermonIngest(args: SermonIngestArgs) {
     return () => clearInterval(interval);
   }, [applyEffects, releaseIfTakenOver]);
 
+  // End the current block now: whatever is buffered becomes a finished segment
+  // (the open row is completed, so it gets translated at once instead of
+  // waiting out the idle heuristic in selectTranslatable).
+  const finalizeIngest = useCallback(() => {
+    const now = Date.now();
+    releaseIfTakenOver(now);
+    const step = finalizeBuffer(ingestStateRef.current);
+    ingestStateRef.current = step.state;
+    applyEffects(step.effects, now);
+  }, [applyEffects, releaseIfTakenOver]);
+
   const start = useCallback(async () => {
     const a = argsRef.current;
     setIsProcessing(true);
+    setIsPaused(false);
+    // A previous session that ended without stop() (e.g. a transport error)
+    // may still have an open row — finalize it before the state is reset and
+    // its token is forgotten.
+    finalizeIngest();
     ingestStateRef.current = initIngestState();
     tokenToIdRef.current.clear();
     liveSeqRef.current = 0;
@@ -208,9 +217,13 @@ export function useSermonIngest(args: SermonIngestArgs) {
       onError: (message) => {
         argsRef.current.onError(message);
         setIsRecording(false);
+        setIsPaused(false);
         setIsProcessing(false);
       },
-      onClose: () => { setIsRecording(false); },
+      onClose: () => { setIsRecording(false); setIsPaused(false); },
+      onAudioLevel: (rms, peak) => argsRef.current.onAudioLevel?.(rms, peak),
+      onStreamReady: (stream) => argsRef.current.onStreamReady?.(stream),
+      onNotice: (message) => argsRef.current.onNotice?.(message),
       onDebug: (message) => { if (argsRef.current.debugMode) console.debug('[sermon-ingest]', message); },
     };
 
@@ -218,6 +231,7 @@ export function useSermonIngest(args: SermonIngestArgs) {
     backend.setOutputMode('correct-only');
     backend.setChunkLimits(SERMON_MIN_CHUNK_MS, SERMON_MAX_CHUNK_MS);
     backend.setRawAudioCapture(a.rawAudioCapture ?? true);
+    backend.setInputDeviceId(a.micDeviceId ?? '');
     backendRef.current = backend;
 
     try {
@@ -247,13 +261,32 @@ export function useSermonIngest(args: SermonIngestArgs) {
     } finally {
       setIsProcessing(false);
     }
-  }, [handleCorrected]);
+  }, [handleCorrected, finalizeIngest]);
 
   const stop = useCallback(async () => {
     const backend = backendRef.current;
     backendRef.current = null;
     setIsRecording(false);
+    setIsPaused(false);
+    // backend.stop() drains in-flight chunks, so their text is in the buffer
+    // by the time it resolves — only then finalize the last block.
     if (backend) await backend.stop();
+    finalizeIngest();
+  }, [finalizeIngest]);
+
+  // Pause keeps the session (mic, socket, open block) alive: the last words are
+  // still transcribed and land in the ingest buffer, which flushes them on its
+  // normal block deadline — no finalize here, the final chunk hasn't arrived yet.
+  const pause = useCallback(() => {
+    if (!backendRef.current) return;
+    backendRef.current.pause();
+    setIsPaused(true);
+  }, []);
+
+  const resume = useCallback(() => {
+    if (!backendRef.current) return;
+    backendRef.current.resume();
+    setIsPaused(false);
   }, []);
 
   // Stop any active mic/WebSocket session on unmount (e.g. navigating away
@@ -263,5 +296,5 @@ export function useSermonIngest(args: SermonIngestArgs) {
     return () => { backendRef.current?.stop(); };
   }, []);
 
-  return { isRecording, isProcessing, start, stop };
+  return { isRecording, isProcessing, isPaused, start, stop, pause, resume };
 }

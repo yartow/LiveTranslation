@@ -501,6 +501,7 @@ export default function Home() {
       } else if (settings.transcriptionProvider === 'whisper' || settings.transcriptionProvider === 'mlx') {
         const chunkBackend = new ChunkBasedTranscription(events, chunkDurationSecs * 1000);
         chunkBackend.setRawAudioCapture(settings.rawAudioCapture);
+        chunkBackend.setInputDeviceId(settings.micDeviceId);
         backend = chunkBackend;
         backendRef.current = backend;
         const engine = settings.transcriptionProvider === 'mlx' ? 'mlx' : 'openai';

@@ -2,6 +2,8 @@
 // Kept separate from useTranslationQueue.ts so the hook's batching/debounce/
 // staleness logic doesn't need to know about fetch or the wire format.
 
+import type { ScriptureInfo } from './segment-model';
+
 export interface ReadingCandidate {
   bookNumber: number;
   chapter: number;
@@ -27,7 +29,7 @@ export interface ScriptureResult {
   verseStart?: number;
   text?: string;
   reference?: string;
-  version?: 'ESV' | 'KJV';
+  version?: ScriptureInfo['version'];
   verseEnd?: number;
 }
 

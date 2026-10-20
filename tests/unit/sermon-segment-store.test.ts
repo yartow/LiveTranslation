@@ -353,12 +353,36 @@ describe('canWriteLive', () => {
     expect(canWriteLive(state.byId[id])).toBe(false);
   });
 
-  it('is true for an ordinary PROVISIONAL or PENDING segment', () => {
+  it('is true for an ordinary PROVISIONAL segment', () => {
     let state = initState('t');
     state = segmentReducer(state, {
       type: 'APPEND_SEGMENT', sourceText: 'Half een zin', startTime: 0, endTime: 1, status: 'PROVISIONAL', now: 0,
     });
     expect(canWriteLive(state.byId[state.ids[0]])).toBe(true);
+  });
+
+  it('is false once a row has moved past PROVISIONAL (PENDING, TRANSLATING, TRANSLATED)', () => {
+    let state = initState('t');
+    state = segmentReducer(state, {
+      type: 'APPEND_SEGMENT', id: 'a', sourceText: 'Een zin.', startTime: 0, endTime: 1, status: 'PROVISIONAL', now: 0,
+    });
+    state = segmentReducer(state, { type: 'COMPLETE_PROVISIONAL', id: 'a', sourceText: 'Een zin.', endTime: 1, now: 1 });
+    expect(canWriteLive(state.byId.a)).toBe(false); // PENDING
+    state = segmentReducer(state, { type: 'MARK_TRANSLATING', ids: ['a'] });
+    expect(canWriteLive(state.byId.a)).toBe(false);
+    state = segmentReducer(state, { type: 'APPLY_TRANSLATION', id: 'a', translation: 'A sentence.', requestHash: hashText('Een zin.') });
+    expect(state.byId.a.status).toBe('TRANSLATED');
+    expect(canWriteLive(state.byId.a)).toBe(false);
+  });
+
+  it('an idle-translated row is not reopened by a late live update', () => {
+    let state = initState('t');
+    state = segmentReducer(state, {
+      type: 'APPEND_SEGMENT', id: 'a', sourceText: 'Een halve zin', startTime: 0, endTime: 1, status: 'PROVISIONAL', now: 0,
+    });
+    state = segmentReducer(state, { type: 'APPLY_TRANSLATION', id: 'a', translation: 'A half sentence', requestHash: hashText('Een halve zin') });
+    const after = segmentReducer(state, { type: 'UPDATE_PROVISIONAL', id: 'a', sourceText: 'Een halve zin die doorgaat', endTime: 2, now: 40_000 });
+    expect(after).toBe(state);
   });
 });
 
@@ -490,9 +514,9 @@ describe('selectPublishableLines', () => {
   it('includes only TRANSLATED segments with non-empty text, ordered by index', () => {
     const state = seedTranslated(3);
     expect(selectPublishableLines(state)).toEqual([
-      { id: state.ids[0], index: 0, text: 'EN Zin 0.' },
-      { id: state.ids[1], index: 1, text: 'EN Zin 1.' },
-      { id: state.ids[2], index: 2, text: 'EN Zin 2.' },
+      { id: state.ids[0], index: 0, text: 'EN Zin 0.', manual: false },
+      { id: state.ids[1], index: 1, text: 'EN Zin 1.', manual: false },
+      { id: state.ids[2], index: 2, text: 'EN Zin 2.', manual: false },
     ]);
   });
 
@@ -542,8 +566,8 @@ describe('selectPublishableLines', () => {
 
     const lines = selectPublishableLines(state);
     expect(lines).toEqual([
-      { id: scriptureId, index: 0, text: 'For God so loved the world...' },
-      { id: manualId, index: 1, text: 'By hand.' },
+      { id: scriptureId, index: 0, text: 'For God so loved the world...', manual: false },
+      { id: manualId, index: 1, text: 'By hand.', manual: true },
     ]);
   });
 

@@ -50,6 +50,8 @@ export interface AppSettings {
   // Capture the mic without the browser's echo-cancel / noise-suppress / auto-gain
   // (they hurt Whisper — see chunk-based-transcription.ts).
   rawAudioCapture: boolean;
+  // Microphone to record from: a deviceId from enumerateDevices(); '' = the system default input.
+  micDeviceId: string;
   useTranscriptAsWhisperContext: boolean;
   chunkOverlapMs: number;
   useVADChunking: boolean;
@@ -107,6 +109,7 @@ const defaultSettings: AppSettings = {
   ollamaBaseUrl: 'http://localhost:11434',
   ollamaModel: 'qwen3.6:latest',
   rawAudioCapture: true,
+  micDeviceId: '',
   useTranscriptAsWhisperContext: true,
   chunkOverlapMs: 500,
   useVADChunking: false,
@@ -220,6 +223,9 @@ function loadSettings(): AppSettings {
   } else {
     merged.assemblyTurnSilenceMs = clamp(merged.assemblyTurnSilenceMs, 200, 2000);
   }
+  if (typeof merged.micDeviceId !== 'string' || merged.micDeviceId.length > 512) {
+    merged.micDeviceId = defaultSettings.micDeviceId;
+  }
   if (!Array.isArray(merged.deviceProfiles)) {
     merged.deviceProfiles = [];
   }
@@ -320,6 +326,7 @@ export function useSettings() {
           ollamaBaseUrl: next.ollamaBaseUrl,
           ollamaModel: next.ollamaModel,
           rawAudioCapture: next.rawAudioCapture,
+          micDeviceId: next.micDeviceId,
           useTranscriptAsWhisperContext: next.useTranscriptAsWhisperContext,
           chunkOverlapMs: next.chunkOverlapMs,
           useVADChunking: next.useVADChunking,

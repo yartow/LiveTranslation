@@ -19,6 +19,13 @@
 // isn't flushed by (a) because it never gets a boundary is still bounded by
 // the identical deadline in (b).
 //
+// HARD CAP: text that never gets a sentence boundary (unpunctuated run-on
+// speech, or correction deliberately leaving mid-sentence chunks unpunctuated)
+// is finalized whole once the block is HARD_CAP_FACTOR x cfg.maxLatencyMs old
+// (finalizeBuffer) — otherwise the open row would keep growing and, because it
+// keeps changing, never be translated. finalizeBuffer is also what the hook
+// calls when recording stops, so the last words are never left hanging.
+//
 // The block clock RESTARTS on every branch-(a) flush: a leftover
 // half-sentence that survives a flush begins a fresh cfg.maxLatencyMs window
 // rather than inheriting the just-expired one. (An earlier version of this
@@ -89,6 +96,9 @@ export type IngestEffect =
   | { type: 'updateProvisional'; token: string; text: string }
   | { type: 'completeProvisional'; token: string; text: string };
 
+/** A block with no sentence boundary is finalized whole once it is this many times maxLatencyMs old. */
+const HARD_CAP_FACTOR = 2;
+
 export interface IngestStep {
   state: IngestState;
   effects: IngestEffect[];
@@ -144,11 +154,11 @@ function trimPiecesTo(pieces: Piece[], k: number): Piece[] {
 }
 
 /**
- * Early display: make sure the open provisional row shows exactly what is in the
- * buffer — open one if there is text and no row, update it if the text changed
- * since the last send, do nothing otherwise (so the 250 ms tick stays quiet).
+ * Make sure the open provisional row shows exactly what is in the buffer — open
+ * one if there is text and no row, update it if the text changed since the last
+ * send, do nothing otherwise (so the 250 ms tick stays quiet).
  */
-function syncEarlyRow(state: IngestState): IngestStep {
+function syncOpenRow(state: IngestState): IngestStep {
   const text = bufferText(state).trim();
   if (!text) return { state, effects: [] };
   if (state.provisionalToken == null) {
@@ -210,7 +220,7 @@ function evaluate(state: IngestState, cfg: IngestConfig, now: number): IngestSte
     const wordCount = head.trim().split(/\s+/).filter(Boolean).length;
     const minWords = cfg.minBlockWords ?? 0;
     if (wordCount < minWords && now - state.anchorAt! < cfg.maxLatencyMs * 1.5) {
-      return cfg.showEarly ? syncEarlyRow(state) : { state, effects: [] };
+      return cfg.showEarly ? syncOpenRow(state) : { state, effects: [] };
     }
 
     const survivingPieces = trimPiecesTo(state.pieces, lastB);
@@ -233,40 +243,55 @@ function evaluate(state: IngestState, cfg: IngestConfig, now: number): IngestSte
     // Early display: the block was already on screen in the open row — finalize
     // that row with the complete sentences (no row open, e.g. the human took it
     // over: emit as a plain segment) and show the leftover partial in a new row.
-    const effects: IngestEffect[] = [];
-    if (sentences.length > 0) {
-      const text = sentences.join(' ');
-      effects.push(state.provisionalToken
-        ? { type: 'completeProvisional', token: state.provisionalToken, text }
-        : { type: 'emit', text, provisional: false });
-    }
-    const next = syncEarlyRow({ ...flushed, provisionalToken: null, provisionalText: null });
-    return { state: next.state, effects: [...effects, ...next.effects] };
+    // Defensive: if nothing was finalized the open row must stay open (and just
+    // be updated to the leftover) — dropping its token would orphan a row that
+    // still shows the head. (head always ends in a terminator, so this should
+    // not happen today.)
+    if (sentences.length === 0) return syncOpenRow(flushed);
+    const text = sentences.join(' ');
+    const complete: IngestEffect = state.provisionalToken
+      ? { type: 'completeProvisional', token: state.provisionalToken, text }
+      : { type: 'emit', text, provisional: false };
+    const next = syncOpenRow({ ...flushed, provisionalToken: null, provisionalText: null });
+    return { state: next.state, effects: [complete, ...next.effects] };
+  }
+
+  // No sentence boundary and the block is way past its target: finalize the whole
+  // buffer rather than let an unpunctuated run-on grow (and stay untranslated) forever.
+  if (lastB < 0 && state.anchorAt !== null && now - state.anchorAt >= cfg.maxLatencyMs * HARD_CAP_FACTOR) {
+    return finalizeBuffer(state);
   }
 
   // Early display: nothing to flush (yet) — keep the open row showing the buffer.
-  if (cfg.showEarly) return syncEarlyRow(state);
-
-  // (b) No complete sentence at all — only act once the cap has expired.
-  if (lastB < 0 && capExpired) {
-    const text = buf.trim();
-    if (state.provisionalToken == null) {
-      const token = `p${state.provisionalSeq}`;
-      return {
-        state: { ...state, provisionalToken: token, provisionalSeq: state.provisionalSeq + 1, provisionalText: text },
-        effects: [{ type: 'emit', text, provisional: true, token }],
-      };
-    }
-    // Same provisional row keeps growing — never open a second one, and
-    // don't re-send text that hasn't changed since the last update.
-    if (text === state.provisionalText) return { state, effects: [] };
-    return {
-      state: { ...state, provisionalText: text },
-      effects: [{ type: 'updateProvisional', token: state.provisionalToken, text }],
-    };
-  }
+  // (b) Otherwise, no complete sentence at all — only show it once the cap has expired.
+  if (cfg.showEarly || (lastB < 0 && capExpired)) return syncOpenRow(state);
 
   return { state, effects: [] };
+}
+
+/**
+ * Ends the current block now: everything in the buffer becomes one finished
+ * segment (completing the open row, or a plain segment if none is open) and the
+ * buffer starts empty. Used by the hard cap above and by the hook on stop/start.
+ */
+export function finalizeBuffer(state: IngestState): IngestStep {
+  const buf = bufferText(state).trim();
+  const text = buf || state.provisionalText || '';
+  const reset: IngestState = {
+    ...state,
+    pieces: [],
+    anchorAt: null,
+    provisionalToken: null,
+    provisionalText: null,
+    recentTail: buf ? tail80(buf) : state.recentTail,
+  };
+  if (!text) return { state: reset, effects: [] };
+  return {
+    state: reset,
+    effects: [state.provisionalToken
+      ? { type: 'completeProvisional', token: state.provisionalToken, text }
+      : { type: 'emit', text, provisional: false }],
+  };
 }
 
 /**

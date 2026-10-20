@@ -35,27 +35,22 @@
 // LLM correction step (needs API keys), the overlap dedupe, and the browser's
 // own mic processing (the clips are already-recorded audio).
 
-import { spawn } from 'child_process';
 import { existsSync, readdirSync, readFileSync, writeFileSync, mkdtempSync, rmSync } from 'fs';
 import { tmpdir } from 'os';
 import { join, basename, extname } from 'path';
-import { SpeechGate, windowMeanAbs } from '../client/src/lib/chunk-based-transcription';
+import { RATE, decodeTo16kMono, planChunks, transcribePlannedChunks, type ChunkingSetup } from './lib/asr-chunks';
+import { SERMON_VAD_SILENCE_MS, SERMON_MIN_CHUNK_MS, SERMON_MAX_CHUNK_MS } from '../client/src/lib/sermon/chunk-limits';
 import { computeWER, computeCER, countAsrArtifacts, deletionRuns, normalizeForScoring, parseAliases } from '../tests/lib/wer';
 
 const ROOT = join(import.meta.dirname, '..');
 const AUDIO_DIR = join(ROOT, 'tests/fixtures/audio');
 const REF_DIR = join(ROOT, 'tests/fixtures/reference');
-const RATE = 16_000;
-const FRAME = 1365; // ~85 ms at 16 kHz, matching the browser's ~85 ms frames at 48 kHz
-const FRAME_MS = (FRAME / RATE) * 1000;
-const GATE_WINDOW_MS = 20;
-const GATE_WINDOW = Math.round((GATE_WINDOW_MS / 1000) * RATE);
 const LANGUAGE = 'nl';
 
 interface Setup {
   name: string;
   /** null = one single pass over the whole clip (the upper bound). */
-  chunking: null | { vad: boolean; minMs: number; silenceMs: number; maxMs: number };
+  chunking: null | ChunkingSetup;
   /** Feed the previous chunks' text back to Whisper as its prompt. */
   context: boolean;
 }
@@ -65,84 +60,10 @@ const SETUPS: Setup[] = [
   { name: 'old sermon (1s min, 1.1s pause, 7.5s cap, no ctx)', chunking: { vad: true, minMs: 1000, silenceMs: 1100, maxMs: 7500 }, context: false },
   { name: 'fixed 5s chunks, no ctx', chunking: { vad: false, minMs: 5000, silenceMs: 0, maxMs: 5000 }, context: false },
   { name: 'new sermon, no ctx (6s min, 0.7s pause, 20s cap)', chunking: { vad: true, minMs: 6000, silenceMs: 700, maxMs: 20000 }, context: false },
-  { name: 'new sermon + ctx (current app)', chunking: { vad: true, minMs: 6000, silenceMs: 700, maxMs: 20000 }, context: true },
-  { name: 'faster: 4s min + ctx', chunking: { vad: true, minMs: 4000, silenceMs: 700, maxMs: 15000 }, context: true },
+  { name: 'Sunday 2026-10-11 app (6s min, 20s cap) + ctx', chunking: { vad: true, minMs: 6000, silenceMs: 700, maxMs: 20000 }, context: true },
+  { name: 'current app (4s min, 15s cap) + ctx', chunking: { vad: true, minMs: SERMON_MIN_CHUNK_MS, silenceMs: SERMON_VAD_SILENCE_MS, maxMs: SERMON_MAX_CHUNK_MS }, context: true },
   { name: 'faster: 3s min + ctx', chunking: { vad: true, minMs: 3000, silenceMs: 700, maxMs: 15000 }, context: true },
 ];
-
-// ── audio helpers ────────────────────────────────────────────────────────────
-
-function decodeTo16kMono(path: string): Promise<Float32Array> {
-  return new Promise((resolve, reject) => {
-    const ff = spawn('ffmpeg', ['-v', 'error', '-i', path, '-f', 'f32le', '-ac', '1', '-ar', String(RATE), '-']);
-    const parts: Buffer[] = [];
-    let err = '';
-    ff.stdout.on('data', (d: Buffer) => parts.push(d));
-    ff.stderr.on('data', (d: Buffer) => { err += d.toString(); });
-    ff.on('error', reject);
-    ff.on('close', (code) => {
-      if (code !== 0) return reject(new Error(`ffmpeg failed (${code}): ${err}`));
-      const buf = Buffer.concat(parts);
-      resolve(new Float32Array(buf.buffer, buf.byteOffset, Math.floor(buf.byteLength / 4)).slice());
-    });
-  });
-}
-
-function wavBuffer(samples: Float32Array): Buffer {
-  const data = Buffer.alloc(samples.length * 2);
-  for (let i = 0; i < samples.length; i++) {
-    const s = Math.max(-1, Math.min(1, samples[i]));
-    data.writeInt16LE(Math.round(s < 0 ? s * 0x8000 : s * 0x7fff), i * 2);
-  }
-  const h = Buffer.alloc(44);
-  h.write('RIFF', 0); h.writeUInt32LE(36 + data.length, 4); h.write('WAVE', 8); h.write('fmt ', 12);
-  h.writeUInt32LE(16, 16); h.writeUInt16LE(1, 20); h.writeUInt16LE(1, 22); h.writeUInt32LE(RATE, 24);
-  h.writeUInt32LE(RATE * 2, 28); h.writeUInt16LE(2, 32); h.writeUInt16LE(16, 34); h.write('data', 36);
-  h.writeUInt32LE(data.length, 40);
-  return Buffer.concat([h, data]);
-}
-
-// ── chunk planner: mirrors ChunkBasedTranscription.onaudioprocess/commitChunk ─
-
-interface Chunk { start: number; end: number }
-
-export function planChunks(samples: Float32Array, c: NonNullable<Setup['chunking']>): { chunks: Chunk[]; discarded: number } {
-  const chunks: Chunk[] = [];
-  let discarded = 0;
-  let chunkStart = 0;
-  const gate = new SpeechGate();
-  let vadSilenceMs = 0;
-  const minSamples = Math.round((c.minMs / 1000) * RATE);
-  const maxSamples = Math.max(minSamples, Math.round((c.maxMs / 1000) * RATE));
-
-  const commit = (end: number) => {
-    if (end <= chunkStart) return;
-    if (gate.keepChunk()) chunks.push({ start: chunkStart, end });
-    else discarded++;
-    chunkStart = end;
-    gate.resetChunk();
-    vadSilenceMs = 0;
-  };
-
-  for (let pos = 0; pos + FRAME <= samples.length; pos += FRAME) {
-    let sum = 0;
-    for (let i = pos; i < pos + FRAME; i++) sum += Math.abs(samples[i]);
-    const meanAbs = sum / FRAME;
-
-    const silent = meanAbs < Math.max(0.005, gate.noiseFloor * 2.0);
-    vadSilenceMs = silent ? vadSilenceMs + FRAME_MS : 0;
-    // Same 20 ms-window gate as the browser (see SpeechGate).
-    for (const w of windowMeanAbs(samples.subarray(pos, pos + FRAME), GATE_WINDOW)) gate.push(w, GATE_WINDOW_MS);
-
-    const end = pos + FRAME;
-    const accumulated = end - chunkStart;
-    if (c.vad && vadSilenceMs >= c.silenceMs && accumulated >= minSamples) commit(end);
-    else if (accumulated >= maxSamples) commit(end);
-  }
-  const tail = samples.length - chunkStart;
-  if (tail >= 100) commit(samples.length);
-  return { chunks, discarded };
-}
 
 // ── scoring ──────────────────────────────────────────────────────────────────
 
@@ -198,10 +119,6 @@ async function main() {
   try { process.loadEnvFile(join(ROOT, '.env')); } catch { /* optional */ }
   // openai.ts builds a client at import; the key is never used here.
   process.env.OPENAI_API_KEY ??= 'unused-by-asr-eval';
-  const { transcribeWithMlxDetailed } = await import('../server/lib/mlx-whisper');
-  const { buildWhisperPrompt } = await import('../server/lib/openai');
-  const { isAsrArtifact, stripAsrArtifacts } = await import('../server/lib/asr-artifacts');
-  const { transcribeGuarded } = await import('../server/lib/whisper-guard');
 
   const args = parseArgs(process.argv.slice(2));
   const filter = args.positional[0];
@@ -233,36 +150,23 @@ async function main() {
         const t0 = Date.now();
         const planned = setup.chunking
           ? planChunks(samples, setup.chunking)
-          : { chunks: [{ start: 0, end: samples.length }], discarded: 0 };
+          : { chunks: [{ start: 0, end: samples.length, cut: 'stop' as const }], discarded: 0 };
 
-        const rawParts: string[] = [];
-        const filteredParts: string[] = [];
-        let prev = '';
-        let uncoveredSecs = 0;
-        for (let i = 0; i < planned.chunks.length; i++) {
-          const { start, end } = planned.chunks[i];
-          const path = join(work, `${stem}-${i}.wav`);
-          writeFileSync(path, wavBuffer(samples.subarray(start, end)));
-          const prompt = buildWhisperPrompt(glossaryText, undefined, setup.context ? prev || undefined : undefined, LANGUAGE, args.glossaryTerms);
-          let chunkUncovered = 0;
-          const guarded = await transcribeGuarded(
-            async (usePrompt) => {
-              const res = await transcribeWithMlxDetailed(path, LANGUAGE, usePrompt ? prompt : undefined, undefined, args.opts);
-              chunkUncovered = (res.diag?.uncovered ?? []).reduce((n, [a, b]) => n + (b - a), 0);
-              return res.text;
-            },
-            args.guard && !!prompt, (end - start) / RATE,
-          );
-          uncoveredSecs += chunkUncovered;
-          const raw = guarded.text.trim();
-          if (args.verbose && guarded.retried) console.log('      (guard: retried without the prompt)');
-          rmSync(path, { force: true });
-          if (args.verbose) console.log(`      [${(start / RATE).toFixed(1)}-${(end / RATE).toFixed(1)}s] prompt=${JSON.stringify(prompt ?? null)}\n        -> ${JSON.stringify(raw)}`);
-          if (raw) rawParts.push(raw);
-          // Same order as server/lib/chunk-transcription.ts
-          const cleaned = !raw || isAsrArtifact(raw, LANGUAGE) ? '' : stripAsrArtifacts(raw, LANGUAGE);
-          if (cleaned) { filteredParts.push(cleaned); prev = (prev + ' ' + cleaned).slice(-300); }
-        }
+        const results = await transcribePlannedChunks(samples, planned.chunks, {
+          language: LANGUAGE, context: setup.context, glossaryText, glossaryTerms: args.glossaryTerms,
+          guard: args.guard, opts: args.opts, workDir: work,
+          onChunk: (_i, r) => {
+            if (!args.verbose) return;
+            if (r.guardRetried) console.log('      (guard: retried without the prompt)');
+            console.log(`      [${(r.chunk.start / RATE).toFixed(1)}-${(r.chunk.end / RATE).toFixed(1)}s] prompt=${JSON.stringify(r.prompt ?? null)}\n        -> ${JSON.stringify(r.raw)}`);
+          },
+        });
+        const rawParts = results.map(r => r.raw).filter(Boolean);
+        const filteredParts = results.map(r => r.cleaned).filter(Boolean);
+        const uncoveredSecs = results.reduce((n, r) => {
+          const last = r.diags[r.diags.length - 1]?.diag; // same as before: the last attempt's diag
+          return n + (last?.uncovered ?? []).reduce((m, [x, y]) => m + (y - x), 0);
+        }, 0);
 
         const rawText = rawParts.join(' ');
         const filtered = filteredParts.join(' ');

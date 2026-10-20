@@ -6,7 +6,10 @@ export interface ChunkTranscriptionEvents {
   onClose: () => void;
   onStreamReady?: (stream: MediaStream) => void;
   onDebug?: (message: string) => void;
-  onAudioLevel?: (rms: number) => void;
+  /** `peak` (0-1, max |sample| in the frame) lets a meter flag clipping, which RMS alone hides. */
+  onAudioLevel?: (rms: number, peak?: number) => void;
+  /** A non-fatal heads-up for the operator (e.g. the chosen microphone was missing and the default was used). */
+  onNotice?: (message: string) => void;
 }
 
 export type TranslationProvider = 'openai' | 'claude' | 'ollama' | 'none';
@@ -358,6 +361,8 @@ export class ChunkBasedTranscription {
   private chunkDurationMs: number;
   private chunkIndex = 0;
   private isRecording = false;
+  // True between pause() and resume(): the mic and socket stay open, but audio frames are dropped.
+  private paused = false;
   private engine: TranscriptionEngine;
   private translationProvider: TranslationProvider;
   private openaiApiKey: string;
@@ -389,6 +394,8 @@ export class ChunkBasedTranscription {
   // suppression gates word tails and AGC pumps the level, both of which
   // Whisper handles worse than raw audio.
   private rawAudioCapture: boolean = true;
+  /** '' = whatever the system default input is. */
+  private inputDeviceId: string = '';
 
   // VAD state
   private vadSilenceMs: number = 0;
@@ -642,11 +649,21 @@ export class ChunkBasedTranscription {
   }
 
   private async startAudioCapture(): Promise<void> {
-    this.mediaStream = await navigator.mediaDevices.getUserMedia({
-      audio: this.rawAudioCapture
-        ? { echoCancellation: false, noiseSuppression: false, autoGainControl: false, channelCount: 1 }
-        : { echoCancellation: true, noiseSuppression: true },
-    });
+    const constraints: MediaTrackConstraints = this.rawAudioCapture
+      ? { echoCancellation: false, noiseSuppression: false, autoGainControl: false, channelCount: 1 }
+      : { echoCancellation: true, noiseSuppression: true };
+    try {
+      this.mediaStream = await navigator.mediaDevices.getUserMedia({
+        audio: this.inputDeviceId ? { ...constraints, deviceId: { exact: this.inputDeviceId } } : constraints,
+      });
+    } catch (err) {
+      // The chosen microphone was unplugged since it was picked: never block the
+      // recording on that, use the system default and say so.
+      const name = err instanceof DOMException ? err.name : '';
+      if (!this.inputDeviceId || (name !== 'OverconstrainedError' && name !== 'NotFoundError')) throw err;
+      this.events.onNotice?.('The selected microphone is not available — using the system default instead.');
+      this.mediaStream = await navigator.mediaDevices.getUserMedia({ audio: constraints });
+    }
     this.events.onStreamReady?.(this.mediaStream);
     this.events.onDebug?.(`Microphone acquired (${this.rawAudioCapture ? 'raw, no echo/noise/gain processing' : 'browser-processed'}) — starting PCM pipeline`);
 
@@ -682,6 +699,7 @@ export class ChunkBasedTranscription {
 
     this.processor.onaudioprocess = (event) => {
       if (!this.isRecording) return;
+      if (this.paused) { this.events.onAudioLevel?.(0); return; }
       const input = event.inputBuffer.getChannelData(0);
 
       // RMS for audio level callback
@@ -693,7 +711,7 @@ export class ChunkBasedTranscription {
         if (a > peak) peak = a;
       }
       const rms = Math.sqrt(sumSq / input.length);
-      this.events.onAudioLevel?.(rms);
+      this.events.onAudioLevel?.(rms, peak);
 
       // Apply normalization gain (clamp to prevent clipping)
       const gained = new Float32Array(input.length);
@@ -912,6 +930,11 @@ export class ChunkBasedTranscription {
     this.rawAudioCapture = enabled;
   }
 
+  /** Set BEFORE start(): a deviceId from enumerateDevices(); '' = system default. */
+  setInputDeviceId(deviceId: string): void {
+    this.inputDeviceId = deviceId;
+  }
+
   setNormalizationGain(gain: number): void {
     this.normalizationGain = Math.max(0.1, Math.min(10, gain));
   }
@@ -992,10 +1015,37 @@ export class ChunkBasedTranscription {
     }
   }
 
+  /**
+   * Stops listening without ending the session. What was said up to now is
+   * committed as a final chunk (so the last words are still transcribed and
+   * delivered); audio while paused is dropped, not buffered. The mic and the
+   * socket stay open, so resume() is instant and needs no new permission prompt.
+   * Archive `startSample`s count only recorded audio, so a paused stretch
+   * leaves no gap in a session's `full.wav`.
+   */
+  pause(): void {
+    if (!this.isRecording || this.paused) return;
+    if (this.assembler.sampleCount >= 100) this.commitChunk('stop');
+    this.assembler.discard(); // also drops the overlap prefix — it must not lead the first chunk after the pause
+    this.gate.resetChunk();
+    this.vadSilenceMs = 0;
+    this.paused = true;
+    this.events.onAudioLevel?.(0);
+    this.events.onDebug?.('Paused');
+  }
+
+  resume(): void {
+    if (!this.isRecording || !this.paused) return;
+    this.paused = false;
+    this.vadSilenceMs = 0;
+    this.events.onDebug?.('Resumed');
+  }
+
   async stop(): Promise<void> {
     this.intentionalClose = true;
     this.reconnecting = false;
     this.isRecording = false;
+    this.paused = false;
 
     // Flush remaining buffered audio as the final chunk
     if (this.assembler.sampleCount >= 100) this.commitChunk('stop');

@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { initIngestState, appendChunk, tick, releaseProvisional, type IngestState } from '../../client/src/lib/sermon/ingest-buffer.js';
+import { initIngestState, appendChunk, tick, releaseProvisional, finalizeBuffer, type IngestState } from '../../client/src/lib/sermon/ingest-buffer.js';
 
 describe('appendChunk — AC6: sentence-boundary flush gated on the block duration', () => {
   it('does not flush a complete sentence before the block duration is reached, then flushes it once due', () => {
@@ -120,7 +120,7 @@ describe('cap-flush PROVISIONAL path (AC8b)', () => {
     state = step.state;
     expect(state.provisionalToken).toBe('p0'); // still the same row
     // ...and a later tick with nothing new stays quiet.
-    expect(tick(state, cfg, 6000).effects).toEqual([]);
+    expect(tick(state, cfg, 5000).effects).toEqual([]);
 
     // Sentence finally completes.
     const completion = appendChunk(state, '. Klaar.', cfg, 7000);
@@ -317,6 +317,29 @@ describe('showEarly — text is shown in an editable row as soon as a chunk arri
     expect(step.effects).toEqual([{ type: 'completeProvisional', token: 'p0', text: 'Een lange zin zonder punt die eindigt.' }]);
   });
 
+  it('hard cap: a run with no sentence end at all is finalized whole at 2x the block length', () => {
+    let { state } = appendChunk(initIngestState(), 'Een lange zin zonder punt', cfg, 0);
+    state = appendChunk(state, 'en nog meer woorden', cfg, 9000).state;
+    expect(tick(state, cfg, 19_999).effects).toEqual([]);
+    const step = tick(state, cfg, 20_000);
+    expect(step.effects).toEqual([{ type: 'completeProvisional', token: 'p0', text: 'Een lange zin zonder punt en nog meer woorden' }]);
+    expect(step.state.provisionalToken).toBeNull();
+    // Nothing is left behind; the next words open a fresh row.
+    expect(tick(step.state, cfg, 20_250).effects).toEqual([]);
+    expect(appendChunk(step.state, 'Nieuwe zin', cfg, 21_000).effects).toEqual([
+      { type: 'emit', text: 'Nieuwe zin', provisional: true, token: 'p1' },
+    ]);
+  });
+
+  it('hard cap also applies without showEarly', () => {
+    const plain = { maxLatencyMs: 10_000 };
+    let { state } = appendChunk(initIngestState(), 'Een lange zin zonder punt', plain, 0);
+    const shown = tick(state, plain, 10_000);
+    expect(shown.effects).toEqual([{ type: 'emit', text: 'Een lange zin zonder punt', provisional: true, token: 'p0' }]);
+    const step = tick(shown.state, plain, 20_000);
+    expect(step.effects).toEqual([{ type: 'completeProvisional', token: 'p0', text: 'Een lange zin zonder punt' }]);
+  });
+
   it('a short block keeps its row visible (and growing) while the minBlockWords hold applies', () => {
     const held = { ...cfg, minBlockWords: 12 };
     let { state } = appendChunk(initIngestState(), 'Amen.', held, 0);
@@ -340,5 +363,37 @@ describe('showEarly — text is shown in an editable row as soon as a chunk arri
   it('the default (showEarly off) still holds text until the deadline', () => {
     const step = appendChunk(initIngestState(), 'Dit is een zin. En nog', { maxLatencyMs: 10_000 }, 0);
     expect(step.effects).toEqual([]);
+  });
+});
+
+describe('finalizeBuffer', () => {
+  const cfg = { maxLatencyMs: 10_000, showEarly: true };
+
+  it('completes the open row with everything buffered, partial sentence included', () => {
+    const { state } = appendChunk(initIngestState(), 'Dit is een zin. En nog', cfg, 0);
+    const step = finalizeBuffer(state);
+    expect(step.effects).toEqual([{ type: 'completeProvisional', token: 'p0', text: 'Dit is een zin. En nog' }]);
+    expect(step.state.pieces).toEqual([]);
+    expect(step.state.provisionalToken).toBeNull();
+    expect(step.state.anchorAt).toBeNull();
+  });
+
+  it('emits a plain segment when no row is open (the human took it over)', () => {
+    let { state } = appendChunk(initIngestState(), 'Het begin', cfg, 0);
+    state = releaseProvisional(state, 1000);
+    state = appendChunk(state, 'en het vervolg', cfg, 2000).state;
+    const open = finalizeBuffer({ ...state, provisionalToken: null, provisionalText: null });
+    expect(open.effects).toEqual([{ type: 'emit', text: 'en het vervolg', provisional: false }]);
+  });
+
+  it('does nothing for an empty buffer with no row', () => {
+    const step = finalizeBuffer(initIngestState());
+    expect(step.effects).toEqual([]);
+  });
+
+  it('keeps the segment counter so the next row gets a fresh token', () => {
+    const { state } = appendChunk(initIngestState(), 'Eerste', cfg, 0);
+    const next = appendChunk(finalizeBuffer(state).state, 'Tweede', cfg, 1000);
+    expect(next.effects).toEqual([{ type: 'emit', text: 'Tweede', provisional: true, token: 'p1' }]);
   });
 });

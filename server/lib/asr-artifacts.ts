@@ -127,6 +127,9 @@ const LEADING_CAPS_CAPTION_RE = /^\s*(?:ZANG EN MUZIEK|MUZIEK|APPLAUS|GELACH|MUS
 // preacher's "(Johannes 3:16)"-style aside survives).
 const BRACKET_ANNOTATION_RE = /\[[^\]]{0,80}\]/g;
 const ASTERISK_ANNOTATION_RE = /\*[^*\n]{1,80}\*/g;
+// A bare run of asterisks ("... blij van. ***") is Whisper's censor/noise marker, never speech;
+// seen trailing real speech in 4 of 408 replayed 4 s chunks.
+const ASTERISK_RUN_RE = /\*{2,}/g;
 const MUSIC_NOTE_SPAN_RE = /[♪♫][^♪♫]*[♪♫]/g;
 const MUSIC_NOTE_RE = /[♪♫♬]/g;
 const PAREN_ANNOTATION_RE = /\(([^)]{1,60})\)/g;
@@ -193,6 +196,7 @@ export function stripAsrArtifacts(rawText: string, sourceLanguage?: string): str
 
   text = text.replace(BRACKET_ANNOTATION_RE, ' ')
     .replace(ASTERISK_ANNOTATION_RE, ' ')
+    .replace(ASTERISK_RUN_RE, ' ')
     .replace(MUSIC_NOTE_SPAN_RE, ' ')
     .replace(MUSIC_NOTE_RE, ' ')
     .replace(PAREN_ANNOTATION_RE, (m, inner: string) => (ARTIFACT_PHRASES.has(normalize(inner)) ? ' ' : m));

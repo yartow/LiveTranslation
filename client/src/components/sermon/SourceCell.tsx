@@ -1,6 +1,7 @@
 import { useRef, useEffect, useLayoutEffect, useCallback } from 'react';
 import type { Segment } from '@/lib/sermon/segment-model';
 import type { SegmentAction } from '@/lib/sermon/segment-store';
+import type { SourceSelection } from './AddToGlossaryBubble';
 
 interface SourceCellProps {
   segment: Segment;
@@ -11,9 +12,13 @@ interface SourceCellProps {
    *  translates what was on screen a moment ago instead of what the human
    *  just typed. See useTranslationQueue.ts's runBatch. */
   flushersRef: React.MutableRefObject<Map<string, () => void>>;
+  /** Reports the highlighted words (or null once the selection is gone) — drives the "Add to glossary" bubble. Must be a stable callback. */
+  onSelectText?: (selection: SourceSelection | null) => void;
 }
 
 const EDIT_DEBOUNCE_MS = 150;
+/** A glossary entry is a word or short phrase; a longer highlight is a copy/paste, not a term. */
+const MAX_SELECTION_CHARS = 80;
 
 // Uncontrolled textarea, keyed on segment.id (never on text) — plan §6.
 // React never writes `value` back on a normal render, so even a re-render
@@ -21,7 +26,7 @@ const EDIT_DEBOUNCE_MS = 150;
 // caret. Text only gets pushed into the DOM element imperatively, and only
 // when sourceRevision changes (a non-user write — see segment-store.ts) AND
 // the field isn't the one currently focused.
-export default function SourceCell({ segment, dispatch, activeSegmentIdRef, flushersRef }: SourceCellProps) {
+export default function SourceCell({ segment, dispatch, activeSegmentIdRef, flushersRef, onSelectText }: SourceCellProps) {
   const ref = useRef<HTMLTextAreaElement>(null);
   const revisionRef = useRef(segment.sourceRevision);
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -46,16 +51,21 @@ export default function SourceCell({ segment, dispatch, activeSegmentIdRef, flus
   // effect run able to reconcile them, since the effect's deps wouldn't
   // change again on their own. handleBlur below catches up once focus moves
   // away.
-  useEffect(() => {
+  // Layout effect: the DOM must be current before the browser can deliver the
+  // operator's next keystroke, which would otherwise be applied to stale text.
+  useLayoutEffect(() => {
     if (segment.sourceRevision === revisionRef.current) return;
     const el = ref.current;
     if (!el) return;
     if (document.activeElement === el) {
-      // Focused but not yet typed in, on a still-live row: keep showing what
-      // the store has, so the operator's first keystroke edits the current
-      // text rather than overwriting words that arrived after focus. Live
-      // provisional text only grows at the end, so the caret offsets stay valid.
-      if (segment.status !== 'PROVISIONAL' || pendingRef.current !== null) return;
+      // Focused but not yet typed in: keep showing what the store has, so the
+      // operator's first keystroke edits the current text rather than
+      // overwriting words that arrived after focus (or resurrecting text a
+      // finalized row no longer holds — completing a live row can cut it back
+      // to its complete sentences). Only a write landing on a row the operator
+      // has typed into is held back; handleBlur catches that one up. The
+      // selection is restored; the browser clamps it if the text got shorter.
+      if (pendingRef.current !== null) return;
       const { selectionStart, selectionEnd } = el;
       revisionRef.current = segment.sourceRevision;
       el.value = segment.sourceText;
@@ -110,6 +120,25 @@ export default function SourceCell({ segment, dispatch, activeSegmentIdRef, flus
     }
   }, [commitPending, segment.sourceRevision, segment.sourceText, autoGrow]);
 
+  // A textarea's selection is not in window.getSelection() — read it from the element.
+  // Mouse selections anchor the bubble at the pointer, keyboard ones at the cell.
+  const reportSelection = useCallback((pointer?: { x: number; y: number }) => {
+    const el = ref.current;
+    if (!el || !onSelectText) return;
+    let { selectionStart: start, selectionEnd: end } = el;
+    const raw = el.value.slice(start, end);
+    const text = raw.trim();
+    if (start === end || !text || text.length > MAX_SELECTION_CHARS) { onSelectText(null); return; }
+    start += raw.length - raw.trimStart().length;
+    end = start + text.length;
+    const rect = el.getBoundingClientRect();
+    onSelectText({
+      segmentId: segment.id, start, end, text,
+      x: pointer?.x ?? rect.left + 16,
+      y: pointer?.y ?? rect.top,
+    });
+  }, [onSelectText, segment.id]);
+
   const isDirtyVisual = segment.status === 'EDITED';
   const isProvisional = segment.status === 'PROVISIONAL';
 
@@ -137,6 +166,9 @@ export default function SourceCell({ segment, dispatch, activeSegmentIdRef, flus
         onInput={handleInput}
         onFocus={() => { activeSegmentIdRef.current = segment.id; }}
         onBlur={handleBlur}
+        onMouseUp={(e) => reportSelection({ x: e.clientX, y: e.clientY })}
+        // Escape dismisses the bubble but leaves the highlight in place, so it must not re-report it.
+        onKeyUp={(e) => { if (e.key !== 'Escape') reportSelection(); }}
         data-segment-id={segment.id}
         data-testid={`source-${segment.id}`}
         rows={1}

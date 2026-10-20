@@ -6,6 +6,7 @@ import { setupStreamingWebSocket } from './lib/assemblyai-streaming';
 import { setupChunkTranscriptionWebSocket } from './lib/chunk-transcription';
 import { setupListenerWebSockets } from './lib/listener-hub';
 import { initGlossary } from './lib/glossary-store';
+import { isLoopbackAddress } from './lib/loopback';
 
 if (!process.env.OPENAI_API_KEY) {
   console.warn("Warning: OPENAI_API_KEY is not set — translation will fail");
@@ -18,7 +19,9 @@ declare module 'http' {
     rawBody: unknown
   }
 }
+// 10 MB: sermon cells have no length limit, and a Refresh sends up to 100 of them (the default 100 kb would reject long ones).
 app.use(express.json({
+  limit: '10mb',
   verify: (req, _res, buf) => {
     req.rawBody = buf;
   }
@@ -138,11 +141,6 @@ try { initGlossary(); } catch (e) {
   // NOT an authentication boundary — see CLAUDE.md. Set
   // ALLOW_REMOTE_OPERATOR=true to disable (e.g. to run the console itself
   // from an iPad).
-  function isLoopbackAddress(addr: string | undefined): boolean {
-    if (!addr) return false;
-    const stripped = addr.replace(/^::ffff:/, '');
-    return stripped === '127.0.0.1' || stripped === '::1' || stripped === 'localhost';
-  }
   if (process.env.ALLOW_REMOTE_OPERATOR !== 'true') {
     app.use((req, res, next) => {
       if (
