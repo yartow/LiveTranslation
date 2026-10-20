@@ -4,6 +4,7 @@ import { correctAndTranslateWithClaude, correctTranscriptWithClaude } from './an
 import { correctAndTranslateWithOllama, correctTranscriptWithOllama } from './ollama';
 import { transcribeWithMlxDetailed, type MlxDiag } from './mlx-whisper';
 import { isAsrArtifact, stripAsrArtifacts } from './asr-artifacts';
+import { applyLearnedCorrections, effectiveGlossary } from './asr-corrections';
 import { transcribeGuarded, wavDurationSecs } from './whisper-guard';
 import { tmpdir } from 'os';
 import { join } from 'path';
@@ -324,7 +325,7 @@ async function processChunk(
     let rawText: string;
     if (session.engine === 'mlx') {
       sendDebug(session, `Chunk #${chunkIndex}: sending to local MLX Whisper (${session.sourceLanguage})…`);
-      const initialPrompt = buildWhisperPrompt(session.glossary || undefined, session.sermonContext || undefined, session.previousTranscript || undefined, session.sourceLanguage);
+      const initialPrompt = buildWhisperPrompt(effectiveGlossary(session.glossary) || undefined, session.sermonContext || undefined, session.previousTranscript || undefined, session.sourceLanguage);
       const attempts: Array<{ usePrompt: boolean; diag: MlxDiag | null }> = [];
       const guarded = await transcribeGuarded(
         async (usePrompt) => {
@@ -349,11 +350,11 @@ async function processChunk(
       } else {
         sendDebug(session, `Chunk #${chunkIndex}: sending to Whisper (${session.sourceLanguage})…`);
       }
-      const hasPrompt = !!buildWhisperPrompt(session.glossary || undefined, session.sermonContext || undefined, session.previousTranscript || undefined, session.sourceLanguage);
+      const hasPrompt = !!buildWhisperPrompt(effectiveGlossary(session.glossary) || undefined, session.sermonContext || undefined, session.previousTranscript || undefined, session.sourceLanguage);
       const guarded = await transcribeGuarded(
         (usePrompt) => transcribeAudio(
           audioPath!, session.sourceLanguage, session.openaiApiKey || undefined,
-          usePrompt ? session.glossary || undefined : undefined,
+          usePrompt ? effectiveGlossary(session.glossary) || undefined : undefined,
           usePrompt ? session.sermonContext || undefined : undefined,
           signal,
           usePrompt ? session.previousTranscript || undefined : undefined,
@@ -397,7 +398,13 @@ async function processChunk(
     if (strippedText !== rawText.trim()) {
       sendDebug(session, `Chunk #${chunkIndex}: stripped ASR artifacts ("${rawText.slice(0, 40)}" → "${strippedText.slice(0, 40)}")`);
     }
-    rawText = strippedText;
+    // Operator-learned fixes ("ik lees je logie" -> "ecclesiologie", see asr-corrections.ts):
+    // deterministic, so they hold even when the per-chunk LLM correction is off.
+    const learnedText = applyLearnedCorrections(strippedText);
+    if (learnedText !== strippedText) {
+      sendDebug(session, `Chunk #${chunkIndex}: applied learned corrections ("${strippedText.slice(0, 40)}" → "${learnedText.slice(0, 40)}")`);
+    }
+    rawText = learnedText;
     archive.strippedText = strippedText;
     archive.transcribedAt = new Date().toISOString();
 
@@ -434,7 +441,7 @@ async function processChunk(
           sendDebug(session, `Chunk #${chunkIndex}: correcting via Ollama (${session.ollamaModel})…`);
           ({ correctedText } = await correctTranscriptWithOllama(
             rawText, session.targetLanguage, session.ollamaModel, session.ollamaBaseUrl,
-            session.glossary || undefined, session.previousTranscript || undefined, signal, session.sourceLanguage,
+            effectiveGlossary(session.glossary) || undefined, session.previousTranscript || undefined, signal, session.sourceLanguage,
           ));
         } else if (session.translationProvider === 'claude') {
           const hasAnthropicKey = !!(session.anthropicApiKey || process.env.ANTHROPIC_API_KEY);
@@ -442,13 +449,13 @@ async function processChunk(
           else sendDebug(session, `Chunk #${chunkIndex}: correcting via Claude Haiku…`);
           ({ correctedText } = await correctTranscriptWithClaude(
             rawText, session.targetLanguage, session.anthropicApiKey,
-            session.glossary || undefined, session.previousTranscript || undefined, signal, session.sourceLanguage,
+            effectiveGlossary(session.glossary) || undefined, session.previousTranscript || undefined, signal, session.sourceLanguage,
           ));
         } else {
           sendDebug(session, `Chunk #${chunkIndex}: correcting via GPT-4o-mini…`);
           ({ correctedText } = await correctTranscript(
             rawText, session.targetLanguage, session.openaiApiKey || undefined,
-            session.glossary || undefined, session.previousTranscript || undefined, signal, session.sourceLanguage,
+            effectiveGlossary(session.glossary) || undefined, session.previousTranscript || undefined, signal, session.sourceLanguage,
           ));
         }
       } catch (correctionError) {
@@ -467,7 +474,7 @@ async function processChunk(
       ({ correctedText, translatedText } = await correctAndTranslateWithOllama(
         rawText, session.targetLanguage, session.detectSpeakers,
         session.ollamaModel, session.ollamaBaseUrl,
-        session.glossary || undefined, session.sermonContext || undefined, signal,
+        effectiveGlossary(session.glossary) || undefined, session.sermonContext || undefined, signal,
       ));
     } else if (session.translationProvider === 'claude') {
       const hasAnthropicKey = !!(session.anthropicApiKey || process.env.ANTHROPIC_API_KEY);
@@ -478,7 +485,7 @@ async function processChunk(
         session.targetLanguage,
         session.detectSpeakers,
         session.anthropicApiKey,
-        session.glossary || undefined,
+        effectiveGlossary(session.glossary) || undefined,
         session.sermonContext || undefined,
         signal,
       ));
@@ -489,7 +496,7 @@ async function processChunk(
         session.targetLanguage,
         session.detectSpeakers,
         session.openaiApiKey || undefined,
-        session.glossary || undefined,
+        effectiveGlossary(session.glossary) || undefined,
         session.sermonContext || undefined,
         signal,
       ));

@@ -80,7 +80,13 @@ export type SegmentAction =
   | { type: 'UPDATE_PROVISIONAL'; id: string; sourceText: string; endTime: number; now: number }
   | { type: 'COMPLETE_PROVISIONAL'; id: string; sourceText: string; endTime: number; now: number }
   | { type: 'EDIT_SOURCE'; id: string; sourceText: string; now: number }
+  // A programmatic source edit (e.g. "Add to glossary" fixing the misheard words in the row):
+  // like EDIT_SOURCE, but the textarea does not hold this text yet, so sourceRevision is bumped
+  // and SourceCell writes it into the DOM.
+  | { type: 'REPLACE_SOURCE'; id: string; sourceText: string; now: number }
   | { type: 'SET_TARGET_MANUAL'; id: string; translatedText: string; now: number }
+  // The human emptied a hand-typed translation: give the row back to the translator.
+  | { type: 'CLEAR_TARGET_MANUAL'; id: string }
   | { type: 'MARK_TRANSLATING'; ids: string[] }
   | { type: 'APPLY_TRANSLATION'; id: string; translation: string; requestHash: string; warnings?: GlossaryWarning[] }
   | { type: 'SET_ERROR'; id: string; error: string; requestHash: string }
@@ -191,6 +197,21 @@ export function segmentReducer(state: SegmentStoreState, action: SegmentAction):
       });
     }
 
+    case 'REPLACE_SOURCE': {
+      const seg = state.byId[action.id];
+      if (!seg) return state;
+      return replace(state, action.id, {
+        ...seg,
+        sourceText: action.sourceText,
+        status: 'EDITED',
+        lastSourceChangeAt: action.now,
+        sourceRevision: seg.sourceRevision + 1,
+        glossaryWarnings: undefined,
+        scripture: undefined,
+        scriptureOverride: false,
+      });
+    }
+
     case 'SET_TARGET_MANUAL': {
       const seg = state.byId[action.id];
       if (!seg) return state;
@@ -202,6 +223,24 @@ export function segmentReducer(state: SegmentStoreState, action: SegmentAction):
         error: undefined,
         glossaryWarnings: undefined, // the human's hand-written translation is authoritative
         scripture: undefined,
+      });
+    }
+
+    // Hand the row back to the machine after the human emptied their own
+    // translation: translatedHash null makes it dirty again (isDirty), so
+    // auto-translate / Refresh fill it. PENDING because there is no translation
+    // left; selectPublishableLines skips it (empty text) so phones keep the last
+    // line they had until a new one arrives.
+    case 'CLEAR_TARGET_MANUAL': {
+      const seg = state.byId[action.id];
+      if (!seg || !seg.manualOverride) return state;
+      return replace(state, action.id, {
+        ...seg,
+        translatedText: '',
+        translatedHash: null,
+        manualOverride: false,
+        status: 'PENDING',
+        error: undefined,
       });
     }
 
@@ -386,6 +425,8 @@ export interface PublishableLine {
   id: string;
   index: number;
   text: string;
+  /** The operator typed this line (manualOverride). Client-side only — never sent to the hub; it just decides whether a change reads as a revision. See useListenerBroadcast.ts's computeBatch. */
+  manual: boolean;
 }
 
 /**
@@ -404,7 +445,7 @@ export function selectPublishableLines(state: SegmentStoreState): PublishableLin
     const seg = state.byId[id];
     if (!seg.translatedText.trim()) continue;
     if (seg.status !== 'TRANSLATED' && seg.status !== 'SCRIPTURE' && !seg.manualOverride) continue;
-    lines.push({ id: seg.id, index: seg.index, text: seg.translatedText });
+    lines.push({ id: seg.id, index: seg.index, text: seg.translatedText, manual: seg.manualOverride });
   }
   return lines;
 }

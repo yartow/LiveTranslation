@@ -13,7 +13,12 @@ import { correctAndTranslateWithClaude, retroactiveCorrectionWithClaude } from '
 import { correctAndTranslateWithOllama, retroactiveCorrectionWithOllama, isValidOllamaBaseUrl } from './lib/ollama';
 import { transcribeWithMlx } from './lib/mlx-whisper';
 import { isAsrArtifact, stripAsrArtifacts } from './lib/asr-artifacts';
-import { translateSegments, type TranslateItemInput, type SermonTranslationProvider } from './lib/sermon-translate';
+import { translateSegments, type TranslateItemResult, type SermonTranslationProvider } from './lib/sermon-translate';
+import { parseSermonItems } from './lib/sermon-items';
+import { addToGlossary } from './lib/glossary-add';
+import { applyLearnedCorrections } from './lib/asr-corrections';
+import { getInputVolume, setInputVolume, isValidInputVolume } from './lib/mac-input-volume';
+import { isOperatorRequest } from './lib/loopback';
 import { getGlossaryStatus, reloadGlossary } from './lib/glossary-store';
 import { isSafeGlossaryName } from './lib/glossary-file';
 import { archiveEnabled, getCurrentArchiveDir } from './lib/chunk-transcription';
@@ -126,11 +131,6 @@ function parseProvider(value: unknown): TranslationProvider | null {
 // required (see client/src/hooks/useSettings.ts's SermonTranslationProvider).
 const VALID_SERMON_TRANSLATION_PROVIDERS = new Set(['openai', 'claude', 'ollama']);
 const VALID_BIBLE_VERSIONS = new Set(['KJV', 'ESV', 'LSB', 'NASB', 'NKJV']);
-const SERMON_MAX_ITEMS = 100;
-const SERMON_MAX_TEXT_LEN = 2000;
-const SERMON_MAX_CONTEXT_SENTENCES = 5;
-const SERMON_MAX_REFERENCE_HINT_LEN = 60;
-
 // null = absent (caller should fall back to the server default selection);
 // 'invalid' = present but structurally unsafe — the caller must 400. Kept
 // separate from throwing so a malicious/malformed name never even reaches
@@ -139,57 +139,6 @@ function parseGlossaryName(value: unknown, kind: 'csv' | 'md'): string | null | 
   if (value === undefined || value === null || value === '') return null;
   if (typeof value !== 'string' || !isSafeGlossaryName(value, kind)) return 'invalid';
   return value;
-}
-
-// bookNumber 1-66 (the canonical Protestant-canon count — see
-// scripts/build-bible-data.ts's books.json), chapter/verse positive
-// integers. Resolution of the reference itself (book-name parsing) happens
-// entirely client-side (client/src/lib/sermon/bible-ref.ts) — this only
-// validates the shape of what the client already resolved, never re-parses text.
-function parseReadingCandidate(value: unknown): TranslateItemInput['readingCandidate'] | null | 'invalid' {
-  if (value === undefined || value === null) return null;
-  if (typeof value !== 'object') return 'invalid';
-  const { bookNumber, chapter, verse } = value as Record<string, unknown>;
-  const isPositiveInt = (n: unknown): n is number => typeof n === 'number' && Number.isInteger(n) && n > 0;
-  if (!isPositiveInt(bookNumber) || bookNumber > 66) return 'invalid';
-  if (!isPositiveInt(chapter) || chapter > 999) return 'invalid';
-  if (!isPositiveInt(verse) || verse > 999) return 'invalid';
-  return { bookNumber, chapter, verse };
-}
-
-function parseSermonItems(value: unknown): TranslateItemInput[] | null {
-  if (!Array.isArray(value) || value.length === 0 || value.length > SERMON_MAX_ITEMS) return null;
-
-  const items: TranslateItemInput[] = [];
-  const seenIds = new Set<string>();
-  for (const raw of value) {
-    if (!raw || typeof raw !== 'object') return null;
-    const { id, text, before, after, readingCandidate, referenceHint } = raw as Record<string, unknown>;
-
-    if (typeof id !== 'string' || !id) return null;
-    if (seenIds.has(id)) return null;
-    seenIds.add(id);
-    if (typeof text !== 'string' || !text.trim() || text.length > SERMON_MAX_TEXT_LEN) return null;
-
-    const beforeArr = before === undefined ? [] : before;
-    const afterArr = after === undefined ? [] : after;
-    if (!Array.isArray(beforeArr) || !Array.isArray(afterArr)) return null;
-    if (beforeArr.length > SERMON_MAX_CONTEXT_SENTENCES || afterArr.length > SERMON_MAX_CONTEXT_SENTENCES) return null;
-    const isValidContextString = (s: unknown): s is string => typeof s === 'string' && s.length <= SERMON_MAX_TEXT_LEN;
-    if (!beforeArr.every(isValidContextString) || !afterArr.every(isValidContextString)) return null;
-
-    const parsedCandidate = parseReadingCandidate(readingCandidate);
-    if (parsedCandidate === 'invalid') return null;
-
-    if (referenceHint !== undefined && (typeof referenceHint !== 'string' || referenceHint.length > SERMON_MAX_REFERENCE_HINT_LEN)) return null;
-
-    items.push({
-      id, text, before: beforeArr as string[], after: afterArr as string[],
-      readingCandidate: parsedCandidate ?? undefined,
-      referenceHint: referenceHint || undefined,
-    });
-  }
-  return items;
 }
 
 export async function registerRoutes(app: Express): Promise<Server> {
@@ -260,7 +209,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
       // filtering, so it needs its own check rather than inheriting one.
       const cleanedTranscript = isAsrArtifact(rawTranscript, sourceLanguage)
         ? ''
-        : stripAsrArtifacts(rawTranscript, sourceLanguage);
+        : applyLearnedCorrections(stripAsrArtifacts(rawTranscript, sourceLanguage));
       const { correctedText, translatedText } = !cleanedTranscript
         ? { correctedText: '', translatedText: '' }
         : await runCorrectAndTranslate(
@@ -436,7 +385,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
         if (!res.writableEnded) controller.abort();
       });
 
-      const results = await translateSegments(parsedItems, {
+      const translated = await translateSegments(parsedItems.items, {
         targetLanguage: targetLanguage || 'en',
         translationProvider: translationProvider as SermonTranslationProvider,
         model: model || undefined,
@@ -456,7 +405,9 @@ export async function registerRoutes(app: Express): Promise<Server> {
         signal: controller.signal,
       });
 
-      res.json({ results });
+      // A blank cell fails alone instead of taking the whole batch down with a 400.
+      const blank: TranslateItemResult[] = parsedItems.blankIds.map(id => ({ id, status: 'error', error: 'Nothing to translate — the source text is empty' }));
+      res.json({ results: [...translated, ...blank] });
     } catch (error) {
       console.error('Sermon translate error:', error);
       res.status(500).json({
@@ -485,6 +436,54 @@ export async function registerRoutes(app: Express): Promise<Server> {
       console.error('Sermon glossary status error:', error);
       res.status(500).json({ error: 'Failed to read glossary status', details: error instanceof Error ? error.message : 'Unknown error' });
     }
+  });
+
+  // Operator-only: appends one term to the selected glossary CSV and/or the
+  // ASR corrections file (server/lib/glossary-add.ts). Loopback-only like the
+  // mic-volume endpoints — it writes into GLOSSARY_DIR, so another device on
+  // the LAN must not be able to reach it (unless ALLOW_REMOTE_OPERATOR=true).
+  app.post('/api/sermon/glossary/add', rateLimiter, (req, res) => {
+    if (!isOperatorRequest(req.socket.remoteAddress)) {
+      return res.status(403).json({ error: 'Only available from the operator machine' });
+    }
+    const { csv, heard, dutch, english, category, force } = req.body ?? {};
+    const parsedCsv = parseGlossaryName(csv, 'csv');
+    if (parsedCsv === 'invalid' || parsedCsv === null) {
+      return res.status(400).json({ error: 'Invalid csv — must be a plain filename ending in .csv' });
+    }
+    const result = addToGlossary({
+      csv: parsedCsv,
+      heard: typeof heard === 'string' ? heard : undefined,
+      dutch: typeof dutch === 'string' ? dutch : '',
+      english: typeof english === 'string' ? english : undefined,
+      category: typeof category === 'string' ? category : undefined,
+      force: force === true,
+    });
+    if (!result.ok) {
+      return res.status(result.status).json({ error: result.error, existingEnglish: result.existingEnglish });
+    }
+    reloadGlossary({ csv: parsedCsv });
+    res.json({ ok: true, glossaryRowAdded: result.glossaryRowAdded, correctionAdded: result.correctionAdded });
+  });
+
+  // macOS system input volume (see server/lib/mac-input-volume.ts). Operator
+  // machine only: it changes the Mac's actual microphone gain.
+  app.get('/api/mac/input-volume', async (req, res) => {
+    if (!isOperatorRequest(req.socket.remoteAddress)) {
+      return res.status(403).json({ error: 'Only available from the operator machine' });
+    }
+    res.json(await getInputVolume());
+  });
+
+  app.put('/api/mac/input-volume', rateLimiter, async (req, res) => {
+    if (!isOperatorRequest(req.socket.remoteAddress)) {
+      return res.status(403).json({ error: 'Only available from the operator machine' });
+    }
+    const volume = req.body?.volume;
+    if (!isValidInputVolume(volume)) {
+      return res.status(400).json({ error: 'volume must be an integer from 0 to 100' });
+    }
+    res.json(await setInputVolume(volume));
   });
 
   app.post('/api/sermon/glossary/reload', rateLimiter, (req, res) => {

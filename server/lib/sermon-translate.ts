@@ -77,6 +77,16 @@ export interface TranslateOptions {
 const semaphore = new Semaphore(4);
 
 const ITEM_TIMEOUT_MS = 20_000;
+
+/** Segments have no length limit, so the per-item deadline grows with the text: +1 s per 500 characters on top of the base. */
+export function itemTimeoutMs(textLength: number): number {
+  return ITEM_TIMEOUT_MS + Math.ceil(textLength / 500) * 1000;
+}
+
+/** Claude's output cap, scaled to the request instead of a fixed 512 (which truncated long segments into an empty translation): ~1 token per 2 characters, 1024-8192. */
+export function claudeMaxTokens(userMessageLength: number): number {
+  return Math.min(8192, Math.max(1024, Math.ceil(userMessageLength / 2)));
+}
 // A whole-batch deadline on top of the per-item timeout: with SERMON_MAX_ITEMS
 // (server/routes.ts) at 100 and a concurrency cap of 4, a batch could
 // otherwise queue up to ~25 sequential waves of ITEM_TIMEOUT_MS each before
@@ -120,7 +130,7 @@ export async function translateSegments(
   return Promise.all(items.map(async (item): Promise<TranslateItemResult> => {
     await semaphore.acquire();
     try {
-      const timeout = AbortSignal.timeout(ITEM_TIMEOUT_MS);
+      const timeout = AbortSignal.timeout(itemTimeoutMs(item.text.length));
       const combinedSignal = AbortSignal.any([timeout, batchSignal]);
 
       // Scripture adjudication happens BEFORE the model call — a verbatim
@@ -284,7 +294,7 @@ async function callClaudeCached(systemPrompt: string, userMessage: string, apiKe
     },
     body: JSON.stringify({
       model: 'claude-haiku-4-5-20251001',
-      max_tokens: 512,
+      max_tokens: claudeMaxTokens(userMessage.length),
       system: [{ type: 'text', text: systemPrompt, cache_control: { type: 'ephemeral' } }],
       messages: [{ role: 'user', content: userMessage }],
     }),

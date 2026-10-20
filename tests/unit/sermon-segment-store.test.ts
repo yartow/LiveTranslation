@@ -514,9 +514,9 @@ describe('selectPublishableLines', () => {
   it('includes only TRANSLATED segments with non-empty text, ordered by index', () => {
     const state = seedTranslated(3);
     expect(selectPublishableLines(state)).toEqual([
-      { id: state.ids[0], index: 0, text: 'EN Zin 0.' },
-      { id: state.ids[1], index: 1, text: 'EN Zin 1.' },
-      { id: state.ids[2], index: 2, text: 'EN Zin 2.' },
+      { id: state.ids[0], index: 0, text: 'EN Zin 0.', manual: false },
+      { id: state.ids[1], index: 1, text: 'EN Zin 1.', manual: false },
+      { id: state.ids[2], index: 2, text: 'EN Zin 2.', manual: false },
     ]);
   });
 
@@ -566,8 +566,8 @@ describe('selectPublishableLines', () => {
 
     const lines = selectPublishableLines(state);
     expect(lines).toEqual([
-      { id: scriptureId, index: 0, text: 'For God so loved the world...' },
-      { id: manualId, index: 1, text: 'By hand.' },
+      { id: scriptureId, index: 0, text: 'For God so loved the world...', manual: false },
+      { id: manualId, index: 1, text: 'By hand.', manual: true },
     ]);
   });
 

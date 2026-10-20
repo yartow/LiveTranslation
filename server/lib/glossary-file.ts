@@ -88,3 +88,48 @@ export function statGlossaryFile(name: string, kind: GlossaryKind): number | nul
     return null;
   }
 }
+
+/** RFC4180 quoting: wrap in quotes (doubling inner quotes) only when the field needs it. */
+export function csvQuote(field: string): string {
+  return /[",\r\n]/.test(field) ? `"${field.replace(/"/g, '""')}"` : field;
+}
+
+/**
+ * Appends one row to a glossary-directory CSV. The ONLY write path into
+ * GLOSSARY_DIR — append-only, sandboxed by resolveGlossaryPath, and it
+ * refuses to grow a file past MAX_GLOSSARY_BYTES (the read cap), so a file we
+ * wrote can never become unreadable by us. A missing file is created with
+ * `header` first. Fields must already be sanitized by the caller (single-line,
+ * length-capped). Throws on an unsafe name, a full file, or an I/O error.
+ */
+export function appendCsvRow(name: string, fields: string[], header?: string[]): void {
+  const p = resolveGlossaryPath(name, 'csv');
+  const row = fields.map(csvQuote).join(',') + '\n';
+
+  let prefix = '';
+  let size = 0;
+  if (fs.existsSync(p)) {
+    const stat = fs.statSync(p);
+    if (!stat.isFile()) throw new Error(`Not a file: ${name}`);
+    size = stat.size;
+    if (size > 0) {
+      const fd = fs.openSync(p, 'r');
+      try {
+        const last = Buffer.alloc(1);
+        fs.readSync(fd, last, 0, 1, size - 1);
+        if (last[0] !== 0x0a) prefix = '\n';
+      } finally {
+        fs.closeSync(fd);
+      }
+    }
+  } else if (header) {
+    prefix = header.map(csvQuote).join(',') + '\n';
+  }
+
+  const chunk = prefix + row;
+  if (size + Buffer.byteLength(chunk) > MAX_GLOSSARY_BYTES) {
+    throw new Error(`Glossary file would exceed ${MAX_GLOSSARY_BYTES} bytes: ${name}`);
+  }
+  fs.mkdirSync(path.dirname(p), { recursive: true });
+  fs.appendFileSync(p, chunk, 'utf8');
+}

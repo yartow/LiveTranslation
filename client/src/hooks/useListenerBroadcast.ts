@@ -11,8 +11,10 @@
 import { useEffect, useRef, useState } from 'react';
 import { selectPublishableLines, type SegmentStoreState } from '@/lib/sermon/segment-store';
 
-interface PublishedEntry {
+export interface PublishedEntry {
   text: string;
+  /** The last published version was the operator's own typing. */
+  manual: boolean;
   /** Sticky once true — a line that has ever changed stays "edited" (renders italic on the phone) even across a reconnect. */
   edited: boolean;
 }
@@ -34,7 +36,7 @@ function backoffDelay(attempt: number): number {
  * (the normal live path), only new or changed lines are sent, which is what
  * keeps the socket quiet while nothing is happening.
  */
-function computeBatch(
+export function computeBatch(
   state: SegmentStoreState,
   published: Map<string, PublishedEntry>,
   force: boolean,
@@ -43,11 +45,16 @@ function computeBatch(
   for (const line of selectPublishableLines(state)) {
     const prev = published.get(line.id);
     if (!prev) {
-      published.set(line.id, { text: line.text, edited: false });
+      published.set(line.id, { text: line.text, manual: line.manual, edited: false });
       batch.push({ id: line.id, index: line.index, text: line.text, edited: false });
     } else if (prev.text !== line.text) {
-      published.set(line.id, { text: line.text, edited: true });
-      batch.push({ id: line.id, index: line.index, text: line.text, edited: true });
+      // Typing a translation from scratch sends a stream of changing texts; only a
+      // revision of something already shown as finished (machine text, or a line
+      // that was already complete) reads as "edited" (italic) on the phone.
+      const stillDrafting = prev.manual && line.manual;
+      const edited = prev.edited || !stillDrafting;
+      published.set(line.id, { text: line.text, manual: line.manual, edited });
+      batch.push({ id: line.id, index: line.index, text: line.text, edited });
     } else if (force) {
       batch.push({ id: line.id, index: line.index, text: line.text, edited: prev.edited });
     }
@@ -55,8 +62,18 @@ function computeBatch(
   return batch;
 }
 
-export function useListenerBroadcast(stateRef: React.MutableRefObject<SegmentStoreState>, state: SegmentStoreState): { listenerCount: number } {
+/**
+ * `enabled` is the operator's "send to listeners" switch (SermonToolbar). While
+ * off nothing is published and `published` is not advanced, so switching back
+ * on sends everything translated or typed in the meantime in one go. It is
+ * independent of recording: stopping the microphone never stops the broadcast.
+ */
+export function useListenerBroadcast(stateRef: React.MutableRefObject<SegmentStoreState>, state: SegmentStoreState, enabled: boolean = true): { listenerCount: number } {
   const [listenerCount, setListenerCount] = useState(0);
+  const enabledRef = useRef(enabled);
+  enabledRef.current = enabled;
+  // Set when the socket (re)connected while paused: the full resync (see onopen) is owed until sending resumes.
+  const needsSyncRef = useRef(false);
   const wsRef = useRef<WebSocket | null>(null);
   const publishedRef = useRef(new Map<string, PublishedEntry>());
   const sessionIdRef = useRef(state.sessionId);
@@ -80,6 +97,8 @@ export function useListenerBroadcast(stateRef: React.MutableRefObject<SegmentSto
         // REPLACES the hub's backlog (even with an empty batch): after a page
         // reload this operator has a fresh session, and merging it into the
         // previous page's leftovers would leave old text on every phone.
+        if (!enabledRef.current) { needsSyncRef.current = true; return; }
+        needsSyncRef.current = false;
         const batch = computeBatch(stateRef.current, publishedRef.current, true);
         ws.send(JSON.stringify({ type: 'sync', lines: batch }));
       };
@@ -127,11 +146,17 @@ export function useListenerBroadcast(stateRef: React.MutableRefObject<SegmentSto
       return;
     }
 
+    if (!enabled) return;
     const ws = wsRef.current;
     if (!ws || ws.readyState !== WebSocket.OPEN) return;
+    if (needsSyncRef.current) {
+      needsSyncRef.current = false;
+      ws.send(JSON.stringify({ type: 'sync', lines: computeBatch(state, publishedRef.current, true) }));
+      return;
+    }
     const batch = computeBatch(state, publishedRef.current, false);
     if (batch.length > 0) ws.send(JSON.stringify({ type: 'publish', lines: batch }));
-  }, [state]);
+  }, [state, enabled]);
 
   return { listenerCount };
 }

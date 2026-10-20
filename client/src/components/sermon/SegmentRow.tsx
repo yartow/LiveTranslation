@@ -5,6 +5,7 @@ import type { SegmentAction } from '@/lib/sermon/segment-store';
 import { isMacPlatform } from '@/lib/platform';
 import SourceCell from './SourceCell';
 import TargetCell from './TargetCell';
+import type { SourceSelection } from './AddToGlossaryBubble';
 
 const REFRESH_ONE_HINT = isMacPlatform ? '⌘⏎' : 'Ctrl+⏎';
 
@@ -14,6 +15,7 @@ interface SegmentRowProps {
   activeSegmentIdRef: React.MutableRefObject<string | null>;
   onRefreshOne: (id: string) => void;
   flushersRef: React.MutableRefObject<Map<string, () => void>>;
+  onSelectText: (selection: SourceSelection | null) => void;
 }
 
 // Single scroll-container row: source and target are two flex children of
@@ -26,14 +28,14 @@ interface SegmentRowProps {
 // translating a different one re-renders zero unrelated rows — that's the
 // primary mechanism (ahead of the uncontrolled-input trick in SourceCell)
 // behind "editing survives new segments streaming in".
-function SegmentRowImpl({ segment, dispatch, activeSegmentIdRef, onRefreshOne, flushersRef }: SegmentRowProps) {
+function SegmentRowImpl({ segment, dispatch, activeSegmentIdRef, onRefreshOne, flushersRef, onSelectText }: SegmentRowProps) {
   return (
     <div
       className="flex items-stretch flex-col md:flex-row border-b border-border/60 last:border-b-0"
       data-testid={`row-${segment.id}`}
     >
       <div className="flex-1 min-w-0 md:border-r border-border/60">
-        <SourceCell segment={segment} dispatch={dispatch} activeSegmentIdRef={activeSegmentIdRef} flushersRef={flushersRef} />
+        <SourceCell segment={segment} dispatch={dispatch} activeSegmentIdRef={activeSegmentIdRef} flushersRef={flushersRef} onSelectText={onSelectText} />
       </div>
 
       <div className="flex md:flex-col items-center justify-center md:w-7 shrink-0 py-1 md:py-2.5">
@@ -120,5 +122,6 @@ function SegmentRowImpl({ segment, dispatch, activeSegmentIdRef, onRefreshOne, f
 
 export default memo(SegmentRowImpl, (prev, next) =>
   prev.segment === next.segment && prev.dispatch === next.dispatch &&
-  prev.onRefreshOne === next.onRefreshOne && prev.flushersRef === next.flushersRef,
+  prev.onRefreshOne === next.onRefreshOne && prev.flushersRef === next.flushersRef &&
+  prev.onSelectText === next.onSelectText,
 );

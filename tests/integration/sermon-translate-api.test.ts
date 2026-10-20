@@ -54,17 +54,21 @@ describe('POST /api/sermon/translate — validation', () => {
     expect(res.status).toBe(400);
   });
 
-  it('400 when an item has empty text', async () => {
+  it('answers a blank cell with a per-item error instead of rejecting the batch (no provider call)', async () => {
     const res = await request(server)
       .post('/api/sermon/translate')
-      .send({ translationProvider: 'openai', items: [{ id: 'a', text: '' }] });
-    expect(res.status).toBe(400);
+      .send({ translationProvider: 'openai', items: [{ id: 'a', text: '' }, { id: 'b', text: '   ' }] });
+    expect(res.status).toBe(200);
+    expect(res.body.results).toEqual([
+      { id: 'a', status: 'error', error: expect.any(String) },
+      { id: 'b', status: 'error', error: expect.any(String) },
+    ]);
   });
 
-  it('400 when an item text exceeds 2000 characters', async () => {
+  it('has no 2000-character cell limit — only a sanity cap of 100,000 characters', async () => {
     const res = await request(server)
       .post('/api/sermon/translate')
-      .send({ translationProvider: 'openai', items: [{ id: 'a', text: 'x'.repeat(2001) }] });
+      .send({ translationProvider: 'openai', items: [{ id: 'a', text: 'x'.repeat(100_001) }] });
     expect(res.status).toBe(400);
   });
 

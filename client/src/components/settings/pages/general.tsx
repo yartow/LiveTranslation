@@ -13,6 +13,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/select';
+import { isBuiltInMic, useMicDevices } from '@/hooks/useMicDevices';
 import type { DeviceProfile, LocalWhisperModel, TranscriptionProvider } from '@/hooks/useSettings';
 import ApiKeyField from '../ApiKeyField';
 import GlossaryPanel from '../GlossaryPanel';
@@ -187,6 +188,7 @@ export function MicrophonePage({ settings, onUpdate }: SettingsPageProps) {
   const [isSavingProfile, setIsSavingProfile] = useState(false);
   const [newProfileName, setNewProfileName] = useState('');
   const [newProfileExternalMic, setNewProfileExternalMic] = useState(false);
+  const mics = useMicDevices();
 
   function saveNewProfile() {
     const name = newProfileName.trim();
@@ -215,6 +217,31 @@ export function MicrophonePage({ settings, onUpdate }: SettingsPageProps) {
   return (
     <div className="space-y-6">
       <PageHeader pageId="microphone" />
+
+      <SettingItem id="mic-device">
+        <Select
+          value={settings.micDeviceId || '__default__'}
+          onValueChange={(v) => onUpdate({ micDeviceId: v === '__default__' ? '' : v })}
+        >
+          <SelectTrigger className="h-8 text-xs" data-testid="select-mic-device">
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="__default__">System default{mics.defaultLabel ? ` (${mics.defaultLabel})` : ''}</SelectItem>
+            {mics.devices.map((d) => (
+              <SelectItem key={d.deviceId} value={d.deviceId}>
+                {d.label} · {isBuiltInMic(d.label) ? 'built-in' : 'external'}
+              </SelectItem>
+            ))}
+            {settings.micDeviceId && !mics.devices.some((d) => d.deviceId === settings.micDeviceId) && (
+              <SelectItem value={settings.micDeviceId}>Saved microphone (not connected)</SelectItem>
+            )}
+          </SelectContent>
+        </Select>
+        {!mics.hasLabels && (
+          <Note>Microphone names appear after you have started a recording once and allowed access.</Note>
+        )}
+      </SettingItem>
 
       <SettingItem id="raw-audio" layout="row" htmlFor="raw-audio-switch">
         <Switch

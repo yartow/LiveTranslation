@@ -32,6 +32,14 @@ export interface SermonIngestArgs {
   normalizationGain?: number;
   /** Settings.rawAudioCapture — see chunk-based-transcription.ts's setRawAudioCapture. */
   rawAudioCapture?: boolean;
+  /** Settings.micDeviceId ('' = system default) — see chunk-based-transcription.ts's setInputDeviceId. Read at start(), so a change applies from the next recording. */
+  micDeviceId?: string;
+  /** Per audio frame while recording (0 while paused) — feeds the level meter. */
+  onAudioLevel?: (rms: number, peak?: number) => void;
+  /** The microphone stream the recording opened — to show which device is really in use. */
+  onStreamReady?: (stream: MediaStream) => void;
+  /** Non-fatal heads-up (e.g. the chosen mic was missing and the default was used). */
+  onNotice?: (message: string) => void;
   onError: (message: string) => void;
 }
 
@@ -213,6 +221,9 @@ export function useSermonIngest(args: SermonIngestArgs) {
         setIsProcessing(false);
       },
       onClose: () => { setIsRecording(false); setIsPaused(false); },
+      onAudioLevel: (rms, peak) => argsRef.current.onAudioLevel?.(rms, peak),
+      onStreamReady: (stream) => argsRef.current.onStreamReady?.(stream),
+      onNotice: (message) => argsRef.current.onNotice?.(message),
       onDebug: (message) => { if (argsRef.current.debugMode) console.debug('[sermon-ingest]', message); },
     };
 
@@ -220,6 +231,7 @@ export function useSermonIngest(args: SermonIngestArgs) {
     backend.setOutputMode('correct-only');
     backend.setChunkLimits(SERMON_MIN_CHUNK_MS, SERMON_MAX_CHUNK_MS);
     backend.setRawAudioCapture(a.rawAudioCapture ?? true);
+    backend.setInputDeviceId(a.micDeviceId ?? '');
     backendRef.current = backend;
 
     try {

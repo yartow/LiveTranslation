@@ -1,5 +1,5 @@
-import { useState, useRef, useCallback, useLayoutEffect } from 'react';
-import { BookOpen, Lock, Pencil } from 'lucide-react';
+import { useRef, useEffect, useLayoutEffect, useCallback } from 'react';
+import { BookOpen, Lock } from 'lucide-react';
 import type { Segment } from '@/lib/sermon/segment-model';
 import type { SegmentAction } from '@/lib/sermon/segment-store';
 
@@ -9,19 +9,29 @@ interface TargetCellProps {
   activeSegmentIdRef: React.MutableRefObject<string | null>;
 }
 
-// Read-only by default; a click on the pencil (or Enter/Space on the focused
-// cell) switches to an editable textarea. Committing a change that differs
-// from the current translatedText sets manualOverride=true, which — per the
-// reducer guards in segment-store.ts — makes this row immune to every future
-// automatic write (refresh, provisional update, live re-translation).
+const EDIT_DEBOUNCE_MS = 120;
+
+// Always an editable textarea (no pencil, no read-only mode): click and type.
+// Typing is committed to the store as it happens — debounced, and at once on
+// Enter/blur — so what the translator writes reaches listener phones within a
+// moment (useListenerBroadcast diffs every store change) instead of only after
+// the field loses focus. A committed change that differs from the current
+// translatedText sets manualOverride=true, which — per the reducer guards in
+// segment-store.ts — makes this row immune to every future automatic write
+// (refresh, provisional update, live re-translation). Emptying the field and
+// leaving it hands the row back to the translator (CLEAR_TARGET_MANUAL).
+//
+// Uncontrolled, same as SourceCell: React never writes `value` back on a normal
+// render, so a re-render can't move the caret. Machine text (a finished
+// translation, a scripture substitution) is pushed into the DOM imperatively.
 export default function TargetCell({ segment, dispatch, activeSegmentIdRef }: TargetCellProps) {
-  const [editing, setEditing] = useState(false);
   const ref = useRef<HTMLTextAreaElement>(null);
-  // Set by Escape just before blur fires (either natively, from the
-  // textarea unmounting, or from a subsequent click) — commit() checks and
-  // clears this so a cancelled edit is never saved regardless of how blur
-  // ends up being triggered.
-  const cancelledRef = useRef(false);
+  const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // Latest typed value not yet dispatched into the store.
+  const pendingRef = useRef<string | null>(null);
+  // Always the latest segment, so the commit callbacks stay stable (the unmount flush must not re-run per render).
+  const segmentRef = useRef(segment);
+  segmentRef.current = segment;
 
   const autoGrow = useCallback(() => {
     const el = ref.current;
@@ -30,34 +40,56 @@ export default function TargetCell({ segment, dispatch, activeSegmentIdRef }: Ta
     el.style.height = `${el.scrollHeight}px`;
   }, []);
 
-  useLayoutEffect(() => { if (editing) autoGrow(); }, [editing, autoGrow]);
-
-  const commit = useCallback(() => {
-    setEditing(false);
-    if (cancelledRef.current) { cancelledRef.current = false; return; }
-    const value = ref.current?.value ?? segment.translatedText;
-    if (value !== segment.translatedText) {
-      dispatch({ type: 'SET_TARGET_MANUAL', id: segment.id, translatedText: value, now: Date.now() });
+  // Push store text into the DOM, unless the translator is mid-typing (their next
+  // commit replaces it anyway). Layout effect: the DOM must be current before the
+  // browser delivers the next keystroke.
+  useLayoutEffect(() => {
+    const el = ref.current;
+    if (!el) return;
+    if (el.value !== segment.translatedText && !(document.activeElement === el && pendingRef.current !== null)) {
+      const { selectionStart, selectionEnd } = el;
+      el.value = segment.translatedText;
+      if (document.activeElement === el) el.setSelectionRange(selectionStart, selectionEnd);
     }
-  }, [dispatch, segment.id, segment.translatedText]);
+    autoGrow();
+  }, [segment.translatedText, autoGrow]);
 
-  if (editing) {
-    return (
-      <textarea
-        ref={ref}
-        autoFocus
-        defaultValue={segment.translatedText}
-        onInput={autoGrow}
-        onFocus={() => { activeSegmentIdRef.current = segment.id; }}
-        onBlur={commit}
-        onKeyDown={(e) => { if (e.key === 'Escape') { cancelledRef.current = true; setEditing(false); } }}
-        data-segment-id={segment.id}
-        data-testid={`target-edit-${segment.id}`}
-        rows={1}
-        className="w-full resize-none overflow-hidden bg-transparent px-3 py-2 text-sm leading-relaxed rounded-md border-l-2 border-blue-400 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-      />
-    );
-  }
+  const commitPending = useCallback(() => {
+    if (debounceRef.current) { clearTimeout(debounceRef.current); debounceRef.current = null; }
+    const value = pendingRef.current;
+    pendingRef.current = null;
+    if (value === null) return;
+    const seg = segmentRef.current;
+    if (value === seg.translatedText) return;
+    dispatch({ type: 'SET_TARGET_MANUAL', id: seg.id, translatedText: value, now: Date.now() });
+  }, [dispatch]);
+
+  // Flush rather than discard on unmount — a row scrolled out of view mid-edit must not lose the last keystrokes.
+  useEffect(() => () => commitPending(), [commitPending]);
+
+  const handleInput = useCallback((e: React.FormEvent<HTMLTextAreaElement>) => {
+    autoGrow();
+    pendingRef.current = e.currentTarget.value;
+    if (debounceRef.current) clearTimeout(debounceRef.current);
+    debounceRef.current = setTimeout(commitPending, EDIT_DEBOUNCE_MS);
+  }, [autoGrow, commitPending]);
+
+  const handleBlur = useCallback(() => {
+    commitPending();
+    // An emptied field gives the row back to the translator. Unconditional on purpose:
+    // segmentRef may not have seen the SET_TARGET_MANUAL just dispatched above, and the
+    // reducer ignores CLEAR_TARGET_MANUAL on a row that isn't a manual override.
+    if (ref.current?.value === '') dispatch({ type: 'CLEAR_TARGET_MANUAL', id: segmentRef.current.id });
+  }, [commitPending, dispatch]);
+
+  const handleKeyDown = useCallback((e: React.KeyboardEvent<HTMLTextAreaElement>) => {
+    if (e.key === 'Escape') { e.currentTarget.blur(); return; }
+    // Plain Enter = "send this now" (Shift+Enter still inserts a newline; Cmd/Ctrl+Enter is the refresh hotkey).
+    if (e.key === 'Enter' && !e.shiftKey && !e.metaKey && !e.ctrlKey && !e.altKey && !e.nativeEvent.isComposing) {
+      e.preventDefault();
+      commitPending();
+    }
+  }, [commitPending]);
 
   const isScripture = segment.status === 'SCRIPTURE';
   // A SCRIPTURE segment is exact quoted verse text, not a model translation —
@@ -65,43 +97,39 @@ export default function TargetCell({ segment, dispatch, activeSegmentIdRef }: Ta
   const isStale = segment.status !== 'TRANSLATED' && !isScripture && !segment.manualOverride;
 
   return (
-    <div
-      className={
-        'group relative w-full px-3 py-2 pr-7 text-sm leading-relaxed rounded-md border-l-2 min-h-[2.25rem] ' +
-        (segment.manualOverride ? 'border-blue-400' : isScripture ? 'border-indigo-400' : 'border-transparent') +
-        (isStale ? ' opacity-60' : '')
-      }
-      data-segment-id={segment.id}
-      data-testid={`target-${segment.id}`}
-      tabIndex={0}
-      onFocus={() => { activeSegmentIdRef.current = segment.id; }}
-      onKeyDown={(e) => {
-        if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); setEditing(true); }
-      }}
-    >
-      {segment.manualOverride && (
-        <Lock className="inline-block w-3 h-3 mr-1 mb-0.5 text-blue-500" aria-label="Manually edited" />
-      )}
+    <div className="relative" data-testid={`target-${segment.id}`}>
       {isScripture && !segment.manualOverride && segment.scripture && (
-        <span
-          className="inline-flex items-center gap-1 mr-1.5 mb-0.5 align-middle text-[10px] font-medium text-indigo-500 dark:text-indigo-400"
+        <div
+          className="flex items-center gap-1 px-3 pt-1.5 text-[10px] font-medium text-indigo-500 dark:text-indigo-400"
           title={`${segment.scripture.reference} (${segment.scripture.version}) — exact verse text, not a model translation`}
           data-testid={`scripture-reference-${segment.id}`}
         >
           <BookOpen className="w-3 h-3" />
           {segment.scripture.reference} · {segment.scripture.version}
-        </span>
+        </div>
       )}
-      {segment.translatedText || <span className="text-muted-foreground italic">…</span>}
-      <button
-        type="button"
-        onClick={() => setEditing(true)}
-        className="absolute top-1.5 right-1.5 text-muted-foreground/60 hover:text-foreground p-0.5 rounded transition-colors"
-        aria-label="Edit translation manually"
-        data-testid={`target-edit-button-${segment.id}`}
-      >
-        <Pencil className="w-3 h-3" />
-      </button>
+      {segment.manualOverride && (
+        <Lock className="absolute top-2.5 right-2 w-3 h-3 text-blue-500 pointer-events-none" aria-label="Manually edited" />
+      )}
+      <textarea
+        ref={ref}
+        defaultValue={segment.translatedText}
+        onInput={handleInput}
+        onFocus={() => { activeSegmentIdRef.current = segment.id; }}
+        onBlur={handleBlur}
+        onKeyDown={handleKeyDown}
+        data-segment-id={segment.id}
+        data-testid={`target-edit-${segment.id}`}
+        aria-label="Translation"
+        placeholder={segment.status === 'TRANSLATING' ? '…' : 'Type translation…'}
+        rows={1}
+        className={
+          'w-full resize-none overflow-hidden bg-transparent px-3 py-2 pr-7 text-sm leading-relaxed rounded-md border-l-2 min-h-[2.25rem] ' +
+          'placeholder:italic placeholder:text-muted-foreground/60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring ' +
+          (segment.manualOverride ? 'border-blue-400' : isScripture ? 'border-indigo-400' : 'border-transparent') +
+          (isStale ? ' opacity-60 focus:opacity-100' : '')
+        }
+      />
     </div>
   );
 }

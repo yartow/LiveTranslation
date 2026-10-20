@@ -1,7 +1,6 @@
 import { useState } from 'react';
-import { Loader2, Mic, Pause, Play, RefreshCw, Settings, Square, Users } from 'lucide-react';
+import { Languages, Loader2, Mic, Pause, Play, RefreshCw, Send, Settings, Square, Users } from 'lucide-react';
 import { Button } from '@/components/ui/button';
-import { Switch } from '@/components/ui/switch';
 import { Label } from '@/components/ui/label';
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
 import ListenerAddressPanel from './ListenerAddressPanel';
@@ -21,14 +20,40 @@ interface SermonToolbarProps {
   onChangeMaxLatencySecs: (value: number) => void;
   /** Live count of connected /listen sockets — see useListenerBroadcast.ts. */
   listenerCount: number;
+  /** "Send to listeners" switch — independent of recording and of auto-translate. */
+  listenersEnabled: boolean;
+  onToggleListeners: () => void;
   onOpenSettings: () => void;
   isMac: boolean;
+}
+
+function ToggleChip({ on, onClick, icon, label, title, testId }: {
+  on: boolean; onClick: () => void; icon: React.ReactNode; label: string; title: string; testId: string;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      aria-pressed={on}
+      title={title}
+      data-testid={testId}
+      className={
+        'inline-flex items-center gap-1.5 h-8 rounded-full border px-3 text-xs font-medium transition-colors ' +
+        (on
+          ? 'border-green-600/40 bg-green-500/10 text-green-700 dark:text-green-400 hover:bg-green-500/20'
+          : 'border-amber-500/50 bg-amber-500/15 text-amber-700 dark:text-amber-400 hover:bg-amber-500/25')
+      }
+    >
+      {icon}
+      {label}
+    </button>
+  );
 }
 
 export default function SermonToolbar({
   isRecording, isProcessing, isPaused, onTogglePause, onToggleRecording, dirtyCount, onRefreshAll,
   autoTranslate, onToggleAutoTranslate, maxLatencySecs, onChangeMaxLatencySecs,
-  listenerCount, onOpenSettings, isMac,
+  listenerCount, listenersEnabled, onToggleListeners, onOpenSettings, isMac,
 }: SermonToolbarProps) {
   const refreshHint = isMac ? '⌘⇧⏎' : 'Ctrl+Shift+Enter';
   const [isListenerPopoverOpen, setIsListenerPopoverOpen] = useState(false);
@@ -79,17 +104,26 @@ export default function SermonToolbar({
         <kbd className="ml-1 hidden sm:inline text-[10px] text-muted-foreground border rounded px-1 py-0.5">{refreshHint}</kbd>
       </Button>
 
-      <div className="flex items-center gap-2">
-        <Label htmlFor="sermon-auto-translate" className="text-xs text-muted-foreground whitespace-nowrap">
-          Auto-translate
-        </Label>
-        <Switch
-          id="sermon-auto-translate"
-          checked={autoTranslate}
-          onCheckedChange={onToggleAutoTranslate}
-          data-testid="switch-auto-translate"
-        />
-      </div>
+      {/* Three independent switches: recording (round button + Pause above), translation, listeners.
+          Any of them can be off while the others keep going, e.g. recording stopped but typing
+          corrections that still go out to the phones. */}
+      <ToggleChip
+        on={autoTranslate}
+        onClick={() => onToggleAutoTranslate(!autoTranslate)}
+        icon={<Languages className="w-3.5 h-3.5" />}
+        label={autoTranslate ? 'Auto-translate on' : 'Auto-translate off'}
+        title={autoTranslate ? 'Click to stop translating automatically (you can type translations by hand)' : 'Click to resume automatic translation'}
+        testId="toggle-auto-translate"
+      />
+
+      <ToggleChip
+        on={listenersEnabled}
+        onClick={onToggleListeners}
+        icon={<Send className="w-3.5 h-3.5" />}
+        label={listenersEnabled ? 'Sending to listeners' : 'Listeners paused'}
+        title={listenersEnabled ? 'Click to stop sending text to the listeners’ phones' : 'Click to resume — everything written meanwhile is sent at once'}
+        testId="toggle-listeners"
+      />
 
       <div className="flex items-center gap-2">
         <Label htmlFor="sermon-max-latency" className="text-xs text-muted-foreground whitespace-nowrap">
