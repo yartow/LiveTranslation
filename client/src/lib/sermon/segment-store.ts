@@ -363,7 +363,7 @@ export function selectOrdered(state: SegmentStoreState): Segment[] {
  * Rows with nothing to translate: one added by hand (SermonMode's "Add row") whose Dutch is
  * still blank. It is "dirty" by hash (no translation yet) but there is no text to send.
  */
-const hasNoSource = (seg: Segment): boolean => !seg.sourceText.trim();
+export const hasNoSource = (seg: Segment): boolean => !seg.sourceText.trim();
 
 export function selectDirtyIds(state: SegmentStoreState): string[] {
   return state.ids.filter(id => !hasNoSource(state.byId[id]) && isDirty(state.byId[id]));

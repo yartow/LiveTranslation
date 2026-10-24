@@ -128,7 +128,7 @@ export default function SourceCell({ segment, dispatch, activeSegmentIdRef, flus
   // Cmd/Ctrl+Return is the refresh hotkey). A live row only changes focus here — nothing is typed.
   const handleKeyDown = useCallback((e: React.KeyboardEvent<HTMLTextAreaElement>) => {
     if (e.nativeEvent.isComposing) return;
-    if (isNextRowChord({ metaKey: e.metaKey, ctrlKey: e.ctrlKey, shiftKey: e.shiftKey, altKey: e.altKey, code: e.code })) {
+    if (isNextRowChord({ metaKey: e.metaKey, ctrlKey: e.ctrlKey, shiftKey: e.shiftKey, altKey: e.altKey, code: e.code, key: e.key })) {
       e.preventDefault();
       commitPending();
       onEnterNext?.(segment.id, 'source');

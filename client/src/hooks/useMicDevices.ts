@@ -55,7 +55,9 @@ export function useMicDevices() {
   }, [refresh]);
 
   // The track the recording is on now. A recording can move to another microphone, and the
-  // old track's 'ended' must not be reported as a failure of the new one.
+  // old track's 'ended' must not be reported as a failure of the new one. Deliberately NOT cleared
+  // by clearActive(): the page's `isRecording` can go false (a server error) while the capture
+  // keeps running, and an unplugged microphone must still be reported then.
   const currentTrackRef = useRef<MediaStreamTrack | null>(null);
 
   /** Call with the stream the recording opened (or switched to); `onEnded` fires if that device disappears mid-recording (unplugged). */
@@ -71,7 +73,7 @@ export function useMicDevices() {
     refresh(); // labels become available once permission was granted
   }, [refresh]);
 
-  const clearActive = useCallback(() => { currentTrackRef.current = null; setActiveLabel(null); }, []);
+  const clearActive = useCallback(() => setActiveLabel(null), []);
 
   return { devices, defaultLabel, hasLabels, activeLabel, attachStream, clearActive, refresh };
 }

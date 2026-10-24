@@ -90,7 +90,7 @@ export default function TargetCell({ segment, dispatch, activeSegmentIdRef, onEn
     if (e.key === 'Escape') { e.currentTarget.blur(); return; }
     // Plain Enter = "send this now and go to the next row" (Shift+Enter still inserts a newline;
     // Cmd/Ctrl+Enter is the refresh hotkey).
-    if (!e.nativeEvent.isComposing && isNextRowChord({ metaKey: e.metaKey, ctrlKey: e.ctrlKey, shiftKey: e.shiftKey, altKey: e.altKey, code: e.code })) {
+    if (!e.nativeEvent.isComposing && isNextRowChord({ metaKey: e.metaKey, ctrlKey: e.ctrlKey, shiftKey: e.shiftKey, altKey: e.altKey, code: e.code, key: e.key })) {
       e.preventDefault();
       commitPending();
       onEnterNext?.(segmentRef.current.id, 'target');

@@ -10,9 +10,11 @@ export interface KeyChord {
   shiftKey: boolean;
   code: string;
   altKey?: boolean;
+  /** KeyboardEvent.key. Soft keyboards (iOS, Android) send key 'Enter' with an empty `code`, so Enter is matched on either. */
+  key?: string;
 }
 
-const isEnterCode = (chord: KeyChord): boolean => chord.code === 'Enter' || chord.code === 'NumpadEnter';
+const isEnterCode = (chord: KeyChord): boolean => chord.code === 'Enter' || chord.code === 'NumpadEnter' || chord.key === 'Enter';
 
 /** Cmd/Ctrl+Shift+Enter — re-translate every dirty segment. */
 export function isRefreshAllChord(chord: KeyChord): boolean {

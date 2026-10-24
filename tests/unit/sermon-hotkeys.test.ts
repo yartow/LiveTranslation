@@ -62,7 +62,13 @@ describe('isNextRowChord (plain Enter)', () => {
     expect(isNextRowChord(chord({ altKey: true }))).toBe(false);
   });
 
+  it('matches a soft-keyboard Enter that has key "Enter" but an empty code', () => {
+    expect(isNextRowChord(chord({ code: '', key: 'Enter' }))).toBe(true);
+    expect(isNextRowChord(chord({ code: '', key: 'Enter', shiftKey: true }))).toBe(false);
+  });
+
   it('rejects other keys', () => {
     expect(isNextRowChord(chord({ code: 'Tab' }))).toBe(false);
+    expect(isNextRowChord(chord({ code: '', key: 'a' }))).toBe(false);
   });
 });

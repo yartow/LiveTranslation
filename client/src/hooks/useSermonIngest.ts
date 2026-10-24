@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { ChunkBasedTranscription, type ChunkTranscriptionEvents, type TranscriptionEngine } from '@/lib/chunk-based-transcription';
+import { ChunkBasedTranscription, RecordingStoppedError, type ChunkTranscriptionEvents, type TranscriptionEngine } from '@/lib/chunk-based-transcription';
 import { initIngestState, appendChunk, finalizeBuffer, releaseProvisional, tick as ingestTick, type IngestConfig, type IngestEffect } from '@/lib/sermon/ingest-buffer';
 import { canWriteLive, type SegmentAction, type SegmentStoreState } from '@/lib/sermon/segment-store';
 import { SERMON_VAD_SILENCE_MS, SERMON_MIN_CHUNK_MS, SERMON_MAX_CHUNK_MS } from '@/lib/sermon/chunk-limits';
@@ -294,7 +294,7 @@ export function useSermonIngest(args: SermonIngestArgs) {
   // device can't be opened — the previous microphone then keeps recording.
   const switchMic = useCallback(async (deviceId: string) => {
     const backend = backendRef.current;
-    if (!backend) throw new Error('Not recording');
+    if (!backend) throw new RecordingStoppedError('Not recording');
     return backend.switchInputDevice(deviceId);
   }, []);
 

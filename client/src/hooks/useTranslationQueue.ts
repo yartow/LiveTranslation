@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef } from 'react';
 import {
-  type SegmentStoreState, type SegmentAction, selectDirtyIds, selectTranslatable, selectContext,
+  type SegmentStoreState, type SegmentAction, selectDirtyIds, selectTranslatable, selectContext, hasNoSource,
 } from '@/lib/sermon/segment-store';
 import { hashText } from '@/lib/sermon/segment-model';
 import { findBibleRef } from '@/lib/sermon/bible-ref';
@@ -74,7 +74,7 @@ export function useTranslationQueue(
     // A row added by hand (SermonMode's "Add row") has no Dutch yet: nothing to translate, and
     // sending a blank item would only turn the row red.
     const items = ids
-      .filter(id => snapshot.byId[id]?.sourceText.trim())
+      .filter(id => snapshot.byId[id] && !hasNoSource(snapshot.byId[id]))
       .map(id => {
         const seg = snapshot.byId[id];
         const ctx = selectContext(snapshot, id, cfg.contextBefore, cfg.contextAfter);

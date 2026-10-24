@@ -1,3 +1,5 @@
+import { createSerialRunner } from './serial-runner';
+
 export interface ChunkTranscriptionEvents {
   onReady: () => void;
   onRawTranscript: (text: string, chunkIndex: number) => void;
@@ -345,6 +347,23 @@ export function windowMeanAbs(frame: Float32Array, windowSamples: number): numbe
     out.push(sum / (end - start));
   }
   return out;
+}
+
+/**
+ * The deviceId the stream really opened ('' for the system default, which Chrome reports as
+ * 'default'/'communications'), so callers compare against what is recording, not what was asked for.
+ */
+export function realDeviceId(stream: MediaStream): string {
+  const id = stream.getAudioTracks()[0]?.getSettings?.().deviceId ?? '';
+  return id === 'default' || id === 'communications' ? '' : id;
+}
+
+/** A microphone switch was requested but the recording is (or just got) stopped — not a device problem. */
+export class RecordingStoppedError extends Error {
+  constructor(message = 'Recording stopped') {
+    super(message);
+    this.name = 'RecordingStoppedError';
+  }
 }
 
 export class ChunkBasedTranscription {
@@ -1055,14 +1074,22 @@ export class ChunkBasedTranscription {
    * so no chunk mixes two microphones, and the noise floor starts over (a
    * different mic has a different one).
    */
-  async switchInputDevice(deviceId: string): Promise<{ label: string; fellBack: boolean }> {
-    if (!this.isRecording || !this.audioContext || !this.processor) throw new Error('Not recording');
+  switchInputDevice(deviceId: string): Promise<{ label: string; fellBack: boolean; deviceId: string }> {
+    // One at a time, in the order requested: opening a device can take seconds (Bluetooth), and
+    // the switch that resolves last must not beat one that was asked for later.
+    return this.runSwitch(() => this.performSwitch(deviceId));
+  }
+
+  private runSwitch = createSerialRunner();
+
+  private async performSwitch(deviceId: string): Promise<{ label: string; fellBack: boolean; deviceId: string }> {
+    if (!this.isRecording || !this.audioContext || !this.processor) throw new RecordingStoppedError('Not recording');
     const { stream, fellBack } = await this.openInput(deviceId);
     const label = stream.getAudioTracks()[0]?.label ?? '';
     // Stopped (or torn down) while the new device was opening.
     if (!this.isRecording || !this.audioContext || !this.processor) {
       stream.getTracks().forEach(t => t.stop());
-      throw new Error('Recording stopped');
+      throw new RecordingStoppedError();
     }
     let source: MediaStreamAudioSourceNode;
     try {
@@ -1090,7 +1117,7 @@ export class ChunkBasedTranscription {
     if (this.archive) {
       this.sendOrQueue(JSON.stringify({ type: 'device_switch', label, fellBack, startSample: this.samplesPushed }));
     }
-    return { label, fellBack };
+    return { label, fellBack, deviceId: realDeviceId(stream) };
   }
 
   resume(): void {

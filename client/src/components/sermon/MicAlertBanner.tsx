@@ -34,7 +34,9 @@ export default function MicAlertBanner({ alert, canSwitchBack, onSwitchBack, onA
       <AlertTriangle className="h-4 w-4 shrink-0" aria-hidden />
       <p className="flex-1 min-w-[12rem] text-sm font-semibold">
         {alert.reason === 'default-changed'
-          ? <>The system microphone changed from “{alert.from}”. Now recording from “{alert.to}”.</>
+          ? alert.to
+            ? <>The system microphone changed from “{alert.from}”. Now recording from “{alert.to}”.</>
+            : <>The system microphone changed from “{alert.from}”, but the new one could not be opened. Recording continues on the previous input.</>
           : alert.to
             ? <>Microphone “{alert.from}” stopped. Now recording from “{alert.to}”.</>
             : <>Microphone “{alert.from}” stopped. No microphone available — nothing is being transcribed.</>}
