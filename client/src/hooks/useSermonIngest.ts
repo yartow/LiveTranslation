@@ -289,6 +289,15 @@ export function useSermonIngest(args: SermonIngestArgs) {
     setIsPaused(false);
   }, []);
 
+  // Moves the running recording to another microphone ('' = system default); see
+  // ChunkBasedTranscription.switchInputDevice. Rejects when not recording or when the
+  // device can't be opened — the previous microphone then keeps recording.
+  const switchMic = useCallback(async (deviceId: string) => {
+    const backend = backendRef.current;
+    if (!backend) throw new Error('Not recording');
+    return backend.switchInputDevice(deviceId);
+  }, []);
+
   // Stop any active mic/WebSocket session on unmount (e.g. navigating away
   // from SermonMode mid-recording) — otherwise the backend keeps running
   // with nothing left to dispatch its results into.
@@ -296,5 +305,5 @@ export function useSermonIngest(args: SermonIngestArgs) {
     return () => { backendRef.current?.stop(); };
   }, []);
 
-  return { isRecording, isProcessing, isPaused, start, stop, pause, resume };
+  return { isRecording, isProcessing, isPaused, start, stop, pause, resume, switchMic };
 }

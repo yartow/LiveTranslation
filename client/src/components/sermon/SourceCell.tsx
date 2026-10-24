@@ -1,6 +1,8 @@
 import { useRef, useEffect, useLayoutEffect, useCallback } from 'react';
 import type { Segment } from '@/lib/sermon/segment-model';
 import type { SegmentAction } from '@/lib/sermon/segment-store';
+import { isNextRowChord } from '@/lib/sermon/hotkeys';
+import type { CellKind } from '@/lib/sermon/focus-cell';
 import type { SourceSelection } from './AddToGlossaryBubble';
 
 interface SourceCellProps {
@@ -14,6 +16,8 @@ interface SourceCellProps {
   flushersRef: React.MutableRefObject<Map<string, () => void>>;
   /** Reports the highlighted words (or null once the selection is gone) — drives the "Add to glossary" bubble. Must be a stable callback. */
   onSelectText?: (selection: SourceSelection | null) => void;
+  /** Return in this cell: the grid moves to the same cell of the next row (or adds a row after the last). Must be stable. */
+  onEnterNext?: (id: string, cell: CellKind) => void;
 }
 
 const EDIT_DEBOUNCE_MS = 150;
@@ -26,7 +30,7 @@ const MAX_SELECTION_CHARS = 80;
 // caret. Text only gets pushed into the DOM element imperatively, and only
 // when sourceRevision changes (a non-user write — see segment-store.ts) AND
 // the field isn't the one currently focused.
-export default function SourceCell({ segment, dispatch, activeSegmentIdRef, flushersRef, onSelectText }: SourceCellProps) {
+export default function SourceCell({ segment, dispatch, activeSegmentIdRef, flushersRef, onSelectText, onEnterNext }: SourceCellProps) {
   const ref = useRef<HTMLTextAreaElement>(null);
   const revisionRef = useRef(segment.sourceRevision);
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -120,6 +124,17 @@ export default function SourceCell({ segment, dispatch, activeSegmentIdRef, flus
     }
   }, [commitPending, segment.sourceRevision, segment.sourceText, autoGrow]);
 
+  // Plain Return = "done with this row, on to the next" (Shift+Return still inserts a newline;
+  // Cmd/Ctrl+Return is the refresh hotkey). A live row only changes focus here — nothing is typed.
+  const handleKeyDown = useCallback((e: React.KeyboardEvent<HTMLTextAreaElement>) => {
+    if (e.nativeEvent.isComposing) return;
+    if (isNextRowChord({ metaKey: e.metaKey, ctrlKey: e.ctrlKey, shiftKey: e.shiftKey, altKey: e.altKey, code: e.code })) {
+      e.preventDefault();
+      commitPending();
+      onEnterNext?.(segment.id, 'source');
+    }
+  }, [commitPending, onEnterNext, segment.id]);
+
   // A textarea's selection is not in window.getSelection() — read it from the element.
   // Mouse selections anchor the bubble at the pointer, keyboard ones at the cell.
   const reportSelection = useCallback((pointer?: { x: number; y: number }) => {
@@ -166,10 +181,12 @@ export default function SourceCell({ segment, dispatch, activeSegmentIdRef, flus
         onInput={handleInput}
         onFocus={() => { activeSegmentIdRef.current = segment.id; }}
         onBlur={handleBlur}
+        onKeyDown={handleKeyDown}
         onMouseUp={(e) => reportSelection({ x: e.clientX, y: e.clientY })}
         // Escape dismisses the bubble but leaves the highlight in place, so it must not re-report it.
         onKeyUp={(e) => { if (e.key !== 'Escape') reportSelection(); }}
         data-segment-id={segment.id}
+        data-cell="source"
         data-testid={`source-${segment.id}`}
         rows={1}
         className={

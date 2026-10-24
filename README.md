@@ -65,7 +65,7 @@ The browser will request microphone permission the first time you press Record. 
 
 ### Bluetooth Microphones
 
-Bluetooth mics work automatically at the OS level. The app requests the system default audio input; if you have a Bluetooth headset connected and selected as the default mic, the browser will use it. No app changes are needed.
+Bluetooth mics work automatically at the OS level. By default the app records from the system default audio input; if you have a Bluetooth headset connected and selected as the default mic, the browser will use it. In sermon mode you can also pick a specific microphone in the audio bar (below the toolbar), and the choice applies immediately, even while recording — see "Microphone failover" under Sermon Mode.
 
 > **Note:** When a Bluetooth headset is active on iOS or macOS, the system switches to HFP (Hands-Free Profile) mode, reducing audio quality to ~8 kHz mono. Whisper handles this cleanly, but if audio quality matters, a wired or USB microphone is better.
 
@@ -81,12 +81,15 @@ English · Spanish · French · German · Dutch · Portuguese · Italian · Chin
 
 The app's default view — a UI purpose-built for translating a live sermon block-by-block with human review, distinct from the streaming-subtitle view (now at `/live`).
 
-- **Segment-based review** — incoming transcript is grouped into ~5–20 second blocks (configurable, "Max. vertraging" in Settings), each cut on a sentence boundary so a block is never split mid-sentence; each segment is independently editable and re-translatable without disturbing the others.
+- **Segment-based review** — incoming transcript is grouped into ~5–20 second blocks (configurable as "Block length" in the toolbar or under Settings → Sermon mode → Timing), each cut on a sentence boundary so a block is never split mid-sentence; each segment is independently editable and re-translatable without disturbing the others.
 - **Dual-pane layout** — editable source on one side, translation on the other, row-aligned.
 - **Pause / resume** — the Pause button next to Stop stops listening without ending the session (the last words are still transcribed). Press it again to continue; no new microphone prompt. Audio spoken while paused is dropped, not queued.
-- **Keyboard-driven workflow** — hotkeys for re-translating one segment or all pending segments (e.g. Cmd/Ctrl+Shift+Enter).
-- **File-based theological glossary (optional)** — a CSV of fixed Dutch→English terms plus a markdown doc of context-dependent disambiguation rules, loaded from files in `data/` (directory configurable via `GLOSSARY_DIR` in `.env`). Configure and reload it from Settings → "Preekmodus — woordenlijst". Segments whose translation appears to be missing an expected glossary term show a non-blocking warning icon — it's a hint for the human reviewer, not a blocker.
-- **Scripture quoting (optional)** — detects a spoken Bible reference ("Johannes 3:16") and substitutes the exact English verse text (ESV via API, falling back to the bundled KJV) instead of a model translation when the preacher reads verbatim; a paraphrase is still translated in his own words. Requires a one-time data build — see `scripts/build-bible-data.ts` and `CLAUDE.md`'s "Scripture pipeline". Configure from Settings → "Preekmodus — Schriftcitaten".
+- **Keyboard-driven workflow** — Return in a Dutch or English box saves it and jumps to the same box in the next row (in the last row it creates a new one); Shift+Return adds a new line; hotkeys re-translate one segment or all pending segments (Cmd/Ctrl+Enter, Cmd/Ctrl+Shift+Enter).
+- **Add row** — the toolbar's "Add row" button creates an empty row to type into by hand, for when the microphone gives no input. A row with no Dutch text is never sent to the translator; English typed into it goes to the listeners like any hand-typed line.
+- **Switch microphone while recording** — pick another input in the audio bar and the recording moves to it at once, with no gap in the transcript. The audio bar also shows the input level, the macOS input volume, and "No sound from this microphone" after 20 s of silence.
+- **Microphone failover** — if the microphone being recorded from stops (unplugged, or a wireless transmitter's battery runs out), recording continues on the system default input (the built-in mic), and a red, flickering warning stays on screen until you click "OK, I've seen this". If the original microphone reappears, the warning offers "Switch back to …". The same warning appears if macOS changes its default input while recording on "System default".
+- **File-based theological glossary (optional)** — a CSV of fixed Dutch→English terms plus a markdown doc of context-dependent disambiguation rules, loaded from files in `data/` (directory configurable via `GLOSSARY_DIR` in `.env`). Configure and reload it from Settings → General → Glossary. Segments whose translation appears to be missing an expected glossary term show a non-blocking warning icon — it's a hint for the human reviewer, not a blocker.
+- **Scripture quoting (optional)** — detects a spoken Bible reference ("Johannes 3:16") and substitutes the exact English verse text (ESV via API, falling back to the bundled KJV) instead of a model translation when the preacher reads verbatim; a paraphrase is still translated in his own words. Requires a one-time data build — see `scripts/build-bible-data.ts` and `CLAUDE.md`'s "Scripture pipeline". Configure from Settings → Sermon mode → Scripture quotes.
 - Uses the same OpenAI / Claude / Ollama translation providers as the main app (see below), configured independently per sermon-mode setting.
 
 Open `http://localhost:PORT/` to use it — live/subtitle mode is at `/live`.
@@ -97,7 +100,7 @@ Open `http://localhost:PORT/` to use it — live/subtitle mode is at `/live`.
 
 Lets people in the room who don't speak Dutch follow the English translation live on their own phone, over the same wifi network as the MBP running the app — no app install, no account.
 
-- Open Settings from the sermon-mode toolbar and click **"Luisteraars"** to see the address to hand out (e.g. `http://192.168.178.42:3000`) — it's read live off the machine's current network, so it's correct whether you're at home or at church.
+- Click the **Listeners** button in the sermon-mode toolbar (or open Settings → Sermon mode → Listeners) to see the address to hand out (e.g. `http://192.168.178.42:3000`) — it's read live off the machine's current network, so it's correct whether you're at home or at church.
 - A listener types that address into their phone's browser. Typing just the bare address (no path) takes them straight to the listener view — you don't need to tell them to add `/listen`.
 - The listener screen shows **only the finished English translation**, auto-scrolling as new lines arrive; scrolling up pauses that and shows a "Jump to live" button. A line that gets corrected after it first appears is re-pushed and shown in *italic*.
 - **This is not access control.** Anyone on the same wifi who reaches the server can open the listener view. Don't rely on it to keep the transcript private.

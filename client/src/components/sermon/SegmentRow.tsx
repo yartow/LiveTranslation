@@ -6,6 +6,7 @@ import { isMacPlatform } from '@/lib/platform';
 import SourceCell from './SourceCell';
 import TargetCell from './TargetCell';
 import type { SourceSelection } from './AddToGlossaryBubble';
+import type { CellKind } from '@/lib/sermon/focus-cell';
 
 const REFRESH_ONE_HINT = isMacPlatform ? '⌘⏎' : 'Ctrl+⏎';
 
@@ -16,6 +17,7 @@ interface SegmentRowProps {
   onRefreshOne: (id: string) => void;
   flushersRef: React.MutableRefObject<Map<string, () => void>>;
   onSelectText: (selection: SourceSelection | null) => void;
+  onEnterNext: (id: string, cell: CellKind) => void;
 }
 
 // Single scroll-container row: source and target are two flex children of
@@ -28,14 +30,14 @@ interface SegmentRowProps {
 // translating a different one re-renders zero unrelated rows — that's the
 // primary mechanism (ahead of the uncontrolled-input trick in SourceCell)
 // behind "editing survives new segments streaming in".
-function SegmentRowImpl({ segment, dispatch, activeSegmentIdRef, onRefreshOne, flushersRef, onSelectText }: SegmentRowProps) {
+function SegmentRowImpl({ segment, dispatch, activeSegmentIdRef, onRefreshOne, flushersRef, onSelectText, onEnterNext }: SegmentRowProps) {
   return (
     <div
       className="flex items-stretch flex-col md:flex-row border-b border-border/60 last:border-b-0"
       data-testid={`row-${segment.id}`}
     >
       <div className="flex-1 min-w-0 md:border-r border-border/60">
-        <SourceCell segment={segment} dispatch={dispatch} activeSegmentIdRef={activeSegmentIdRef} flushersRef={flushersRef} onSelectText={onSelectText} />
+        <SourceCell segment={segment} dispatch={dispatch} activeSegmentIdRef={activeSegmentIdRef} flushersRef={flushersRef} onSelectText={onSelectText} onEnterNext={onEnterNext} />
       </div>
 
       <div className="flex md:flex-col items-center justify-center md:w-7 shrink-0 py-1 md:py-2.5">
@@ -114,7 +116,7 @@ function SegmentRowImpl({ segment, dispatch, activeSegmentIdRef, onRefreshOne, f
       </div>
 
       <div className="flex-1 min-w-0">
-        <TargetCell segment={segment} dispatch={dispatch} activeSegmentIdRef={activeSegmentIdRef} />
+        <TargetCell segment={segment} dispatch={dispatch} activeSegmentIdRef={activeSegmentIdRef} onEnterNext={onEnterNext} />
       </div>
     </div>
   );
@@ -123,5 +125,5 @@ function SegmentRowImpl({ segment, dispatch, activeSegmentIdRef, onRefreshOne, f
 export default memo(SegmentRowImpl, (prev, next) =>
   prev.segment === next.segment && prev.dispatch === next.dispatch &&
   prev.onRefreshOne === next.onRefreshOne && prev.flushersRef === next.flushersRef &&
-  prev.onSelectText === next.onSelectText,
+  prev.onSelectText === next.onSelectText && prev.onEnterNext === next.onEnterNext,
 );

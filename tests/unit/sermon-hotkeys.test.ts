@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { isRefreshAllChord, isRefreshOneChord, type KeyChord } from '../../client/src/lib/sermon/hotkeys.js';
+import { isRefreshAllChord, isRefreshOneChord, isNextRowChord, type KeyChord } from '../../client/src/lib/sermon/hotkeys.js';
 
 const chord = (overrides: Partial<KeyChord>): KeyChord => ({
   metaKey: false, ctrlKey: false, shiftKey: false, code: 'Enter', ...overrides,
@@ -46,5 +46,23 @@ describe('isRefreshOneChord (Cmd/Ctrl+Enter, no Shift)', () => {
 
   it('rejects without Cmd/Ctrl', () => {
     expect(isRefreshOneChord(chord({}))).toBe(false);
+  });
+});
+
+describe('isNextRowChord (plain Enter)', () => {
+  it('matches Enter and the numpad Enter', () => {
+    expect(isNextRowChord(chord({}))).toBe(true);
+    expect(isNextRowChord(chord({ code: 'NumpadEnter' }))).toBe(true);
+  });
+
+  it('rejects Enter with any modifier (Shift = newline, Cmd/Ctrl = refresh)', () => {
+    expect(isNextRowChord(chord({ shiftKey: true }))).toBe(false);
+    expect(isNextRowChord(chord({ metaKey: true }))).toBe(false);
+    expect(isNextRowChord(chord({ ctrlKey: true }))).toBe(false);
+    expect(isNextRowChord(chord({ altKey: true }))).toBe(false);
+  });
+
+  it('rejects other keys', () => {
+    expect(isNextRowChord(chord({ code: 'Tab' }))).toBe(false);
   });
 });

@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from 'r
 import Header from '@/components/Header';
 import SermonToolbar from '@/components/sermon/SermonToolbar';
 import AudioBar from '@/components/sermon/AudioBar';
+import MicAlertBanner, { type MicAlert } from '@/components/sermon/MicAlertBanner';
 import AddToGlossaryBubble, { type SourceSelection } from '@/components/sermon/AddToGlossaryBubble';
 import AddToGlossaryDialog, { type GlossarySaved } from '@/components/sermon/AddToGlossaryDialog';
 import SegmentGrid from '@/components/sermon/SegmentGrid';
@@ -9,7 +10,8 @@ import SettingsDialog from '@/components/settings/SettingsDialog';
 import { useToast } from '@/hooks/use-toast';
 import { useSettings } from '@/hooks/useSettings';
 import { useDevKeyAutofill } from '@/hooks/useDevKeyAutofill';
-import { segmentReducer, initState, selectDirtyIds, type SegmentAction } from '@/lib/sermon/segment-store';
+import { segmentReducer, initState, nextSegmentId, selectDirtyIds, type SegmentAction } from '@/lib/sermon/segment-store';
+import { focusSegmentCell, type CellKind } from '@/lib/sermon/focus-cell';
 import { isRefreshAllChord, isRefreshOneChord, type KeyChord } from '@/lib/sermon/hotkeys';
 import { useTranslationQueue, type TranslationRuntimeConfig } from '@/hooks/useTranslationQueue';
 import { useSermonIngest } from '@/hooks/useSermonIngest';
@@ -120,7 +122,19 @@ export default function SermonMode() {
   const [levelStore] = useState(() => new LevelStore());
   const mic = useMicDevices();
 
-  const { isRecording, isProcessing, isPaused, start, stop, pause, resume } = useSermonIngest({
+  // The microphone the recording runs on can stop mid-service (unplugged, a wireless transmitter
+  // out of battery). The recording then moves to the system default (the built-in mic once the
+  // receiver is gone) and this alert stays on screen, red and flickering, until it is acknowledged.
+  const [micAlert, setMicAlert] = useState<MicAlert | null>(null);
+  // Set after useSermonIngest (which provides switchMic) — the hook's own onStreamReady needs it.
+  const micEndedRef = useRef<(fromLabel: string) => void>(() => {});
+  const micDeviceIdRef = useRef(settings.micDeviceId);
+  micDeviceIdRef.current = settings.micDeviceId;
+  // When the recording last moved microphone — a track ending and macOS changing its default
+  // arrive together when a device is unplugged, and must produce one switch, not two.
+  const lastMicSwitchAtRef = useRef(0);
+
+  const { isRecording, isProcessing, isPaused, start, stop, pause, resume, switchMic } = useSermonIngest({
     dispatch: applyAction,
     stateRef,
     ingestConfigRef,
@@ -139,14 +153,80 @@ export default function SermonMode() {
     rawAudioCapture: settings.rawAudioCapture,
     micDeviceId: settings.micDeviceId,
     onAudioLevel: (rms, peak) => levelStore.push(rms, peak),
-    onStreamReady: (stream) => mic.attachStream(stream, () => toast({
-      title: 'Microphone disconnected',
-      description: 'The recording is no longer receiving audio. Stop, reconnect the microphone and start again.',
-      variant: 'destructive',
-    })),
+    onStreamReady: (stream) => {
+      const label = stream.getAudioTracks()[0]?.label || 'Microphone';
+      mic.attachStream(stream, () => micEndedRef.current(label));
+    },
     onNotice: (message) => toast({ title: 'Microphone', description: message }),
     onError: (message) => toast({ title: 'Recording error', description: message, variant: 'destructive' }),
   });
+
+  micEndedRef.current = async (fromLabel: string) => {
+    const fromDeviceId = micDeviceIdRef.current;
+    lastMicSwitchAtRef.current = Date.now();
+    try {
+      // '' = system default. The saved choice (settings.micDeviceId) is kept on purpose, so the
+      // next recording tries the original microphone again.
+      const { label } = await switchMic('');
+      setMicAlert({ reason: 'stopped', from: fromLabel, to: label, fromDeviceId });
+    } catch {
+      setMicAlert({ reason: 'stopped', from: fromLabel, to: null, fromDeviceId });
+    }
+  };
+
+  // macOS moved its default input (a USB device was plugged in or removed) while recording on
+  // "System default". Chrome may or may not have followed, so reopen the default to be certain.
+  const prevDefaultLabelRef = useRef('');
+  useEffect(() => {
+    const prev = prevDefaultLabelRef.current;
+    prevDefaultLabelRef.current = mic.defaultLabel;
+    if (!isRecording || micDeviceIdRef.current !== '' || !prev || !mic.defaultLabel || prev === mic.defaultLabel) return;
+    if (Date.now() - lastMicSwitchAtRef.current < 3000) return;
+    lastMicSwitchAtRef.current = Date.now();
+    switchMic('')
+      .then(({ label }) => setMicAlert({ reason: 'default-changed', from: prev, to: label, fromDeviceId: '' }))
+      .catch(() => setMicAlert({ reason: 'default-changed', from: prev, to: null, fromDeviceId: '' }));
+  }, [mic.defaultLabel]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  /** Resolves true when the choice is saved and, if recording, the recording really moved to it. */
+  const handleChangeMic = useCallback(async (deviceId: string): Promise<boolean> => {
+    const previous = micDeviceIdRef.current;
+    updateSettings({ micDeviceId: deviceId });
+    if (!isRecording) return true;
+    lastMicSwitchAtRef.current = Date.now();
+    try {
+      const { label, fellBack } = await switchMic(deviceId);
+      toast({
+        title: 'Microphone changed',
+        description: fellBack ? `That microphone is not available. Now recording from ${label}.` : `Now recording from ${label}.`,
+      });
+      return true;
+    } catch (err) {
+      updateSettings({ micDeviceId: previous });
+      toast({
+        title: 'Could not switch microphone',
+        description: `${err instanceof Error ? err.message : 'The microphone could not be opened'}. The previous microphone keeps recording.`,
+        variant: 'destructive',
+      });
+      return false;
+    }
+  }, [isRecording, switchMic, updateSettings, toast]);
+
+  // "Add row" / Return in the last row: an empty row to type into by hand, for when nothing comes
+  // in from the microphone. If the last row is still blank, go there instead of stacking blank rows.
+  const pendingFocusRef = useRef<{ id: string; cell: CellKind } | null>(null);
+  const handleAddRow = useCallback((cell: CellKind = 'target') => {
+    const s = stateRef.current;
+    const last = s.ids.length ? s.byId[s.ids[s.ids.length - 1]] : undefined;
+    if (last && !last.sourceText.trim() && !last.translatedText.trim()) {
+      focusSegmentCell(last.id, cell);
+      return;
+    }
+    const id = nextSegmentId(s);
+    const t = last?.endTime ?? 0;
+    pendingFocusRef.current = { id, cell };
+    applyAction({ type: 'APPEND_SEGMENT', id, sourceText: '', startTime: t, endTime: t, approximateTiming: true, now: Date.now() });
+  }, [applyAction]);
 
   // No signal while stopped or paused: clear the meter and the "recording from" label.
   useEffect(() => {
@@ -262,6 +342,7 @@ export default function SermonMode() {
         }}
         dirtyCount={dirtyCount}
         onRefreshAll={refreshAll}
+        onAddRow={() => handleAddRow('target')}
         autoTranslate={settings.sermonAutoTranslate}
         onToggleAutoTranslate={(v) => updateSettings({ sermonAutoTranslate: v })}
         maxLatencySecs={settings.sermonMaxLatencySecs}
@@ -275,16 +356,22 @@ export default function SermonMode() {
       <AudioBar
         levelStore={levelStore}
         isRecording={isRecording}
+        isPaused={isPaused}
         micDeviceId={settings.micDeviceId}
-        onChangeMicDeviceId={(deviceId) => {
-          updateSettings({ micDeviceId: deviceId });
-          if (isRecording) toast({ title: 'Microphone changed', description: 'The new microphone is used from the next recording.' });
-        }}
+        onChangeMicDeviceId={handleChangeMic}
         devices={mic.devices}
         defaultLabel={mic.defaultLabel}
         hasLabels={mic.hasLabels}
         activeLabel={mic.activeLabel}
       />
+      {micAlert && (
+        <MicAlertBanner
+          alert={micAlert}
+          canSwitchBack={isRecording && !!micAlert.fromDeviceId && mic.devices.some(d => d.deviceId === micAlert.fromDeviceId)}
+          onSwitchBack={() => { handleChangeMic(micAlert.fromDeviceId).then(ok => { if (ok) setMicAlert(null); }); }}
+          onAcknowledge={() => setMicAlert(null)}
+        />
+      )}
       <SegmentGrid
         state={state}
         dispatch={applyAction}
@@ -292,6 +379,8 @@ export default function SermonMode() {
         onRefreshOne={refreshOne}
         flushersRef={flushersRef}
         onSelectText={handleSelectText}
+        onAddRow={handleAddRow}
+        pendingFocusRef={pendingFocusRef}
       />
       {selection && !glossarySelection && (
         <AddToGlossaryBubble

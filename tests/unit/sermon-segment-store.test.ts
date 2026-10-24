@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import {
   initState, segmentReducer, selectDirtyIds, selectTranslatable, selectOrdered, selectContext, canWriteLive, READING_GRACE_SEGMENTS,
-  selectPublishableLines,
+  selectPublishableLines, selectNextId,
   type SegmentStoreState,
 } from '../../client/src/lib/sermon/segment-store.js';
 import { hashText } from '../../client/src/lib/sermon/segment-model.js';
@@ -603,5 +603,52 @@ describe('selectTranslatable — live (PROVISIONAL) rows', () => {
   it('treats a row that has not grown for 30 s as abandoned (recording stopped mid-block) and translates it', () => {
     expect(selectTranslatable(withProvisional(), cfg, 29_999)).toEqual([]);
     expect(selectTranslatable(withProvisional(), cfg, 30_000)).toEqual(['a']);
+  });
+});
+
+// "Add row": an empty row typed into by hand (no microphone needed).
+describe('rows added by hand (empty source)', () => {
+  const withBlankRow = () => segmentReducer(initState('t'), {
+    type: 'APPEND_SEGMENT', id: 'blank', sourceText: '', startTime: 0, endTime: 0, approximateTiming: true, now: 0,
+  });
+
+  it('is never offered to the translator, automatically or by Refresh all', () => {
+    const state = withBlankRow();
+    expect(selectTranslatable(state, { stabilityMs: 0 }, 999_999)).toEqual([]);
+    expect(selectDirtyIds(state)).toEqual([]);
+  });
+
+  it('whitespace-only source counts as empty', () => {
+    const state = segmentReducer(withBlankRow(), { type: 'EDIT_SOURCE', id: 'blank', sourceText: '  \n ', now: 5 });
+    expect(selectTranslatable(state, { stabilityMs: 0 }, 999_999)).toEqual([]);
+    expect(selectDirtyIds(state)).toEqual([]);
+  });
+
+  it('is translated as usual once Dutch is typed into it', () => {
+    const state = segmentReducer(withBlankRow(), { type: 'EDIT_SOURCE', id: 'blank', sourceText: 'Goedemorgen.', now: 5 });
+    expect(selectDirtyIds(state)).toEqual(['blank']);
+    expect(selectTranslatable(state, { stabilityMs: 0 }, 10)).toEqual(['blank']);
+  });
+
+  it('reaches the listeners as soon as English is typed into it', () => {
+    const state = segmentReducer(withBlankRow(), { type: 'SET_TARGET_MANUAL', id: 'blank', translatedText: 'Good morning.', now: 5 });
+    expect(selectPublishableLines(state)).toEqual([{ id: 'blank', index: 0, text: 'Good morning.', manual: true }]);
+    expect(selectDirtyIds(state)).toEqual([]);
+  });
+
+  it('a live write never lands in it (it is not PROVISIONAL)', () => {
+    const state = segmentReducer(withBlankRow(), { type: 'UPDATE_PROVISIONAL', id: 'blank', sourceText: 'Live tekst', endTime: 3, now: 1 });
+    expect(state.byId.blank.sourceText).toBe('');
+  });
+});
+
+describe('selectNextId', () => {
+  it('returns the following row, and null for the last row or an unknown id', () => {
+    const state = seedTranslated(3);
+    const [a, b, c] = state.ids;
+    expect(selectNextId(state, a)).toBe(b);
+    expect(selectNextId(state, b)).toBe(c);
+    expect(selectNextId(state, c)).toBeNull();
+    expect(selectNextId(state, 'nope')).toBeNull();
   });
 });

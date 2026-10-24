@@ -42,12 +42,17 @@ export interface LevelSnapshot {
   clipping: boolean;
 }
 
+/** RMS below this (-70 dBFS) is "no sound at all", e.g. a wireless receiver whose transmitter is off. */
+const SOUND_RMS = 10 ** (-70 / 20);
+
 const SILENT: LevelSnapshot = { db: METER_FLOOR_DB, clipping: false };
 
 export class LevelStore {
   private snapshot: LevelSnapshot = SILENT;
   private smoothedLinear = 0;
   private clipUntil = 0;
+  private lastSoundAt: number | null = null;
+  private clockStart = 0;
   private listeners = new Set<() => void>();
 
   /** One audio frame. rms/peak are 0-1 linear; `now` is injectable for tests. */
@@ -55,7 +60,19 @@ export class LevelStore {
     // Instant attack, slow release.
     this.smoothedLinear = rms > this.smoothedLinear ? rms : this.smoothedLinear * (1 - RELEASE) + rms * RELEASE;
     if (peak >= CLIP_PEAK) this.clipUntil = now + CLIP_HOLD_MS;
+    if (rms > SOUND_RMS) this.lastSoundAt = now;
     this.publish({ db: rmsToDb(this.smoothedLinear), clipping: now < this.clipUntil });
+  }
+
+  /** Start counting "no sound" from `now` (recording started, resumed, or moved to another microphone). */
+  restartSilenceClock(now: number = Date.now()): void {
+    this.clockStart = now;
+    this.lastSoundAt = null;
+  }
+
+  /** How long, in ms, no frame has had any sound (see SOUND_RMS) since the clock was last restarted. */
+  silentForMs(now: number = Date.now()): number {
+    return Math.max(0, now - Math.max(this.clockStart, this.lastSoundAt ?? 0));
   }
 
   /** Recording stopped or paused. */

@@ -71,8 +71,10 @@ export function useTranslationQueue(
     // any, as its check candidate — see server/lib/scripture.ts for the
     // verbatim/paraphrase/ended adjudication this feeds into.
     // scriptureOverride (CLEAR_SCRIPTURE) skips detection entirely.
+    // A row added by hand (SermonMode's "Add row") has no Dutch yet: nothing to translate, and
+    // sending a blank item would only turn the row red.
     const items = ids
-      .filter(id => snapshot.byId[id])
+      .filter(id => snapshot.byId[id]?.sourceText.trim())
       .map(id => {
         const seg = snapshot.byId[id];
         const ctx = selectContext(snapshot, id, cfg.contextBefore, cfg.contextAfter);

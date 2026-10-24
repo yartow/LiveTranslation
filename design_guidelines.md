@@ -23,7 +23,7 @@ Use Tailwind's default type scale (`text-xs` through `text-xl`) with `font-mediu
 
 All color is driven by HSL CSS custom properties in `client/src/index.css`, mapped into Tailwind's `colors` config (`background`, `foreground`, `card`, `popover`, `primary`, `secondary`, `muted`, `accent`, `destructive`, `border`, `ring`, plus `chart-1..5` and `sidebar*`). Light values live under `:root`, dark values under `.dark` (class-based dark mode, `darkMode: ["class"]` in `tailwind.config.ts`) — never hardcode a hex/RGB color in a component; use the semantic Tailwind classes (`bg-background`, `text-muted-foreground`, `border-border`, etc.) so both themes stay correct automatically.
 
-A small set of literal status colors exist outside the semantic palette for things that are always the same color regardless of theme: `status.online/away/busy/offline` (chart/presence-style indicators) and ad hoc `bg-red-500` / `bg-yellow-400` / `bg-green-500` for the microphone input-level meter and the recording-pulse dot.
+A small set of literal status colors exist outside the semantic palette for things that are always the same color regardless of theme: `status.online/away/busy/offline` (chart/presence-style indicators) and ad hoc `bg-red-500` / `bg-yellow-400` / `bg-green-500` for the microphone input-level meter and the recording-pulse dot. Sermon mode's microphone-failure banner (`MicAlertBanner`) is deliberately loud — solid `bg-red-600`, `animate-pulse` (disabled under `motion-reduce`), `role="alert"`, dismissed only by its confirm button — and the "No sound" hint in the audio bar is amber text without animation.
 
 **Dark/light theme** — automatic detection with a manual toggle (existing app behavior; do not remove).
 

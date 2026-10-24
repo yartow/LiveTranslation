@@ -1,4 +1,4 @@
-import { useState, useSyncExternalStore } from 'react';
+import { useEffect, useState, useSyncExternalStore } from 'react';
 import { Check, ChevronDown, Mic, Usb } from 'lucide-react';
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
 import { useMacInputVolume } from '@/hooks/useMacInputVolume';
@@ -37,9 +37,14 @@ function LevelMeter({ store }: { store: LevelStore }) {
   );
 }
 
+/** No sound at all for this long while recording (a receiver whose transmitter is off) reads as a dead microphone. */
+const NO_SOUND_MS = 20_000;
+
 interface AudioBarProps {
   levelStore: LevelStore;
   isRecording: boolean;
+  /** Listening is paused: silence is expected then. */
+  isPaused: boolean;
   /** Settings.micDeviceId — '' = system default. */
   micDeviceId: string;
   onChangeMicDeviceId: (deviceId: string) => void;
@@ -55,10 +60,22 @@ interface AudioBarProps {
 // went wrong on the day a service was recorded from the wrong input), how loud
 // the signal is, and the macOS input volume as a number.
 export default function AudioBar({
-  levelStore, isRecording, micDeviceId, onChangeMicDeviceId, devices, defaultLabel, hasLabels, activeLabel,
+  levelStore, isRecording, isPaused, micDeviceId, onChangeMicDeviceId, devices, defaultLabel, hasLabels, activeLabel,
 }: AudioBarProps) {
   const [open, setOpen] = useState(false);
   const { state: volume, setVolume } = useMacInputVolume();
+
+  // Polled once a second rather than derived from the level snapshot, which only changes
+  // when the meter visibly moves — and a dead microphone is exactly a meter that never moves.
+  const listening = isRecording && !isPaused;
+  const [noSound, setNoSound] = useState(false);
+  useEffect(() => {
+    setNoSound(false);
+    if (!listening) return;
+    levelStore.restartSilenceClock(); // also restarts after a switch to another microphone (activeLabel)
+    const timer = setInterval(() => setNoSound(levelStore.silentForMs() >= NO_SOUND_MS), 1000);
+    return () => clearInterval(timer);
+  }, [listening, activeLabel, levelStore]);
 
   const selected = micDeviceId ? devices.find(d => d.deviceId === micDeviceId) : undefined;
   // A saved device that isn't plugged in right now: recording falls back to the system default.
@@ -111,14 +128,17 @@ export default function AudioBar({
           {!hasLabels && (
             <p className="px-2 py-1.5 text-xs text-muted-foreground">Microphone names appear after you have started a recording once and allowed access.</p>
           )}
-          {isRecording && (
-            <p className="px-2 py-1.5 text-xs text-muted-foreground border-t border-border mt-1">A different microphone applies from the next recording.</p>
-          )}
         </PopoverContent>
       </Popover>
       {selectedMissing && (
         <span className="text-xs text-amber-600 dark:text-amber-400" data-testid="mic-missing-warning">
           Selected microphone not found — the system default is used.
+        </span>
+      )}
+
+      {noSound && (
+        <span className="text-xs font-medium text-amber-600 dark:text-amber-400" role="status" data-testid="mic-no-sound">
+          No sound from this microphone
         </span>
       )}
 

@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { Languages, Loader2, Mic, Pause, Play, RefreshCw, Send, Settings, Square, Users } from 'lucide-react';
+import { Languages, Loader2, Mic, Pause, Play, Plus, RefreshCw, Send, Settings, Square, Users } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Label } from '@/components/ui/label';
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
@@ -14,6 +14,8 @@ interface SermonToolbarProps {
   onToggleRecording: () => void;
   dirtyCount: number;
   onRefreshAll: () => void;
+  /** Adds an empty row to type into by hand (no microphone needed). */
+  onAddRow: () => void;
   autoTranslate: boolean;
   onToggleAutoTranslate: (value: boolean) => void;
   maxLatencySecs: number;
@@ -51,7 +53,7 @@ function ToggleChip({ on, onClick, icon, label, title, testId }: {
 }
 
 export default function SermonToolbar({
-  isRecording, isProcessing, isPaused, onTogglePause, onToggleRecording, dirtyCount, onRefreshAll,
+  isRecording, isProcessing, isPaused, onTogglePause, onToggleRecording, dirtyCount, onRefreshAll, onAddRow,
   autoTranslate, onToggleAutoTranslate, maxLatencySecs, onChangeMaxLatencySecs,
   listenerCount, listenersEnabled, onToggleListeners, onOpenSettings, isMac,
 }: SermonToolbarProps) {
@@ -102,6 +104,17 @@ export default function SermonToolbar({
         <RefreshCw className="w-3.5 h-3.5" />
         Refresh {dirtyCount > 0 && `(${dirtyCount})`}
         <kbd className="ml-1 hidden sm:inline text-[10px] text-muted-foreground border rounded px-1 py-0.5">{refreshHint}</kbd>
+      </Button>
+
+      <Button
+        variant="outline"
+        size="sm"
+        onClick={onAddRow}
+        data-testid="button-add-row"
+        title="Add an empty row to type into by hand (works without a microphone)"
+      >
+        <Plus className="w-3.5 h-3.5" />
+        Add row
       </Button>
 
       {/* Three independent switches: recording (round button + Pause above), translation, listeners.

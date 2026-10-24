@@ -2,11 +2,15 @@ import { useRef, useEffect, useLayoutEffect, useCallback } from 'react';
 import { BookOpen, Lock } from 'lucide-react';
 import type { Segment } from '@/lib/sermon/segment-model';
 import type { SegmentAction } from '@/lib/sermon/segment-store';
+import { isNextRowChord } from '@/lib/sermon/hotkeys';
+import type { CellKind } from '@/lib/sermon/focus-cell';
 
 interface TargetCellProps {
   segment: Segment;
   dispatch: React.Dispatch<SegmentAction>;
   activeSegmentIdRef: React.MutableRefObject<string | null>;
+  /** Return in this cell: the grid moves to the same cell of the next row (or adds a row after the last). Must be stable. */
+  onEnterNext?: (id: string, cell: CellKind) => void;
 }
 
 const EDIT_DEBOUNCE_MS = 120;
@@ -24,7 +28,7 @@ const EDIT_DEBOUNCE_MS = 120;
 // Uncontrolled, same as SourceCell: React never writes `value` back on a normal
 // render, so a re-render can't move the caret. Machine text (a finished
 // translation, a scripture substitution) is pushed into the DOM imperatively.
-export default function TargetCell({ segment, dispatch, activeSegmentIdRef }: TargetCellProps) {
+export default function TargetCell({ segment, dispatch, activeSegmentIdRef, onEnterNext }: TargetCellProps) {
   const ref = useRef<HTMLTextAreaElement>(null);
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   // Latest typed value not yet dispatched into the store.
@@ -84,12 +88,14 @@ export default function TargetCell({ segment, dispatch, activeSegmentIdRef }: Ta
 
   const handleKeyDown = useCallback((e: React.KeyboardEvent<HTMLTextAreaElement>) => {
     if (e.key === 'Escape') { e.currentTarget.blur(); return; }
-    // Plain Enter = "send this now" (Shift+Enter still inserts a newline; Cmd/Ctrl+Enter is the refresh hotkey).
-    if (e.key === 'Enter' && !e.shiftKey && !e.metaKey && !e.ctrlKey && !e.altKey && !e.nativeEvent.isComposing) {
+    // Plain Enter = "send this now and go to the next row" (Shift+Enter still inserts a newline;
+    // Cmd/Ctrl+Enter is the refresh hotkey).
+    if (!e.nativeEvent.isComposing && isNextRowChord({ metaKey: e.metaKey, ctrlKey: e.ctrlKey, shiftKey: e.shiftKey, altKey: e.altKey, code: e.code })) {
       e.preventDefault();
       commitPending();
+      onEnterNext?.(segmentRef.current.id, 'target');
     }
-  }, [commitPending]);
+  }, [commitPending, onEnterNext]);
 
   const isScripture = segment.status === 'SCRIPTURE';
   // A SCRIPTURE segment is exact quoted verse text, not a model translation —
@@ -119,6 +125,7 @@ export default function TargetCell({ segment, dispatch, activeSegmentIdRef }: Ta
         onBlur={handleBlur}
         onKeyDown={handleKeyDown}
         data-segment-id={segment.id}
+        data-cell="target"
         data-testid={`target-edit-${segment.id}`}
         aria-label="Translation"
         placeholder={segment.status === 'TRANSLATING' ? '…' : 'Type translation…'}

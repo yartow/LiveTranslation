@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 
 export interface MicDevice {
   deviceId: string;
@@ -54,15 +54,24 @@ export function useMicDevices() {
     return () => md?.removeEventListener?.('devicechange', refresh);
   }, [refresh]);
 
-  /** Call with the stream the recording opened; `onEnded` fires if the device disappears mid-recording (unplugged). */
+  // The track the recording is on now. A recording can move to another microphone, and the
+  // old track's 'ended' must not be reported as a failure of the new one.
+  const currentTrackRef = useRef<MediaStreamTrack | null>(null);
+
+  /** Call with the stream the recording opened (or switched to); `onEnded` fires if that device disappears mid-recording (unplugged). */
   const attachStream = useCallback((stream: MediaStream, onEnded?: () => void) => {
     const track = stream.getAudioTracks()[0];
+    currentTrackRef.current = track ?? null;
     setActiveLabel(track?.label || null);
-    track?.addEventListener('ended', () => { setActiveLabel(null); onEnded?.(); }, { once: true });
+    track?.addEventListener('ended', () => {
+      if (currentTrackRef.current !== track) return;
+      setActiveLabel(null);
+      onEnded?.();
+    }, { once: true });
     refresh(); // labels become available once permission was granted
   }, [refresh]);
 
-  const clearActive = useCallback(() => setActiveLabel(null), []);
+  const clearActive = useCallback(() => { currentTrackRef.current = null; setActiveLabel(null); }, []);
 
   return { devices, defaultLabel, hasLabels, activeLabel, attachStream, clearActive, refresh };
 }

@@ -116,7 +116,8 @@ const mlxSemaphore = new Semaphore(1);
 //   discarded-<startSample>.wav/.json   audio the browser's speech gate rejected (never transcribed)
 //   telemetry.jsonl               per-frame level / noise floor / VAD / gate timeline from the browser
 //   starts.jsonl, client.json     the session's start messages (API keys removed) and browser audio config
-//   transcript.json               on-screen segments, posted by the sermon page (see routes.ts)
+//   devices.jsonl                 each microphone switch during the recording (label + sample position)
+//   transcript.json              on-screen segments, posted by the sermon page (see routes.ts)
 // `scripts/asr-session-audio.ts` joins the WAVs into one full.wav. Off by default.
 const ASR_DEBUG_DIR = process.env.ASR_DEBUG_DIR || '';
 const archiveDirs = new Map<string, string>();
@@ -617,6 +618,11 @@ export function setupChunkTranscriptionWebSocket(wss: WebSocketServer): void {
           } else if (message.type === 'client_info') {
             if (session?.archiveDir) {
               writeFile(join(session.archiveDir, 'client.json'), JSON.stringify(message, null, 2)).catch(() => {});
+            }
+
+          } else if (message.type === 'device_switch') {
+            if (session?.archiveDir) {
+              appendFile(join(session.archiveDir, 'devices.jsonl'), JSON.stringify({ at: new Date().toISOString(), label: String(message.label ?? '').slice(0, 200), fellBack: !!message.fellBack, startSample: Number(message.startSample) || 0 }) + '\n').catch(() => {});
             }
 
           } else if (message.type === 'stop') {

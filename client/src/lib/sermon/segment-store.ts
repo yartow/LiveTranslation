@@ -359,8 +359,20 @@ export function selectOrdered(state: SegmentStoreState): Segment[] {
   return state.ids.map(id => state.byId[id]);
 }
 
+/**
+ * Rows with nothing to translate: one added by hand (SermonMode's "Add row") whose Dutch is
+ * still blank. It is "dirty" by hash (no translation yet) but there is no text to send.
+ */
+const hasNoSource = (seg: Segment): boolean => !seg.sourceText.trim();
+
 export function selectDirtyIds(state: SegmentStoreState): string[] {
-  return state.ids.filter(id => isDirty(state.byId[id]));
+  return state.ids.filter(id => !hasNoSource(state.byId[id]) && isDirty(state.byId[id]));
+}
+
+/** The row after `id` (null for the last row or an unknown id) — where Return moves to. */
+export function selectNextId(state: SegmentStoreState, id: string): string | null {
+  const idx = state.ids.indexOf(id);
+  return idx === -1 ? null : state.ids[idx + 1] ?? null;
 }
 
 export interface TranslatableConfig {
@@ -384,6 +396,7 @@ const PROVISIONAL_IDLE_MS = 30_000;
 export function selectTranslatable(state: SegmentStoreState, cfg: TranslatableConfig, now: number): string[] {
   return state.ids.filter(id => {
     const seg = state.byId[id];
+    if (hasNoSource(seg)) return false;
     // ERROR is deliberately excluded from the automatic loop: SET_ERROR never
     // touches translatedHash, so an errored segment stays dirty forever — if
     // ERROR were auto-retried, one failed call (e.g. a transient 429) would

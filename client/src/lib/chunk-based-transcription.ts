@@ -648,22 +648,33 @@ export class ChunkBasedTranscription {
     };
   }
 
-  private async startAudioCapture(): Promise<void> {
+  /**
+   * Opens the microphone `deviceId` ('' = system default). A device that has
+   * disappeared since it was picked falls back to the system default
+   * (`fellBack`) rather than failing; any other error is thrown.
+   */
+  private async openInput(deviceId: string): Promise<{ stream: MediaStream; fellBack: boolean }> {
     const constraints: MediaTrackConstraints = this.rawAudioCapture
       ? { echoCancellation: false, noiseSuppression: false, autoGainControl: false, channelCount: 1 }
       : { echoCancellation: true, noiseSuppression: true };
     try {
-      this.mediaStream = await navigator.mediaDevices.getUserMedia({
-        audio: this.inputDeviceId ? { ...constraints, deviceId: { exact: this.inputDeviceId } } : constraints,
+      const stream = await navigator.mediaDevices.getUserMedia({
+        audio: deviceId ? { ...constraints, deviceId: { exact: deviceId } } : constraints,
       });
+      return { stream, fellBack: false };
     } catch (err) {
-      // The chosen microphone was unplugged since it was picked: never block the
-      // recording on that, use the system default and say so.
       const name = err instanceof DOMException ? err.name : '';
-      if (!this.inputDeviceId || (name !== 'OverconstrainedError' && name !== 'NotFoundError')) throw err;
-      this.events.onNotice?.('The selected microphone is not available — using the system default instead.');
-      this.mediaStream = await navigator.mediaDevices.getUserMedia({ audio: constraints });
+      if (!deviceId || (name !== 'OverconstrainedError' && name !== 'NotFoundError')) throw err;
+      return { stream: await navigator.mediaDevices.getUserMedia({ audio: constraints }), fellBack: true };
     }
+  }
+
+  private async startAudioCapture(): Promise<void> {
+    // The chosen microphone was unplugged since it was picked: never block the
+    // recording on that, use the system default and say so.
+    const opened = await this.openInput(this.inputDeviceId);
+    this.mediaStream = opened.stream;
+    if (opened.fellBack) this.events.onNotice?.('The selected microphone is not available — using the system default instead.');
     this.events.onStreamReady?.(this.mediaStream);
     this.events.onDebug?.(`Microphone acquired (${this.rawAudioCapture ? 'raw, no echo/noise/gain processing' : 'browser-processed'}) — starting PCM pipeline`);
 
@@ -774,6 +785,7 @@ export class ChunkBasedTranscription {
         useVAD: this.useVAD, vadSilenceThresholdMs: this.vadSilenceThresholdMs,
         minChunkMs: this.minChunkMs, maxChunkMs: this.maxChunkSamples() / TARGET_RATE * 1000, overlapMs: this.overlapMs,
         normalizationGain: this.normalizationGain, rawAudioCapture: this.rawAudioCapture,
+        deviceLabel: this.mediaStream?.getAudioTracks()[0]?.label ?? '',
         userAgent: navigator.userAgent, startedAt: Date.now(),
       }));
     }
@@ -1032,6 +1044,53 @@ export class ChunkBasedTranscription {
     this.paused = true;
     this.events.onAudioLevel?.(0);
     this.events.onDebug?.('Paused');
+  }
+
+  /**
+   * Moves a running recording to another microphone ('' = system default)
+   * without touching the socket, the chunk numbering or the AudioContext — only
+   * the source node feeding the ScriptProcessor changes. The new device is
+   * opened first, so if that fails the old one keeps recording and the error
+   * goes to the caller. What was heard so far is committed as its own chunk,
+   * so no chunk mixes two microphones, and the noise floor starts over (a
+   * different mic has a different one).
+   */
+  async switchInputDevice(deviceId: string): Promise<{ label: string; fellBack: boolean }> {
+    if (!this.isRecording || !this.audioContext || !this.processor) throw new Error('Not recording');
+    const { stream, fellBack } = await this.openInput(deviceId);
+    const label = stream.getAudioTracks()[0]?.label ?? '';
+    // Stopped (or torn down) while the new device was opening.
+    if (!this.isRecording || !this.audioContext || !this.processor) {
+      stream.getTracks().forEach(t => t.stop());
+      throw new Error('Recording stopped');
+    }
+    let source: MediaStreamAudioSourceNode;
+    try {
+      source = this.audioContext.createMediaStreamSource(stream);
+    } catch (err) {
+      stream.getTracks().forEach(t => t.stop());
+      throw err;
+    }
+    if (this.assembler.sampleCount >= 100) this.commitChunk('stop');
+    this.assembler.discard();
+    this.gate = new SpeechGate();
+    this.vadSilenceMs = 0;
+
+    const oldStream = this.mediaStream;
+    this.source?.disconnect();
+    source.connect(this.processor);
+    this.source = source;
+    this.mediaStream = stream;
+    // stop() does not fire the old track's 'ended' event, so the failure handler stays quiet.
+    oldStream?.getTracks().forEach(t => t.stop());
+    this.inputDeviceId = deviceId;
+
+    this.events.onStreamReady?.(stream);
+    this.events.onDebug?.(`Switched microphone to "${label}"${fellBack ? ' (selected device missing, system default)' : ''}`);
+    if (this.archive) {
+      this.sendOrQueue(JSON.stringify({ type: 'device_switch', label, fellBack, startSample: this.samplesPushed }));
+    }
+    return { label, fellBack };
   }
 
   resume(): void {

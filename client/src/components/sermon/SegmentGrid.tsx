@@ -1,6 +1,7 @@
 import { useRef, useState, useEffect, useCallback } from 'react';
 import { ChevronDown } from 'lucide-react';
-import { selectOrdered, type SegmentStoreState, type SegmentAction } from '@/lib/sermon/segment-store';
+import { selectOrdered, selectNextId, type SegmentStoreState, type SegmentAction } from '@/lib/sermon/segment-store';
+import { focusSegmentCell, type CellKind } from '@/lib/sermon/focus-cell';
 import SegmentRow from './SegmentRow';
 import type { SourceSelection } from './AddToGlossaryBubble';
 
@@ -11,6 +12,10 @@ interface SegmentGridProps {
   onRefreshOne: (id: string) => void;
   flushersRef: React.MutableRefObject<Map<string, () => void>>;
   onSelectText: (selection: SourceSelection | null) => void;
+  /** Adds a row after the last one (or focuses the last row if it is still blank) and puts the cursor in its `cell`. */
+  onAddRow: (cell: CellKind) => void;
+  /** A row SermonMode just added, to focus once it has rendered — see the ids.length effect below. */
+  pendingFocusRef: React.MutableRefObject<{ id: string; cell: CellKind } | null>;
 }
 
 const NEAR_BOTTOM_PX = 80;
@@ -19,7 +24,7 @@ const NEAR_BOTTOM_PX = 80;
 // is already near it AND nothing inside the grid is focused. Otherwise a
 // "N nieuwe segmenten" pill appears instead of yanking the view out from
 // under someone mid-edit or mid-read.
-export default function SegmentGrid({ state, dispatch, activeSegmentIdRef, onRefreshOne, flushersRef, onSelectText }: SegmentGridProps) {
+export default function SegmentGrid({ state, dispatch, activeSegmentIdRef, onRefreshOne, flushersRef, onSelectText, onAddRow, pendingFocusRef }: SegmentGridProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const [pendingNew, setPendingNew] = useState(0);
   const prevCountRef = useRef(state.ids.length);
@@ -41,6 +46,12 @@ export default function SegmentGrid({ state, dispatch, activeSegmentIdRef, onRef
   useEffect(() => {
     const grew = state.ids.length - prevCountRef.current;
     prevCountRef.current = state.ids.length;
+    // A row added by hand takes the cursor (and the view) with it; it is not a "new segment" pill.
+    const pending = pendingFocusRef.current;
+    if (pending && containerRef.current && focusSegmentCell(pending.id, pending.cell, containerRef.current)) {
+      pendingFocusRef.current = null;
+      return;
+    }
     if (grew <= 0) return;
     const el = containerRef.current;
     const editingInside = !!el && el.contains(document.activeElement);
@@ -58,6 +69,16 @@ export default function SegmentGrid({ state, dispatch, activeSegmentIdRef, onRef
     setPendingNew(0);
   }, []);
 
+  // Return in a cell: same cell of the next row, or a new row after the last. Stable (reads the
+  // latest state through a ref) so the memoized rows don't re-render when segments change.
+  const stateRef = useRef(state);
+  stateRef.current = state;
+  const handleEnterNext = useCallback((id: string, cell: CellKind) => {
+    const next = selectNextId(stateRef.current, id);
+    if (next) focusSegmentCell(next, cell, containerRef.current ?? document);
+    else onAddRow(cell);
+  }, [onAddRow]);
+
   const segments = selectOrdered(state);
 
   return (
@@ -65,7 +86,7 @@ export default function SegmentGrid({ state, dispatch, activeSegmentIdRef, onRef
       <div ref={containerRef} onScroll={handleScroll} className="h-full overflow-y-auto pb-14" data-testid="segment-grid">
         {segments.length === 0 && (
           <div className="flex items-center justify-center h-full text-sm text-muted-foreground px-6 text-center">
-            No segments yet. Start recording to begin.
+            No segments yet. Start recording, or use Add row to type one.
           </div>
         )}
         {segments.map(segment => (
@@ -77,6 +98,7 @@ export default function SegmentGrid({ state, dispatch, activeSegmentIdRef, onRef
             onRefreshOne={onRefreshOne}
             flushersRef={flushersRef}
             onSelectText={onSelectText}
+            onEnterNext={handleEnterNext}
           />
         ))}
       </div>
