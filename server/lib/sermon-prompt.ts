@@ -16,6 +16,7 @@
 
 import { sanitizeGlossary, looksLikeInjection } from './prompt-safety';
 import type { GlossaryBundle } from './glossary-store';
+import { languageName as languageNameFor } from './llm/languages';
 
 export interface GlossaryContext {
   /** The v2 disambiguation doc's rendered system block (with {DOELVERTALING} substituted + a DEITEIT_HOOFDLETTER line appended), or '' when there is no file glossary loaded. */
@@ -25,12 +26,6 @@ export interface GlossaryContext {
   /** Cache/memoization key — changes whenever the underlying glossary content changes. */
   version: string;
 }
-
-const LANGUAGE_NAMES: Record<string, string> = {
-  en: 'English', es: 'Spanish', fr: 'French', de: 'German', nl: 'Dutch',
-  pt: 'Portuguese', it: 'Italian', zh: 'Chinese (Simplified)', 'zh-TW': 'Chinese (Traditional)',
-  ar: 'Arabic', fa: 'Farsi', hi: 'Hindi', ru: 'Russian', ja: 'Japanese', ko: 'Korean',
-};
 
 // Split into a preamble (role + translation rules) and an output-format
 // instruction, assembled around the glossary/disambiguation blocks so the
@@ -168,7 +163,7 @@ export function buildSystemPrompt(targetLanguage: string, glossaryContext: Gloss
   const cached = promptCache.get(key);
   if (cached) return cached;
 
-  const languageName = LANGUAGE_NAMES[targetLanguage] ?? targetLanguage;
+  const languageName = languageNameFor(targetLanguage, targetLanguage);
   // Assembly order: role/rules -> target language -> disambiguation doc ->
   // fixed-terms glossary -> output instruction. The output instruction
   // stays last, closest to the per-request user message.

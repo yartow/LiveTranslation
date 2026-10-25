@@ -1,7 +1,7 @@
 import { WebSocket as WsWebSocket, WebSocketServer } from 'ws';
 import { transcribeAudio, correctAndTranslateText, correctTranscript, buildWhisperPrompt } from './openai';
 import { correctAndTranslateWithClaude, correctTranscriptWithClaude } from './anthropic';
-import { correctAndTranslateWithOllama, correctTranscriptWithOllama } from './ollama';
+import { correctAndTranslateWithOllama, correctTranscriptWithOllama, DEFAULT_OLLAMA_BASE_URL, DEFAULT_OLLAMA_MODEL } from './ollama';
 import { transcribeWithMlxDetailed, type MlxDiag } from './mlx-whisper';
 import { selectLowConfidenceWords, type UncertainWord } from './low-confidence';
 import { isAsrArtifact, stripAsrArtifacts } from './asr-artifacts';
@@ -585,8 +585,8 @@ export function setupChunkTranscriptionWebSocket(wss: WebSocketServer): void {
               translationProvider: (message.translationProvider as TranslationProvider) || 'openai',
               openaiApiKey: message.openaiApiKey || '',
               anthropicApiKey: message.anthropicApiKey || '',
-              ollamaBaseUrl: message.ollamaBaseUrl || 'http://localhost:11434',
-              ollamaModel: message.ollamaModel || 'qwen3.6:latest',
+              ollamaBaseUrl: message.ollamaBaseUrl || DEFAULT_OLLAMA_BASE_URL,
+              ollamaModel: message.ollamaModel || DEFAULT_OLLAMA_MODEL,
               glossary: message.glossary || '',
               sermonContext: message.sermonContext || '',
               debugMode: message.debugMode ?? false,

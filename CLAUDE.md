@@ -79,6 +79,11 @@ server/
     openai.ts                     — Whisper transcription + GPT-4o-mini correction/translation
     anthropic.ts                  — Claude Haiku correction/translation
     ollama.ts                     — local Ollama correction/translation (OpenAI-compatible client)
+    llm/                          — plumbing shared by the three providers: languages.ts (language names),
+                                       json.ts (guarded reply parse), context.ts (fenced glossary block for the
+                                       OpenAI/Claude prompts), timeout.ts. The prompt wording stays per provider on
+                                       purpose (tuned per model); tests/unit/provider-prompts.test.ts snapshots every
+                                       request, so a prompt change shows up as a snapshot diff
     assemblyai-streaming.ts       — AssemblyAI streaming WebSocket handler
     chunk-transcription.ts        — Chunk-based Whisper pipeline
     mlx-whisper.ts                 — Manages the mlx_worker.py sidecar process

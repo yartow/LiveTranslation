@@ -484,6 +484,8 @@ export default function Home() {
           settings.openaiApiKey,
           settings.anthropicApiKey,
           settings.localWhisperModel,
+          settings.theologicalGlossary,
+          sermonContextRef.current,
         );
       } else if (settings.transcriptionProvider === 'browser') {
         backend = new BrowserSpeechTranscription(events);

@@ -23,6 +23,8 @@ export class LocalWhisperTranscription {
   private translationProvider: TranslationProvider = 'none';
   private openaiApiKey = '';
   private anthropicApiKey = '';
+  private glossary = '';
+  private sermonContext = '';
   private lastChunkSentResolve: (() => void) | null = null;
 
   constructor(events: LocalWhisperEvents, chunkDurationMs = 5000) {
@@ -38,6 +40,8 @@ export class LocalWhisperTranscription {
     openaiApiKey = '',
     anthropicApiKey = '',
     modelSize: LocalWhisperModel = 'tiny',
+    glossary = '',
+    sermonContext = '',
   ): Promise<void> {
     this.sourceLanguage = sourceLanguage;
     this.targetLanguage = targetLanguage;
@@ -46,6 +50,8 @@ export class LocalWhisperTranscription {
     this.openaiApiKey = openaiApiKey;
     this.anthropicApiKey = anthropicApiKey;
     this.modelSize = modelSize;
+    this.glossary = glossary;
+    this.sermonContext = sermonContext;
     this.chunkIndex = 0;
 
     await this.loadWorker(modelSize);
@@ -208,6 +214,8 @@ export class LocalWhisperTranscription {
           translationProvider: this.translationProvider,
           openaiApiKey: this.openaiApiKey,
           anthropicApiKey: this.anthropicApiKey,
+          glossary: this.glossary || undefined,
+          sermonContext: this.sermonContext || undefined,
         }),
       });
 
@@ -232,6 +240,8 @@ export class LocalWhisperTranscription {
     translationProvider?: TranslationProvider,
     openaiApiKey?: string,
     anthropicApiKey?: string,
+    glossary?: string,
+    sermonContext?: string,
   ): void {
     this.sourceLanguage = sourceLanguage;
     this.targetLanguage = targetLanguage;
@@ -239,6 +249,8 @@ export class LocalWhisperTranscription {
     if (translationProvider) this.translationProvider = translationProvider;
     if (openaiApiKey !== undefined) this.openaiApiKey = openaiApiKey;
     if (anthropicApiKey !== undefined) this.anthropicApiKey = anthropicApiKey;
+    if (glossary !== undefined) this.glossary = glossary;
+    if (sermonContext !== undefined) this.sermonContext = sermonContext;
   }
 
   async stop(): Promise<void> {

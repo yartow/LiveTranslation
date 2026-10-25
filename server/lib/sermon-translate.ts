@@ -5,7 +5,8 @@
 // plan doc §4 for the full design.
 
 import { client as openaiClient } from './openai';
-import { makeClient as ollamaClient, OLLAMA_NO_THINKING } from './ollama';
+import { makeClient as ollamaClient, OLLAMA_NO_THINKING, DEFAULT_OLLAMA_BASE_URL, DEFAULT_OLLAMA_MODEL } from './ollama';
+import { postAnthropicMessage } from './anthropic';
 import { buildSystemPrompt, buildUserMessage, buildServiceContextBlock, getFileGlossaryContext, type CorrectionExample } from './sermon-prompt';
 import { similarity } from './text-similarity';
 import { getGlossaryBundle } from './glossary-store';
@@ -155,7 +156,7 @@ const BACK_TRANSLATION_SYSTEM = 'Translate the English text between <TEKST> tags
 const DEFAULT_MODELS: Record<SermonTranslationProvider, string> = {
   openai: 'gpt-4o-mini',
   claude: 'claude-haiku-4-5-20251001',
-  ollama: 'qwen3.6:latest',
+  ollama: DEFAULT_OLLAMA_MODEL,
 };
 
 export function modelLabel(opts: Pick<TranslateOptions, 'translationProvider' | 'model' | 'ollamaModel'>): string {
@@ -386,9 +387,9 @@ async function callOpenAI(systemPrompt: string, userMessage: string, opts: Trans
 }
 
 async function callOllama(systemPrompt: string, userMessage: string, opts: TranslateOptions, signal: AbortSignal): Promise<string> {
-  const response = await ollamaClient(opts.ollamaBaseUrl || 'http://localhost:11434').chat.completions.create(
+  const response = await ollamaClient(opts.ollamaBaseUrl || DEFAULT_OLLAMA_BASE_URL).chat.completions.create(
     {
-      model: opts.ollamaModel || 'qwen3.6:latest',
+      model: opts.ollamaModel || DEFAULT_OLLAMA_MODEL,
       messages: [
         { role: 'system', content: systemPrompt },
         { role: 'user', content: userMessage },
@@ -402,37 +403,19 @@ async function callOllama(systemPrompt: string, userMessage: string, opts: Trans
   return extractTranslation(response.choices[0]?.message?.content || '{}');
 }
 
-// Claude prompt caching needs `system` as a block array with cache_control —
-// the existing callClaude() in anthropic.ts uses a plain string `system` and
-// is shared by other callers, so this is a separate implementation rather
-// than a retrofit (plan §4: "Bestaande callClaude niet aanpassen").
+// Claude prompt caching needs `system` as a block array with cache_control,
+// which callClaude() in anthropic.ts (plain string `system`) does not send —
+// so this builds its own body and shares only the transport.
 async function callClaudeCached(systemPrompt: string, userMessage: string, apiKey: string, signal: AbortSignal): Promise<string> {
-  const effectiveKey = apiKey || process.env.ANTHROPIC_API_KEY || '';
-  if (!effectiveKey) throw new Error('No Anthropic API key provided. Add one in Settings.');
-
-  const response = await fetch('https://api.anthropic.com/v1/messages', {
-    method: 'POST',
-    headers: {
-      'x-api-key': effectiveKey,
-      'anthropic-version': '2023-06-01',
-      'content-type': 'application/json',
-    },
-    body: JSON.stringify({
-      model: 'claude-haiku-4-5-20251001',
+  const raw = await postAnthropicMessage(
+    {
       max_tokens: claudeMaxTokens(userMessage.length),
       system: [{ type: 'text', text: systemPrompt, cache_control: { type: 'ephemeral' } }],
       messages: [{ role: 'user', content: userMessage }],
-    }),
+    },
+    apiKey,
     signal,
-  });
-
-  if (!response.ok) {
-    const text = await response.text().catch(() => response.statusText);
-    throw new Error(`Anthropic API error ${response.status}: ${text}`);
-  }
-
-  const data = await response.json() as { content?: Array<{ text?: string }> };
-  const raw = data.content?.[0]?.text ?? '';
+  );
   const match = raw.match(/\{[\s\S]*\}/);
   return match ? extractTranslation(match[0]) : '';
 }
