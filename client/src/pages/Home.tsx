@@ -21,10 +21,9 @@ import { ChunkBasedTranscription } from '@/lib/chunk-based-transcription';
 import { BrowserSpeechTranscription } from '@/lib/browser-speech-transcription';
 import { StreamingTranscription } from '@/lib/streaming-transcription';
 import { LocalWhisperTranscription } from '@/lib/local-whisper-transcription';
+import type { TranscriptionBackend } from '@/lib/transcription-backend';
 import { useAudioQuality } from '@/hooks/useAudioQuality';
 import { saveSession } from '@/lib/session-db';
-
-type AnyTranscriptionBackend = StreamingTranscription | ChunkBasedTranscription | BrowserSpeechTranscription | LocalWhisperTranscription;
 
 interface TranscriptionSegment {
   original: string;
@@ -134,7 +133,7 @@ export default function Home() {
 
   const detectSpeakers = settings.speechMode === 'dialogue';
 
-  const backendRef = useRef<AnyTranscriptionBackend | null>(null);
+  const backendRef = useRef<TranscriptionBackend | null>(null);
   const transcriptionSegmentsRef = useRef<TranscriptionSegment[]>([]);
   const pendingRetranslationRef = useRef(false);
   const previousTargetLanguageRef = useRef(targetLanguage);
@@ -412,9 +411,7 @@ export default function Home() {
           setTranslatedText(newTranslated);
           setPreviewText('');
           // Keep Whisper context up-to-date for the next chunk
-          if (backendRef.current instanceof ChunkBasedTranscription) {
-            backendRef.current.setPreviousTranscript(newOriginal.slice(-300));
-          }
+          backendRef.current?.setPreviousTranscript?.(newOriginal.slice(-300));
 
           setSubtitlePrevious(subtitleCurrentRef.current);
           subtitleCurrentRef.current = translated;
@@ -466,7 +463,7 @@ export default function Home() {
         },
       };
 
-      let backend: AnyTranscriptionBackend;
+      let backend: TranscriptionBackend;
 
       backendRef.current = null;
       setIsRecording(true);
@@ -488,9 +485,10 @@ export default function Home() {
           sermonContextRef.current,
         );
       } else if (settings.transcriptionProvider === 'browser') {
-        backend = new BrowserSpeechTranscription(events);
+        const browserBackend = new BrowserSpeechTranscription(events);
+        backend = browserBackend;
         backendRef.current = backend;
-        await backend.start(
+        await browserBackend.start(
           sourceLanguage,
           targetLanguage,
           detectSpeakers,
@@ -508,22 +506,24 @@ export default function Home() {
         backendRef.current = backend;
         const engine = settings.transcriptionProvider === 'mlx' ? 'mlx' : 'openai';
         if (settings.debugMode) addDebugLog(`Connecting to ${engine === 'mlx' ? 'local MLX' : 'Whisper'} chunk transcription…`);
-        await chunkBackend.start(
+        await chunkBackend.start({
           sourceLanguage,
           targetLanguage,
           detectSpeakers,
-          settings.translationProvider,
-          settings.openaiApiKey,
-          settings.anthropicApiKey,
-          settings.theologicalGlossary,
-          sermonContextRef.current,
-          settings.debugMode,
-          settings.audioNormalizationGain,
-          settings.chunkOverlapMs,
-          settings.useVADChunking,
-          settings.vadSilenceThresholdMs,
+          translationProvider: settings.translationProvider,
+          openaiApiKey: settings.openaiApiKey,
+          anthropicApiKey: settings.anthropicApiKey,
+          glossary: settings.theologicalGlossary,
+          sermonContext: sermonContextRef.current,
+          debugMode: settings.debugMode,
+          normalizationGain: settings.audioNormalizationGain,
+          chunkOverlapMs: settings.chunkOverlapMs,
+          useVADChunking: settings.useVADChunking,
+          vadSilenceThresholdMs: settings.vadSilenceThresholdMs,
           engine,
-        );
+          ollamaBaseUrl: settings.ollamaBaseUrl,
+          ollamaModel: settings.ollamaModel,
+        });
       } else {
         // AssemblyAI real-time streaming (PCM16 over WebSocket)
         const streamingBackend = new StreamingTranscription(events);
@@ -747,9 +747,7 @@ export default function Home() {
                     onChange={(e) => {
                       const secs = Number(e.target.value);
                       setChunkDurationSecs(secs);
-                      if (backendRef.current instanceof ChunkBasedTranscription) {
-                        backendRef.current.setChunkDuration(secs * 1000);
-                      }
+                      backendRef.current?.setChunkDuration?.(secs * 1000);
                     }}
                     className="text-sm border border-input rounded-lg px-2 py-1.5 bg-background text-foreground disabled:opacity-50"
                     data-testid="select-chunk-duration"
@@ -838,17 +836,11 @@ export default function Home() {
           useVADChunking={settings.useVADChunking}
           onGainChange={(gain) => {
             updateSettings({ audioNormalizationGain: gain });
-            if (backendRef.current instanceof ChunkBasedTranscription) {
-              backendRef.current.setNormalizationGain(gain);
-            } else if (backendRef.current instanceof StreamingTranscription) {
-              backendRef.current.setNormalizationGain(gain);
-            }
+            backendRef.current?.setNormalizationGain?.(gain);
           }}
           onVADThresholdChange={(ms) => {
             updateSettings({ vadSilenceThresholdMs: ms });
-            if (backendRef.current instanceof ChunkBasedTranscription) {
-              backendRef.current.setVADThreshold(ms);
-            }
+            backendRef.current?.setVADThreshold?.(ms);
           }}
           onNormalizeClick={() => setIsWizardOpen(true)}
         />
@@ -1029,11 +1021,7 @@ export default function Home() {
         onClose={() => setIsWizardOpen(false)}
         onApply={(gain) => {
           updateSettings({ audioNormalizationGain: gain });
-          if (backendRef.current instanceof ChunkBasedTranscription) {
-            backendRef.current.setNormalizationGain(gain);
-          } else if (backendRef.current instanceof StreamingTranscription) {
-            backendRef.current.setNormalizationGain(gain);
-          }
+          backendRef.current?.setNormalizationGain?.(gain);
         }}
       />
     </div>

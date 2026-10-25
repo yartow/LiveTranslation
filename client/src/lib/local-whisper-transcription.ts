@@ -1,5 +1,7 @@
 import type { ChunkTranscriptionEvents, TranslationProvider } from './chunk-based-transcription';
 import type { LocalWhisperModel } from '@/hooks/useSettings';
+import type { TranscriptionBackend } from './transcription-backend';
+import { translateRecognizedText } from './translate-text';
 
 export type { LocalWhisperModel };
 
@@ -7,7 +9,7 @@ export interface LocalWhisperEvents extends ChunkTranscriptionEvents {
   onModelProgress?: (loaded: number, total: number, name: string) => void;
 }
 
-export class LocalWhisperTranscription {
+export class LocalWhisperTranscription implements TranscriptionBackend {
   private worker: Worker | null = null;
   private mediaStream: MediaStream | null = null;
   private mediaRecorder: MediaRecorder | null = null;
@@ -198,39 +200,15 @@ export class LocalWhisperTranscription {
   }
 
   private async translateText(text: string, chunkIndex: number): Promise<void> {
-    if (this.translationProvider === 'none') {
-      this.events.onTranslation(text, '', chunkIndex);
-      return;
-    }
-
-    try {
-      const response = await fetch('/api/translate', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          text,
-          targetLanguage: this.targetLanguage,
-          detectSpeakers: this.detectSpeakers,
-          translationProvider: this.translationProvider,
-          openaiApiKey: this.openaiApiKey,
-          anthropicApiKey: this.anthropicApiKey,
-          glossary: this.glossary || undefined,
-          sermonContext: this.sermonContext || undefined,
-        }),
-      });
-
-      if (!response.ok) {
-        this.events.onError('Translation request failed');
-        this.events.onTranslation(text, '', chunkIndex);
-        return;
-      }
-
-      const data = await response.json();
-      this.events.onTranslation(data.correctedText || text, data.translatedText || '', chunkIndex);
-    } catch {
-      this.events.onError('Translation failed — check your API key in Settings.');
-      this.events.onTranslation(text, '', chunkIndex);
-    }
+    await translateRecognizedText(text, chunkIndex, {
+      targetLanguage: this.targetLanguage,
+      detectSpeakers: this.detectSpeakers,
+      translationProvider: this.translationProvider,
+      openaiApiKey: this.openaiApiKey,
+      anthropicApiKey: this.anthropicApiKey,
+      glossary: this.glossary,
+      sermonContext: this.sermonContext,
+    }, this.events);
   }
 
   updateConfig(

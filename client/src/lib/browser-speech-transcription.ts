@@ -1,6 +1,8 @@
 import type { ChunkTranscriptionEvents, TranslationProvider } from './chunk-based-transcription';
+import type { TranscriptionBackend } from './transcription-backend';
+import { translateRecognizedText } from './translate-text';
 
-export class BrowserSpeechTranscription {
+export class BrowserSpeechTranscription implements TranscriptionBackend {
   private recognition: any = null;
   private events: ChunkTranscriptionEvents;
   private targetLanguage = 'nl';
@@ -116,41 +118,15 @@ export class BrowserSpeechTranscription {
   }
 
   private async processText(text: string): Promise<void> {
-    const index = this.chunkIndex++;
-
-    if (this.translationProvider === 'none') {
-      this.events.onTranslation(text, '', index);
-      return;
-    }
-
-    try {
-      const response = await fetch('/api/translate', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          text,
-          targetLanguage: this.targetLanguage,
-          detectSpeakers: this.detectSpeakers,
-          translationProvider: this.translationProvider,
-          openaiApiKey: this.openaiApiKey,
-          anthropicApiKey: this.anthropicApiKey,
-          glossary: this.glossary || undefined,
-          sermonContext: this.sermonContext || undefined,
-        }),
-      });
-
-      if (!response.ok) {
-        this.events.onError('Translation request failed');
-        this.events.onTranslation(text, '', index);
-        return;
-      }
-
-      const data = await response.json();
-      this.events.onTranslation(data.correctedText || text, data.translatedText || '', index);
-    } catch {
-      this.events.onError('Translation failed — check your API key in Settings.');
-      this.events.onTranslation(text, '', index);
-    }
+    await translateRecognizedText(text, this.chunkIndex++, {
+      targetLanguage: this.targetLanguage,
+      detectSpeakers: this.detectSpeakers,
+      translationProvider: this.translationProvider,
+      openaiApiKey: this.openaiApiKey,
+      anthropicApiKey: this.anthropicApiKey,
+      glossary: this.glossary,
+      sermonContext: this.sermonContext,
+    }, this.events);
   }
 
   updateConfig(

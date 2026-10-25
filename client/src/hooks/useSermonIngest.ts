@@ -253,25 +253,26 @@ export function useSermonIngest(args: SermonIngestArgs) {
     backendRef.current = backend;
 
     try {
-      await backend.start(
-        a.sourceLanguage,
-        a.targetLanguage,
-        false, // detectSpeakers — not meaningful for a single-speaker sermon
-        a.asrCorrection === false ? 'none' : a.correctionProvider,
-        a.openaiApiKey,
-        a.anthropicApiKey,
-        a.glossary,
-        '', // sermonContext — sermon mode carries context per-sentence at translate time, not per-chunk
-        a.debugMode,
-        a.normalizationGain ?? 1.0,
-        0,   // chunkOverlapMs forced to 0 — VAD cuts land between words, and
-             // overlap-dedupe.ts is the belt-and-braces cleanup (plan §3)
-        true, // useVADChunking forced on
-        SERMON_VAD_SILENCE_MS,
-        a.engine,
-        a.ollamaBaseUrl,
-        a.ollamaModel,
-      );
+      await backend.start({
+        sourceLanguage: a.sourceLanguage,
+        targetLanguage: a.targetLanguage,
+        detectSpeakers: false, // not meaningful for a single-speaker sermon
+        translationProvider: a.asrCorrection === false ? 'none' : a.correctionProvider,
+        openaiApiKey: a.openaiApiKey,
+        anthropicApiKey: a.anthropicApiKey,
+        glossary: a.glossary,
+        sermonContext: '', // sermon mode carries context per-sentence at translate time, not per-chunk
+        debugMode: a.debugMode,
+        normalizationGain: a.normalizationGain ?? 1.0,
+        // Forced to 0: VAD cuts land between words, and overlap-dedupe.ts is the
+        // belt-and-braces cleanup (plan §3).
+        chunkOverlapMs: 0,
+        useVADChunking: true,
+        vadSilenceThresholdMs: SERMON_VAD_SILENCE_MS,
+        engine: a.engine,
+        ollamaBaseUrl: a.ollamaBaseUrl,
+        ollamaModel: a.ollamaModel,
+      });
       setIsRecording(true);
     } catch (err) {
       argsRef.current.onError(err instanceof Error ? err.message : 'Could not start recording');

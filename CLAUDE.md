@@ -59,6 +59,9 @@ client/src/
                                        AudioBar, AddToGlossaryBubble, AddToGlossaryDialog
   lib/
     chunk-based-transcription.ts  — shared ChunkTranscriptionEvents interface
+    transcription-backend.ts      — `TranscriptionBackend`: what Live mode needs from any backend (optional
+                                       setNormalizationGain/setPreviousTranscript/… so Home.tsx never checks `instanceof`)
+    translate-text.ts             — shared /api/translate call for the browser-speech and local-whisper backends
     streaming-transcription.ts    — AssemblyAI WebSocket streaming backend
     browser-speech-transcription.ts — Web Speech API backend
     local-whisper-transcription.ts  — Transformers.js (WebGPU) backend

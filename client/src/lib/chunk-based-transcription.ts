@@ -1,4 +1,5 @@
 import { createSerialRunner } from './serial-runner';
+import type { TranscriptionBackend } from './transcription-backend';
 
 export interface ChunkTranscriptionEvents {
   onReady: () => void;
@@ -31,6 +32,25 @@ export type TranscriptionEngine = 'openai' | 'mlx';
 // but never translate — translation happens later, per-sentence, with
 // context (see server/lib/sermon-translate.ts).
 export type OutputMode = 'translate' | 'correct-only';
+
+export interface ChunkStartOptions {
+  sourceLanguage: string;
+  targetLanguage: string;
+  detectSpeakers: boolean;
+  translationProvider?: TranslationProvider;
+  openaiApiKey?: string;
+  anthropicApiKey?: string;
+  glossary?: string;
+  sermonContext?: string;
+  debugMode?: boolean;
+  normalizationGain?: number;
+  chunkOverlapMs?: number;
+  useVADChunking?: boolean;
+  vadSilenceThresholdMs?: number;
+  engine?: TranscriptionEngine;
+  ollamaBaseUrl?: string;
+  ollamaModel?: string;
+}
 
 // Circular ring buffer keeping the last `capacity` float32 samples for overlap.
 class OverlapBuffer {
@@ -357,6 +377,64 @@ export function windowMeanAbs(frame: Float32Array, windowSamples: number): numbe
 }
 
 /**
+ * Level measurements for one audio frame. `rms`/`peak` are taken from the raw
+ * input (what the input stage delivers, for the level meter); `gained` is the
+ * input times the normalization gain, clamped to [-1, 1] so a high gain
+ * cannot clip; `meanAbs` is the mean absolute value of `gained`, which the
+ * silence gate and the VAD work from.
+ */
+export function analyzeFrame(input: Float32Array, gain: number): { rms: number; peak: number; gained: Float32Array; meanAbs: number } {
+  let sumSq = 0;
+  let peak = 0;
+  for (let i = 0; i < input.length; i++) {
+    sumSq += input[i] * input[i];
+    const a = Math.abs(input[i]);
+    if (a > peak) peak = a;
+  }
+  const rms = Math.sqrt(sumSq / input.length);
+
+  const gained = new Float32Array(input.length);
+  for (let i = 0; i < input.length; i++) {
+    gained[i] = Math.max(-1, Math.min(1, input[i] * gain));
+  }
+
+  let sumAbs = 0;
+  for (let i = 0; i < gained.length; i++) sumAbs += Math.abs(gained[i]);
+  return { rms, peak, gained, meanAbs: sumAbs / gained.length };
+}
+
+/**
+ * VAD "silence" for chunk cutting. Relative to the tracked noise floor: with
+ * the browser's noise suppression off, a room's ambient level can sit above
+ * any fixed threshold, in which case pauses would never be seen and every
+ * chunk would run to the hard cap, cutting mid-word.
+ */
+export function isVadSilent(meanAbs: number, noiseFloor: number): boolean {
+  return meanAbs < Math.max(0.005, noiseFloor * VAD_SILENCE_FLOOR_RATIO);
+}
+
+export interface CommitState {
+  useVAD: boolean;
+  vadSilenceMs: number;
+  vadSilenceThresholdMs: number;
+  /** Samples (16 kHz) buffered in the chunk being built. */
+  sampleCount: number;
+  minSamples: number;
+  maxSamples: number;
+}
+
+/**
+ * Whether the chunk being built should be cut now: 'vad' on a pause once
+ * enough audio has accumulated, 'cap' at the hard maximum (also the only
+ * trigger when VAD is off, i.e. fixed-length chunks), else null.
+ */
+export function decideCommit(s: CommitState): 'vad' | 'cap' | null {
+  if (s.useVAD && s.vadSilenceMs >= s.vadSilenceThresholdMs && s.sampleCount >= s.minSamples) return 'vad';
+  if (s.sampleCount >= s.maxSamples) return 'cap';
+  return null;
+}
+
+/**
  * The deviceId the stream really opened ('' for the system default, which Chrome reports as
  * 'default'/'communications'), so callers compare against what is recording, not what was asked for.
  */
@@ -373,7 +451,7 @@ export class RecordingStoppedError extends Error {
   }
 }
 
-export class ChunkBasedTranscription {
+export class ChunkBasedTranscription implements TranscriptionBackend {
   private ws: WebSocket | null = null;
   private mediaStream: MediaStream | null = null;
   private audioContext: AudioContext | null = null;
@@ -480,11 +558,11 @@ export class ChunkBasedTranscription {
     this.assembler = new ChunkAssembler(Math.round(this.overlapMs * TARGET_RATE / 1000));
   }
 
-  async start(
-    sourceLanguage: string,
-    targetLanguage: string,
-    detectSpeakers: boolean,
-    translationProvider: TranslationProvider = 'openai',
+  async start({
+    sourceLanguage,
+    targetLanguage,
+    detectSpeakers,
+    translationProvider = 'openai',
     openaiApiKey = '',
     anthropicApiKey = '',
     glossary = '',
@@ -494,10 +572,10 @@ export class ChunkBasedTranscription {
     chunkOverlapMs = 500,
     useVADChunking = false,
     vadSilenceThresholdMs = 800,
-    engine: TranscriptionEngine = 'openai',
-    ollamaBaseUrl?: string,
-    ollamaModel?: string,
-  ): Promise<void> {
+    engine = 'openai',
+    ollamaBaseUrl,
+    ollamaModel,
+  }: ChunkStartOptions): Promise<void> {
     this.sourceLanguage = sourceLanguage;
     this.targetLanguage = targetLanguage;
     this.detectSpeakers = detectSpeakers;
@@ -744,33 +822,10 @@ export class ChunkBasedTranscription {
       if (this.paused) { this.events.onAudioLevel?.(0); return; }
       const input = event.inputBuffer.getChannelData(0);
 
-      // RMS for audio level callback
-      let sumSq = 0;
-      let peak = 0;
-      for (let i = 0; i < input.length; i++) {
-        sumSq += input[i] * input[i];
-        const a = Math.abs(input[i]);
-        if (a > peak) peak = a;
-      }
-      const rms = Math.sqrt(sumSq / input.length);
+      const { rms, peak, gained, meanAbs } = analyzeFrame(input, this.normalizationGain);
       this.events.onAudioLevel?.(rms, peak);
 
-      // Apply normalization gain (clamp to prevent clipping)
-      const gained = new Float32Array(input.length);
-      for (let i = 0; i < input.length; i++) {
-        gained[i] = Math.max(-1, Math.min(1, input[i] * this.normalizationGain));
-      }
-
-      // Mean absolute value for silence gate / VAD
-      let sumAbs = 0;
-      for (let i = 0; i < gained.length; i++) sumAbs += Math.abs(gained[i]);
-      const meanAbs = sumAbs / gained.length;
-      // VAD "silence" for chunk cutting. Relative to the tracked noise floor:
-      // with the browser's noise suppression off, a room's ambient level can
-      // sit above any fixed threshold, in which case pauses would never be
-      // seen and every chunk would run to the hard cap, cutting mid-word.
-      const isSilent = meanAbs < Math.max(0.005, this.gate.noiseFloor * VAD_SILENCE_FLOOR_RATIO);
-
+      const isSilent = isVadSilent(meanAbs, this.gate.noiseFloor);
       if (isSilent) {
         this.vadSilenceMs += this.frameDurationMs;
       } else {
@@ -790,17 +845,16 @@ export class ChunkBasedTranscription {
       this.assembler.push(resampled);
       this.samplesPushed += resampled.length;
 
-      // VAD-triggered commit: a pause, once enough audio has accumulated.
-      if (
-        this.useVAD &&
-        this.vadSilenceMs >= this.vadSilenceThresholdMs &&
-        this.assembler.sampleCount >= this.minChunkSamples()
-      ) {
-        this.commitChunk('vad');
-        this.vadSilenceMs = 0;
-      } else if (this.assembler.sampleCount >= this.maxChunkSamples()) {
-        // Hard cap (also the only trigger when VAD is off, i.e. fixed-length chunks).
-        this.commitChunk('cap');
+      const reason = decideCommit({
+        useVAD: this.useVAD,
+        vadSilenceMs: this.vadSilenceMs,
+        vadSilenceThresholdMs: this.vadSilenceThresholdMs,
+        sampleCount: this.assembler.sampleCount,
+        minSamples: this.minChunkSamples(),
+        maxSamples: this.maxChunkSamples(),
+      });
+      if (reason) {
+        this.commitChunk(reason);
         this.vadSilenceMs = 0;
       }
     };
