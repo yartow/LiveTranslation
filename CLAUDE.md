@@ -85,7 +85,9 @@ server/
                                        purpose (tuned per model); tests/unit/provider-prompts.test.ts snapshots every
                                        request, so a prompt change shows up as a snapshot diff
     assemblyai-streaming.ts       — AssemblyAI streaming WebSocket handler
-    chunk-transcription.ts        — Chunk-based Whisper pipeline
+    chunk-transcription.ts        — Chunk-based Whisper pipeline; `processChunk` = openChunkArchive → transcribeChunk
+                                       → cleanTranscript → correctSermonChunk / translateChunk → ordered delivery
+                                       (pinned by tests/unit/chunk-pipeline.test.ts, which mocks the provider modules)
     mlx-whisper.ts                 — Manages the mlx_worker.py sidecar process
     listener-hub.ts               — listener-mode broadcast relay, see "Listener mode" below
     sermon-prompt.ts              — sermon-mode system prompt assembly (role + glossary + output + scripture hints)

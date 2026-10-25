@@ -297,9 +297,216 @@ function classifyError(error: unknown): string {
   return msg;
 }
 
-// Pipeline per chunk: convert audio → Whisper → GPT/Claude correct+translate.
+// A chunk that yields no text (silence, a caption artifact, an aborted session)
+// still gets an entry in pendingResults, so the chunks behind it are not held
+// up; `correctedText` is only non-empty when an aborted chunk keeps its raw text.
+function deliverEmpty(session: ChunkSession, chunkIndex: number, correctedText = ''): void {
+  session.pendingResults.set(chunkIndex, { correctedText, translatedText: '' });
+  deliverInOrder(session);
+}
+
+// The ASR_DEBUG_DIR record of one chunk: `record` is filled in as the pipeline
+// progresses, `write()` flushes it to <idx>.json (a no-op when the archive is off).
+interface ChunkArchive {
+  record: Record<string, unknown>;
+  write(): Promise<void>;
+}
+
+function openChunkArchive(session: ChunkSession, chunkIndex: number, audioBuffer: Buffer, isWav: boolean): ChunkArchive {
+  const record: Record<string, unknown> = { chunkIndex, bytes: audioBuffer.length, receivedAt: new Date().toISOString(), meta: session.chunkMeta.get(chunkIndex) ?? null };
+  session.chunkMeta.delete(chunkIndex);
+  if (session.archiveDir) {
+    // Written up front so the audio survives even if transcription crashes.
+    writeFile(join(session.archiveDir, `${chunkIndex}.${isWav ? 'wav' : 'webm'}`), audioBuffer).catch(() => {});
+  }
+  return {
+    record,
+    write: () => session.archiveDir
+      ? writeFile(join(session.archiveDir, `${chunkIndex}.json`), JSON.stringify(record, null, 2)).catch(() => {})
+      : Promise.resolve(),
+  };
+}
+
+// Whisper (OpenAI or the local MLX worker), with the truncation guard.
+async function transcribeChunk(
+  session: ChunkSession,
+  audioPath: string,
+  audioBuffer: Buffer,
+  chunkIndex: number,
+  isWav: boolean,
+  archive: ChunkArchive,
+  signal: AbortSignal,
+): Promise<{ rawText: string; uncertainWords?: UncertainWord[] }> {
+  // Only the client's WAV frames have a known duration; legacy webm chunks skip the guard.
+  const audioDurationSecs = isWav ? wavDurationSecs(audioBuffer.length) : Number.NaN;
+
+  if (session.engine === 'mlx') {
+    sendDebug(session, `Chunk #${chunkIndex}: sending to local MLX Whisper (${session.sourceLanguage})…`);
+    const initialPrompt = buildWhisperPrompt(effectiveGlossary(session.glossary) || undefined, session.sermonContext || undefined, session.previousTranscript || undefined, session.sourceLanguage);
+    const attempts: Array<{ usePrompt: boolean; diag: MlxDiag | null; uncertain?: UncertainWord[]; text?: string }> = [];
+    // The text that wins (first or retry attempt) decides which attempt's uncertain words apply.
+    const uncertainByText = new Map<string, UncertainWord[] | undefined>();
+    const guarded = await transcribeGuarded(
+      async (usePrompt) => {
+        const res = await transcribeWithMlxDetailed(audioPath, session.sourceLanguage, usePrompt ? initialPrompt : undefined, signal);
+        attempts.push({ usePrompt, diag: res.diag, uncertain: res.uncertain, text: res.text });
+        uncertainByText.set(res.text, res.uncertain);
+        return res.text;
+      },
+      !!initialPrompt, audioDurationSecs,
+    );
+    archive.record.attempts = attempts;
+    archive.record.guardRetried = guarded.retried;
+    for (const { usePrompt, diag } of attempts) {
+      if (diag) for (const line of describeDiag(diag)) sendDebug(session, `Chunk #${chunkIndex}${usePrompt ? '' : ' (no-prompt retry)'}: ${line}`);
+    }
+    if (guarded.retried) sendDebug(session, `Chunk #${chunkIndex}: transcript implausibly short for ${audioDurationSecs.toFixed(1)}s of audio — retried without the prompt`);
+    archive.record.rawText = guarded.text;
+    return { rawText: guarded.text, uncertainWords: uncertainByText.get(guarded.text) };
+  }
+
+  const hasOpenAIKey = !!(session.openaiApiKey || process.env.OPENAI_API_KEY);
+  if (!hasOpenAIKey) {
+    sendDebug(session, `Chunk #${chunkIndex}: ✗ No OpenAI API key — transcription will fail`);
+  } else {
+    sendDebug(session, `Chunk #${chunkIndex}: sending to Whisper (${session.sourceLanguage})…`);
+  }
+  const hasPrompt = !!buildWhisperPrompt(effectiveGlossary(session.glossary) || undefined, session.sermonContext || undefined, session.previousTranscript || undefined, session.sourceLanguage);
+  const guarded = await transcribeGuarded(
+    (usePrompt) => transcribeAudio(
+      audioPath, session.sourceLanguage, session.openaiApiKey || undefined,
+      usePrompt ? effectiveGlossary(session.glossary) || undefined : undefined,
+      usePrompt ? session.sermonContext || undefined : undefined,
+      signal,
+      usePrompt ? session.previousTranscript || undefined : undefined,
+    ),
+    hasPrompt, audioDurationSecs,
+  );
+  if (guarded.retried) sendDebug(session, `Chunk #${chunkIndex}: transcript implausibly short for ${audioDurationSecs.toFixed(1)}s of audio — retried without the prompt`);
+  return { rawText: guarded.text };
+}
+
+// Filters Whisper's output before any LLM sees it. Returns the text to carry
+// on with, or null when nothing real is left (the caller then marks the chunk empty).
+function cleanTranscript(session: ChunkSession, rawText: string, chunkIndex: number, archive: ChunkArchive): string | null {
+  // Whisper caption hallucination ("MUZIEK", "***", foreign-script
+  // garbage) during silence/noise — see server/lib/asr-artifacts.ts's
+  // header comment for why this can't be caught via no_speech_prob.
+  // Must run before stripAsteriskArtifacts below, which would otherwise
+  // strip the very asterisks that mark e.g. "*ZANG EN MUZIEK*" as an
+  // annotation, leaving the hallucinated words behind.
+  if (isAsrArtifact(rawText, session.sourceLanguage)) {
+    sendDebug(session, `Chunk #${chunkIndex}: discarded — ASR artifact ("${rawText.slice(0, 40)}")`);
+    return null;
+  }
+
+  // Partial artifacts mixed into real speech ("[Muziek] Goedemorgen",
+  // trailing "Ondertiteling door …", decoder loops) — isAsrArtifact above
+  // only catches a chunk that is ENTIRELY an artifact.
+  const strippedText = stripAsrArtifacts(rawText, session.sourceLanguage);
+  if (!strippedText) {
+    sendDebug(session, `Chunk #${chunkIndex}: discarded — nothing left after artifact stripping ("${rawText.slice(0, 40)}")`);
+    return null;
+  }
+  if (strippedText !== rawText.trim()) {
+    sendDebug(session, `Chunk #${chunkIndex}: stripped ASR artifacts ("${rawText.slice(0, 40)}" → "${strippedText.slice(0, 40)}")`);
+  }
+  // Operator-learned fixes ("ik lees je logie" -> "ecclesiologie", see asr-corrections.ts):
+  // deterministic, so they hold even when the per-chunk LLM correction is off.
+  const learnedText = applyLearnedCorrections(strippedText);
+  if (learnedText !== strippedText) {
+    sendDebug(session, `Chunk #${chunkIndex}: applied learned corrections ("${strippedText.slice(0, 40)}" → "${learnedText.slice(0, 40)}")`);
+  }
+  archive.record.strippedText = strippedText;
+  archive.record.transcribedAt = new Date().toISOString();
+  return learnedText;
+}
+
+// Sermon mode: correct the chunk, never translate it. Per-sentence
+// translation with context happens later via /api/sermon/translate —
+// see server/lib/sermon-translate.ts.
+async function correctSermonChunk(session: ChunkSession, rawText: string, chunkIndex: number, signal: AbortSignal): Promise<string> {
+  try {
+    if (session.translationProvider === 'none') {
+      return rawText;
+    } else if (session.translationProvider === 'ollama') {
+      sendDebug(session, `Chunk #${chunkIndex}: correcting via Ollama (${session.ollamaModel})…`);
+      return (await correctTranscriptWithOllama(
+        rawText, session.targetLanguage, session.ollamaModel, session.ollamaBaseUrl,
+        effectiveGlossary(session.glossary) || undefined, session.previousTranscript || undefined, signal, session.sourceLanguage,
+      )).correctedText;
+    } else if (session.translationProvider === 'claude') {
+      const hasAnthropicKey = !!(session.anthropicApiKey || process.env.ANTHROPIC_API_KEY);
+      if (!hasAnthropicKey) sendDebug(session, `Chunk #${chunkIndex}: ✗ No Anthropic API key`);
+      else sendDebug(session, `Chunk #${chunkIndex}: correcting via Claude Haiku…`);
+      return (await correctTranscriptWithClaude(
+        rawText, session.targetLanguage, session.anthropicApiKey,
+        effectiveGlossary(session.glossary) || undefined, session.previousTranscript || undefined, signal, session.sourceLanguage,
+      )).correctedText;
+    }
+    sendDebug(session, `Chunk #${chunkIndex}: correcting via GPT-4o-mini…`);
+    return (await correctTranscript(
+      rawText, session.targetLanguage, session.openaiApiKey || undefined,
+      effectiveGlossary(session.glossary) || undefined, session.previousTranscript || undefined, signal, session.sourceLanguage,
+    )).correctedText;
+  } catch (correctionError) {
+    if (correctionError instanceof Error && correctionError.name === 'AbortError') throw correctionError;
+    // Correction is only polish: Whisper already produced the speech, so a failing
+    // (or overloaded/offline) LLM must not erase this stretch of the sermon.
+    console.error(`Chunk ${chunkIndex} correction failed — keeping the raw transcript:`, correctionError);
+    sendDebug(session, `Chunk #${chunkIndex}: ✗ correction failed (${classifyError(correctionError)}) — using the raw transcript`);
+    return rawText;
+  }
+}
+
+// Live mode: correct and translate the chunk in one call.
+async function translateChunk(
+  session: ChunkSession,
+  rawText: string,
+  chunkIndex: number,
+  signal: AbortSignal,
+): Promise<{ correctedText: string; translatedText: string }> {
+  if (session.translationProvider === 'none') {
+    sendDebug(session, `Chunk #${chunkIndex}: translation disabled — using raw text`);
+    return { correctedText: rawText, translatedText: '' };
+  }
+  if (session.translationProvider === 'ollama') {
+    return correctAndTranslateWithOllama(
+      rawText, session.targetLanguage, session.detectSpeakers,
+      session.ollamaModel, session.ollamaBaseUrl,
+      effectiveGlossary(session.glossary) || undefined, session.sermonContext || undefined, signal,
+    );
+  }
+  if (session.translationProvider === 'claude') {
+    const hasAnthropicKey = !!(session.anthropicApiKey || process.env.ANTHROPIC_API_KEY);
+    if (!hasAnthropicKey) sendDebug(session, `Chunk #${chunkIndex}: ✗ No Anthropic API key`);
+    else sendDebug(session, `Chunk #${chunkIndex}: sending to Claude Haiku (→ ${session.targetLanguage})…`);
+    return correctAndTranslateWithClaude(
+      rawText,
+      session.targetLanguage,
+      session.detectSpeakers,
+      session.anthropicApiKey,
+      effectiveGlossary(session.glossary) || undefined,
+      session.sermonContext || undefined,
+      signal,
+    );
+  }
+  sendDebug(session, `Chunk #${chunkIndex}: sending to GPT-4o-mini (→ ${session.targetLanguage})…`);
+  return correctAndTranslateText(
+    rawText,
+    session.targetLanguage,
+    session.detectSpeakers,
+    session.openaiApiKey || undefined,
+    effectiveGlossary(session.glossary) || undefined,
+    session.sermonContext || undefined,
+    signal,
+  );
+}
+
+// Pipeline per chunk: convert audio → Whisper → filter → correct (+ translate).
 // Chunks are processed concurrently; results are buffered and delivered in order.
-async function processChunk(
+// Exported for unit testing (tests/unit/chunk-pipeline.test.ts); not part of the public API.
+export async function processChunk(
   session: ChunkSession,
   audioBuffer: Buffer,
   chunkIndex: number,
@@ -308,15 +515,7 @@ async function processChunk(
   const { signal } = session.abortController;
   let audioPath: string | null = null;
   const semaphore = session.engine === 'mlx' ? mlxSemaphore : whisperSemaphore;
-  const archive: Record<string, unknown> = { chunkIndex, bytes: audioBuffer.length, receivedAt: new Date().toISOString(), meta: session.chunkMeta.get(chunkIndex) ?? null };
-  session.chunkMeta.delete(chunkIndex);
-  const writeArchive = (): Promise<void> => session.archiveDir
-    ? writeFile(join(session.archiveDir, `${chunkIndex}.json`), JSON.stringify(archive, null, 2)).catch(() => {})
-    : Promise.resolve();
-  if (session.archiveDir) {
-    // Written up front so the audio survives even if transcription crashes.
-    writeFile(join(session.archiveDir, `${chunkIndex}.${isWav ? 'wav' : 'webm'}`), audioBuffer).catch(() => {});
-  }
+  const archive = openChunkArchive(session, chunkIndex, audioBuffer, isWav);
 
   sendDebug(session, `Chunk #${chunkIndex}: received (${audioBuffer.length} bytes, ${isWav ? 'WAV' : 'webm'}) — waiting for slot`);
   await semaphore.acquire();
@@ -330,105 +529,17 @@ async function processChunk(
     }
     await simulateLatency();
 
-    if (signal.aborted) {
-      session.pendingResults.set(chunkIndex, { correctedText: '', translatedText: '' });
-      deliverInOrder(session);
-      return;
-    }
+    if (signal.aborted) return deliverEmpty(session, chunkIndex);
 
-    // Only the client's WAV frames have a known duration; legacy webm chunks skip the guard.
-    const audioDurationSecs = isWav ? wavDurationSecs(audioBuffer.length) : Number.NaN;
+    const { rawText: whisperText, uncertainWords } = await transcribeChunk(session, audioPath, audioBuffer, chunkIndex, isWav, archive, signal);
 
-    let rawText: string;
-    let uncertainWords: UncertainWord[] | undefined;
-    if (session.engine === 'mlx') {
-      sendDebug(session, `Chunk #${chunkIndex}: sending to local MLX Whisper (${session.sourceLanguage})…`);
-      const initialPrompt = buildWhisperPrompt(effectiveGlossary(session.glossary) || undefined, session.sermonContext || undefined, session.previousTranscript || undefined, session.sourceLanguage);
-      const attempts: Array<{ usePrompt: boolean; diag: MlxDiag | null; uncertain?: UncertainWord[]; text?: string }> = [];
-      // The text that wins (first or retry attempt) decides which attempt's uncertain words apply.
-      const uncertainByText = new Map<string, UncertainWord[] | undefined>();
-      const guarded = await transcribeGuarded(
-        async (usePrompt) => {
-          const res = await transcribeWithMlxDetailed(audioPath!, session.sourceLanguage, usePrompt ? initialPrompt : undefined, signal);
-          attempts.push({ usePrompt, diag: res.diag, uncertain: res.uncertain, text: res.text });
-          uncertainByText.set(res.text, res.uncertain);
-          return res.text;
-        },
-        !!initialPrompt, audioDurationSecs,
-      );
-      archive.attempts = attempts;
-      archive.guardRetried = guarded.retried;
-      for (const { usePrompt, diag } of attempts) {
-        if (diag) for (const line of describeDiag(diag)) sendDebug(session, `Chunk #${chunkIndex}${usePrompt ? '' : ' (no-prompt retry)'}: ${line}`);
-      }
-      if (guarded.retried) sendDebug(session, `Chunk #${chunkIndex}: transcript implausibly short for ${audioDurationSecs.toFixed(1)}s of audio — retried without the prompt`);
-      rawText = guarded.text;
-      archive.rawText = rawText;
-      uncertainWords = uncertainByText.get(guarded.text);
-    } else {
-      const hasOpenAIKey = !!(session.openaiApiKey || process.env.OPENAI_API_KEY);
-      if (!hasOpenAIKey) {
-        sendDebug(session, `Chunk #${chunkIndex}: ✗ No OpenAI API key — transcription will fail`);
-      } else {
-        sendDebug(session, `Chunk #${chunkIndex}: sending to Whisper (${session.sourceLanguage})…`);
-      }
-      const hasPrompt = !!buildWhisperPrompt(effectiveGlossary(session.glossary) || undefined, session.sermonContext || undefined, session.previousTranscript || undefined, session.sourceLanguage);
-      const guarded = await transcribeGuarded(
-        (usePrompt) => transcribeAudio(
-          audioPath!, session.sourceLanguage, session.openaiApiKey || undefined,
-          usePrompt ? effectiveGlossary(session.glossary) || undefined : undefined,
-          usePrompt ? session.sermonContext || undefined : undefined,
-          signal,
-          usePrompt ? session.previousTranscript || undefined : undefined,
-        ),
-        hasPrompt, audioDurationSecs,
-      );
-      if (guarded.retried) sendDebug(session, `Chunk #${chunkIndex}: transcript implausibly short for ${audioDurationSecs.toFixed(1)}s of audio — retried without the prompt`);
-      rawText = guarded.text;
-    }
-
-    if (!rawText.trim()) {
+    if (!whisperText.trim()) {
       sendDebug(session, `Chunk #${chunkIndex}: silent — no speech detected`);
-      session.pendingResults.set(chunkIndex, { correctedText: '', translatedText: '' });
-      deliverInOrder(session);
-      return;
+      return deliverEmpty(session, chunkIndex);
     }
 
-    // Whisper caption hallucination ("MUZIEK", "***", foreign-script
-    // garbage) during silence/noise — see server/lib/asr-artifacts.ts's
-    // header comment for why this can't be caught via no_speech_prob.
-    // Must run before stripAsteriskArtifacts below, which would otherwise
-    // strip the very asterisks that mark e.g. "*ZANG EN MUZIEK*" as an
-    // annotation, leaving the hallucinated words behind.
-    if (isAsrArtifact(rawText, session.sourceLanguage)) {
-      sendDebug(session, `Chunk #${chunkIndex}: discarded — ASR artifact ("${rawText.slice(0, 40)}")`);
-      session.pendingResults.set(chunkIndex, { correctedText: '', translatedText: '' });
-      deliverInOrder(session);
-      return;
-    }
-
-    // Partial artifacts mixed into real speech ("[Muziek] Goedemorgen",
-    // trailing "Ondertiteling door …", decoder loops) — isAsrArtifact above
-    // only catches a chunk that is ENTIRELY an artifact.
-    const strippedText = stripAsrArtifacts(rawText, session.sourceLanguage);
-    if (!strippedText) {
-      sendDebug(session, `Chunk #${chunkIndex}: discarded — nothing left after artifact stripping ("${rawText.slice(0, 40)}")`);
-      session.pendingResults.set(chunkIndex, { correctedText: '', translatedText: '' });
-      deliverInOrder(session);
-      return;
-    }
-    if (strippedText !== rawText.trim()) {
-      sendDebug(session, `Chunk #${chunkIndex}: stripped ASR artifacts ("${rawText.slice(0, 40)}" → "${strippedText.slice(0, 40)}")`);
-    }
-    // Operator-learned fixes ("ik lees je logie" -> "ecclesiologie", see asr-corrections.ts):
-    // deterministic, so they hold even when the per-chunk LLM correction is off.
-    const learnedText = applyLearnedCorrections(strippedText);
-    if (learnedText !== strippedText) {
-      sendDebug(session, `Chunk #${chunkIndex}: applied learned corrections ("${strippedText.slice(0, 40)}" → "${learnedText.slice(0, 40)}")`);
-    }
-    rawText = learnedText;
-    archive.strippedText = strippedText;
-    archive.transcribedAt = new Date().toISOString();
+    const rawText = cleanTranscript(session, whisperText, chunkIndex, archive);
+    if (rawText === null) return deliverEmpty(session, chunkIndex);
 
     sendDebug(session, `Chunk #${chunkIndex}: Whisper → "${rawText.slice(0, 60)}${rawText.length > 60 ? '…' : ''}"`);
 
@@ -441,109 +552,33 @@ async function processChunk(
       }));
     }
 
-    if (signal.aborted) {
-      session.pendingResults.set(chunkIndex, { correctedText: rawText, translatedText: '' });
-      deliverInOrder(session);
-      return;
-    }
+    if (signal.aborted) return deliverEmpty(session, chunkIndex, rawText);
 
     let correctedText: string;
     let translatedText: string;
-
     if (session.outputMode === 'correct-only') {
-      // Sermon mode: correct the chunk, never translate it. Per-sentence
-      // translation with context happens later via /api/sermon/translate —
-      // see server/lib/sermon-translate.ts.
+      correctedText = await correctSermonChunk(session, rawText, chunkIndex, signal);
       translatedText = '';
-      correctedText = rawText; // fallback if the optional correction pass below fails
-      try {
-        if (session.translationProvider === 'none') {
-          correctedText = rawText;
-        } else if (session.translationProvider === 'ollama') {
-          sendDebug(session, `Chunk #${chunkIndex}: correcting via Ollama (${session.ollamaModel})…`);
-          ({ correctedText } = await correctTranscriptWithOllama(
-            rawText, session.targetLanguage, session.ollamaModel, session.ollamaBaseUrl,
-            effectiveGlossary(session.glossary) || undefined, session.previousTranscript || undefined, signal, session.sourceLanguage,
-          ));
-        } else if (session.translationProvider === 'claude') {
-          const hasAnthropicKey = !!(session.anthropicApiKey || process.env.ANTHROPIC_API_KEY);
-          if (!hasAnthropicKey) sendDebug(session, `Chunk #${chunkIndex}: ✗ No Anthropic API key`);
-          else sendDebug(session, `Chunk #${chunkIndex}: correcting via Claude Haiku…`);
-          ({ correctedText } = await correctTranscriptWithClaude(
-            rawText, session.targetLanguage, session.anthropicApiKey,
-            effectiveGlossary(session.glossary) || undefined, session.previousTranscript || undefined, signal, session.sourceLanguage,
-          ));
-        } else {
-          sendDebug(session, `Chunk #${chunkIndex}: correcting via GPT-4o-mini…`);
-          ({ correctedText } = await correctTranscript(
-            rawText, session.targetLanguage, session.openaiApiKey || undefined,
-            effectiveGlossary(session.glossary) || undefined, session.previousTranscript || undefined, signal, session.sourceLanguage,
-          ));
-        }
-      } catch (correctionError) {
-        if (correctionError instanceof Error && correctionError.name === 'AbortError') throw correctionError;
-        // Correction is only polish: Whisper already produced the speech, so a failing
-        // (or overloaded/offline) LLM must not erase this stretch of the sermon.
-        console.error(`Chunk ${chunkIndex} correction failed — keeping the raw transcript:`, correctionError);
-        sendDebug(session, `Chunk #${chunkIndex}: ✗ correction failed (${classifyError(correctionError)}) — using the raw transcript`);
-        correctedText = rawText;
-      }
-    } else if (session.translationProvider === 'none') {
-      sendDebug(session, `Chunk #${chunkIndex}: translation disabled — using raw text`);
-      correctedText = rawText;
-      translatedText = '';
-    } else if (session.translationProvider === 'ollama') {
-      ({ correctedText, translatedText } = await correctAndTranslateWithOllama(
-        rawText, session.targetLanguage, session.detectSpeakers,
-        session.ollamaModel, session.ollamaBaseUrl,
-        effectiveGlossary(session.glossary) || undefined, session.sermonContext || undefined, signal,
-      ));
-    } else if (session.translationProvider === 'claude') {
-      const hasAnthropicKey = !!(session.anthropicApiKey || process.env.ANTHROPIC_API_KEY);
-      if (!hasAnthropicKey) sendDebug(session, `Chunk #${chunkIndex}: ✗ No Anthropic API key`);
-      else sendDebug(session, `Chunk #${chunkIndex}: sending to Claude Haiku (→ ${session.targetLanguage})…`);
-      ({ correctedText, translatedText } = await correctAndTranslateWithClaude(
-        rawText,
-        session.targetLanguage,
-        session.detectSpeakers,
-        session.anthropicApiKey,
-        effectiveGlossary(session.glossary) || undefined,
-        session.sermonContext || undefined,
-        signal,
-      ));
     } else {
-      sendDebug(session, `Chunk #${chunkIndex}: sending to GPT-4o-mini (→ ${session.targetLanguage})…`);
-      ({ correctedText, translatedText } = await correctAndTranslateText(
-        rawText,
-        session.targetLanguage,
-        session.detectSpeakers,
-        session.openaiApiKey || undefined,
-        effectiveGlossary(session.glossary) || undefined,
-        session.sermonContext || undefined,
-        signal,
-      ));
+      ({ correctedText, translatedText } = await translateChunk(session, rawText, chunkIndex, signal));
     }
 
     correctedText = stripAsteriskArtifacts(correctedText);
     translatedText = stripAsteriskArtifacts(translatedText);
-    archive.correctedText = correctedText;
-    archive.correctedAt = new Date().toISOString();
+    archive.record.correctedText = correctedText;
+    archive.record.correctedAt = new Date().toISOString();
 
     sendDebug(session, `Chunk #${chunkIndex}: ✓ done`);
     session.pendingResults.set(chunkIndex, {
       correctedText, translatedText,
       lowWords: selectLowConfidenceWords(uncertainWords),
       // A chunk finished early can wait behind a slower earlier one — record when it actually left.
-      onDelivered: session.archiveDir ? () => { archive.deliveredAt = new Date().toISOString(); void writeArchive(); } : undefined,
+      onDelivered: session.archiveDir ? () => { archive.record.deliveredAt = new Date().toISOString(); void archive.write(); } : undefined,
     });
     deliverInOrder(session);
 
   } catch (error) {
-    if (error instanceof Error && error.name === 'AbortError') {
-      session.pendingResults.set(chunkIndex, { correctedText: '', translatedText: '' });
-      deliverInOrder(session);
-      return;
-    }
+    if (error instanceof Error && error.name === 'AbortError') return deliverEmpty(session, chunkIndex);
     const label = classifyError(error);
     console.error(`Chunk ${chunkIndex} error:`, error);
     sendDebug(session, `Chunk #${chunkIndex}: ✗ ${label}`);
@@ -554,12 +589,11 @@ async function processChunk(
         chunkIndex,
       }));
     }
-    session.pendingResults.set(chunkIndex, { correctedText: '', translatedText: '' });
-    deliverInOrder(session);
+    deliverEmpty(session, chunkIndex);
   } finally {
     semaphore.release();
     if (audioPath) await safeUnlink(audioPath);
-    await writeArchive();
+    await archive.write();
   }
 }
 
