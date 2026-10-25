@@ -1,5 +1,6 @@
 import { useState, useCallback } from 'react';
-import { EMPTY_SERVICE_CONTEXT, normalizeServiceContext, type ServiceContext } from '@/lib/sermon/service-context';
+import { EMPTY_SERVICE_CONTEXT, type ServiceContext } from '@/lib/sermon/service-context';
+import { sanitizeSettings } from '@/lib/settings-validate';
 
 export type TranscriptionProvider = 'whisper' | 'browser' | 'transformers' | 'mlx';
 export type TranslationProvider = 'openai' | 'claude' | 'ollama' | 'none';
@@ -99,7 +100,7 @@ export interface AppSettings {
 
 const PREFS_KEY = 'cttay_prefs';
 
-const defaultSettings: AppSettings = {
+export const defaultSettings: AppSettings = {
   openaiApiKey: '',
   anthropicApiKey: '',
   transcriptionProvider: 'whisper',
@@ -155,29 +156,6 @@ const defaultSettings: AppSettings = {
   sermonServiceContext: EMPTY_SERVICE_CONTEXT,
 };
 
-const VALID_TRANSCRIPTION: TranscriptionProvider[] = ['whisper', 'browser', 'transformers', 'mlx'];
-const VALID_TRANSLATION: TranslationProvider[] = ['openai', 'claude', 'ollama', 'none'];
-const VALID_IMPROVEMENT: ImprovementProvider[] = ['openai', 'claude'];
-const VALID_LOCAL_MODEL: LocalWhisperModel[] = ['tiny', 'small', 'medium'];
-const VALID_SERMON_PROVIDER: SermonTranslationProvider[] = ['openai', 'claude', 'ollama'];
-const VALID_BIBLE_VERSION: SermonBibleVersion[] = ['KJV', 'ESV', 'LSB', 'NASB', 'NKJV'];
-const VALID_SCRIPTURE_FALLBACK: SermonScriptureFallback[] = ['kjv', 'none'];
-
-// A glossary filename must match server/lib/glossary-file.ts's isSafeGlossaryName
-// contract (no path separators, no traversal, correct extension) — validated
-// again server-side since this is only a client-side usability guard.
-function isPlausibleGlossaryFilename(name: unknown, ext: string): name is string {
-  return typeof name === 'string'
-    && name.trim().length > 0
-    && name.length <= 128
-    && !name.includes('/') && !name.includes('\\') && !name.includes('..')
-    && name.toLowerCase().endsWith(ext);
-}
-
-function clamp(v: number, min: number, max: number): number {
-  return Math.max(min, Math.min(max, v));
-}
-
 function loadSettings(): AppSettings {
   let prefs: Partial<AppSettings> = {};
   let keys: Partial<AppSettings> = {};
@@ -192,133 +170,7 @@ function loadSettings(): AppSettings {
     if (stored) keys = JSON.parse(stored);
   } catch {}
 
-  const merged = { ...defaultSettings, ...prefs, ...keys };
-
-  // Validate enums; fall back to defaults for unrecognised values
-  if (!VALID_TRANSCRIPTION.includes(merged.transcriptionProvider)) {
-    merged.transcriptionProvider = defaultSettings.transcriptionProvider;
-  }
-  if (!VALID_TRANSLATION.includes(merged.translationProvider)) {
-    merged.translationProvider = defaultSettings.translationProvider;
-  }
-  if (!VALID_IMPROVEMENT.includes(merged.improvementProvider)) {
-    merged.improvementProvider = defaultSettings.improvementProvider;
-  }
-  if (!VALID_LOCAL_MODEL.includes(merged.localWhisperModel)) {
-    merged.localWhisperModel = defaultSettings.localWhisperModel;
-  }
-  if (typeof merged.defaultLookbackChars !== 'number' || merged.defaultLookbackChars < 100) {
-    merged.defaultLookbackChars = defaultSettings.defaultLookbackChars;
-  }
-  // Audio pipeline range validation
-  if (![0, 500, 1000].includes(merged.chunkOverlapMs)) {
-    merged.chunkOverlapMs = defaultSettings.chunkOverlapMs;
-  }
-  if (typeof merged.vadSilenceThresholdMs !== 'number') {
-    merged.vadSilenceThresholdMs = defaultSettings.vadSilenceThresholdMs;
-  } else {
-    merged.vadSilenceThresholdMs = clamp(merged.vadSilenceThresholdMs, 200, 2000);
-  }
-  if (typeof merged.audioNormalizationGain !== 'number') {
-    merged.audioNormalizationGain = defaultSettings.audioNormalizationGain;
-  } else {
-    merged.audioNormalizationGain = clamp(merged.audioNormalizationGain, 0.1, 10);
-  }
-  if (typeof merged.assemblyEndOfTurnThreshold !== 'number') {
-    merged.assemblyEndOfTurnThreshold = defaultSettings.assemblyEndOfTurnThreshold;
-  } else {
-    merged.assemblyEndOfTurnThreshold = clamp(merged.assemblyEndOfTurnThreshold, 0.5, 1.0);
-  }
-  if (typeof merged.assemblyTurnSilenceMs !== 'number') {
-    merged.assemblyTurnSilenceMs = defaultSettings.assemblyTurnSilenceMs;
-  } else {
-    merged.assemblyTurnSilenceMs = clamp(merged.assemblyTurnSilenceMs, 200, 2000);
-  }
-  if (typeof merged.micDeviceId !== 'string' || merged.micDeviceId.length > 512) {
-    merged.micDeviceId = defaultSettings.micDeviceId;
-  }
-  if (!Array.isArray(merged.deviceProfiles)) {
-    merged.deviceProfiles = [];
-  }
-
-  // Sermon mode range/enum validation
-  if (typeof merged.sermonMaxLatencySecs !== 'number') {
-    merged.sermonMaxLatencySecs = defaultSettings.sermonMaxLatencySecs;
-  } else {
-    merged.sermonMaxLatencySecs = clamp(merged.sermonMaxLatencySecs, 3, 20);
-  }
-  if (typeof merged.sermonStabilityMs !== 'number') {
-    merged.sermonStabilityMs = defaultSettings.sermonStabilityMs;
-  } else {
-    merged.sermonStabilityMs = clamp(merged.sermonStabilityMs, 300, 5000);
-  }
-  if (typeof merged.sermonContextBefore !== 'number') {
-    merged.sermonContextBefore = defaultSettings.sermonContextBefore;
-  } else {
-    merged.sermonContextBefore = clamp(Math.round(merged.sermonContextBefore), 0, 5);
-  }
-  if (typeof merged.sermonContextAfter !== 'number') {
-    merged.sermonContextAfter = defaultSettings.sermonContextAfter;
-  } else {
-    merged.sermonContextAfter = clamp(Math.round(merged.sermonContextAfter), 0, 3);
-  }
-  if (!VALID_SERMON_PROVIDER.includes(merged.sermonTranslationProvider)) {
-    merged.sermonTranslationProvider = defaultSettings.sermonTranslationProvider;
-  }
-  if (!VALID_SERMON_PROVIDER.includes(merged.sermonCorrectionProvider)) {
-    merged.sermonCorrectionProvider = defaultSettings.sermonCorrectionProvider;
-  }
-  if (typeof merged.sermonModel !== 'string' || !merged.sermonModel.trim() || merged.sermonModel.length > 80) {
-    merged.sermonModel = defaultSettings.sermonModel;
-  }
-  if (typeof merged.sermonAsrCorrection !== 'boolean') {
-    merged.sermonAsrCorrection = defaultSettings.sermonAsrCorrection;
-  }
-  if (typeof merged.sermonAutoTranslate !== 'boolean') {
-    merged.sermonAutoTranslate = defaultSettings.sermonAutoTranslate;
-  }
-  if (typeof merged.sermonBackTranslationCheck !== 'boolean') {
-    merged.sermonBackTranslationCheck = defaultSettings.sermonBackTranslationCheck;
-  }
-  if (typeof merged.sermonBackTranslationThreshold !== 'number' || Number.isNaN(merged.sermonBackTranslationThreshold)) {
-    merged.sermonBackTranslationThreshold = defaultSettings.sermonBackTranslationThreshold;
-  } else {
-    merged.sermonBackTranslationThreshold = clamp(merged.sermonBackTranslationThreshold, 0.05, 0.6);
-  }
-
-  // Sermon mode — file-based glossary validation
-  if (typeof merged.sermonGlossaryEnabled !== 'boolean') {
-    merged.sermonGlossaryEnabled = defaultSettings.sermonGlossaryEnabled;
-  }
-  if (!isPlausibleGlossaryFilename(merged.sermonGlossaryCsv, '.csv')) {
-    merged.sermonGlossaryCsv = defaultSettings.sermonGlossaryCsv;
-  }
-  if (!isPlausibleGlossaryFilename(merged.sermonDisambiguationPrompt, '.md')) {
-    merged.sermonDisambiguationPrompt = defaultSettings.sermonDisambiguationPrompt;
-  }
-  if (!VALID_BIBLE_VERSION.includes(merged.sermonBibleVersion)) {
-    merged.sermonBibleVersion = defaultSettings.sermonBibleVersion;
-  }
-  if (typeof merged.sermonDeityCapitals !== 'boolean') {
-    merged.sermonDeityCapitals = defaultSettings.sermonDeityCapitals;
-  }
-  if (typeof merged.sermonGlossaryWarnings !== 'boolean') {
-    merged.sermonGlossaryWarnings = defaultSettings.sermonGlossaryWarnings;
-  }
-
-  // Sermon mode — Bible-quote pipeline validation
-  if (typeof merged.sermonScriptureEnabled !== 'boolean') {
-    merged.sermonScriptureEnabled = defaultSettings.sermonScriptureEnabled;
-  }
-  if (typeof merged.esvApiKey !== 'string') {
-    merged.esvApiKey = defaultSettings.esvApiKey;
-  }
-  if (!VALID_SCRIPTURE_FALLBACK.includes(merged.sermonScriptureFallback)) {
-    merged.sermonScriptureFallback = defaultSettings.sermonScriptureFallback;
-  }
-  merged.sermonServiceContext = normalizeServiceContext(merged.sermonServiceContext);
-
-  return merged;
+  return sanitizeSettings({ ...defaultSettings, ...prefs, ...keys }, defaultSettings);
 }
 
 export function useSettings() {

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import type { PipelineStats } from '@/lib/sermon/pipeline-stats';
 import type { ConfidenceStore } from '@/lib/sermon/confidence-store';
 import { ChunkBasedTranscription, RecordingStoppedError, type ChunkTranscriptionEvents, type TranscriptionEngine } from '@/lib/chunk-based-transcription';
@@ -72,8 +72,10 @@ const PAGE_NONCE = Date.now().toString(36);
  * counter between two dispatches in one tick unsafe.
  */
 export function useSermonIngest(args: SermonIngestArgs) {
+  // Layout effect, not a passive one: a callback that fires between the commit and the passive
+  // effects (an audio frame, a socket message) must already see this render's args.
   const argsRef = useRef(args);
-  useEffect(() => { argsRef.current = args; });
+  useLayoutEffect(() => { argsRef.current = args; });
 
   const [isRecording, setIsRecording] = useState(false);
   const [isProcessing, setIsProcessing] = useState(false);

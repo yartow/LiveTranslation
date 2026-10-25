@@ -1,39 +1,37 @@
-import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import Header from '@/components/Header';
 import SermonToolbar from '@/components/sermon/SermonToolbar';
 import AudioBar from '@/components/sermon/AudioBar';
-import MicAlertBanner, { type MicAlert } from '@/components/sermon/MicAlertBanner';
+import MicAlertBanner from '@/components/sermon/MicAlertBanner';
 import RestoreBanner from '@/components/sermon/RestoreBanner';
 import AddToGlossaryBubble, { type SourceSelection } from '@/components/sermon/AddToGlossaryBubble';
 import AddToGlossaryDialog, { type GlossarySaved } from '@/components/sermon/AddToGlossaryDialog';
 import SegmentGrid from '@/components/sermon/SegmentGrid';
 import SettingsDialog from '@/components/settings/SettingsDialog';
 import { useToast } from '@/hooks/use-toast';
-import { useSettings, type AppSettings } from '@/hooks/useSettings';
+import { useSettings } from '@/hooks/useSettings';
 import { useDevKeyAutofill } from '@/hooks/useDevKeyAutofill';
-import { segmentReducer, initState, nextSegmentId, restoredState, selectDirtyIds, type SegmentAction } from '@/lib/sermon/segment-store';
-import { saveAutosave, loadAutosave, clearAutosave, type AutosaveRecord } from '@/lib/session-db';
+import { nextSegmentId, selectDirtyIds } from '@/lib/sermon/segment-store';
 import { focusSegmentCell, type CellKind } from '@/lib/sermon/focus-cell';
-import { createEditLog, editLogEntry } from '@/lib/sermon/edit-log';
-import { installClientLog } from '@/lib/client-log';
-import { serviceContextForPrompt, plannedPassages, glossaryWithService } from '@/lib/sermon/service-context';
-import { editSuggestions, type EditSuggestion } from '@/lib/sermon/edit-suggestions';
-import { RecordingStoppedError, realDeviceId } from '@/lib/chunk-based-transcription';
-import { isRefreshAllChord, isRefreshOneChord, type KeyChord } from '@/lib/sermon/hotkeys';
-import { useTranslationQueue, type TranslationRuntimeConfig } from '@/hooks/useTranslationQueue';
+import { glossaryWithService } from '@/lib/sermon/service-context';
+import type { EditSuggestion } from '@/lib/sermon/edit-suggestions';
+import { RecordingStoppedError } from '@/lib/chunk-based-transcription';
+import { useTranslationQueue } from '@/hooks/useTranslationQueue';
 import { useSermonIngest } from '@/hooks/useSermonIngest';
 import { useListenerBroadcast } from '@/hooks/useListenerBroadcast';
 import { useMicDevices } from '@/hooks/useMicDevices';
+import { useEditArchive, useTranscriptSnapshots } from '@/hooks/useSessionArchive';
+import { useSegmentStore } from '@/hooks/useSegmentStore';
+import { useSermonRuntimeConfig } from '@/hooks/useSermonRuntimeConfig';
+import { useMicFailover, type IngestControls } from '@/hooks/useMicFailover';
+import { useAutosaveRestore } from '@/hooks/useAutosaveRestore';
+import { useRefreshHotkeys } from '@/hooks/useRefreshHotkeys';
+import { useEditSuggestions } from '@/hooks/useEditSuggestions';
 import { LevelStore } from '@/lib/sermon/audio-level';
 import { PipelineStats } from '@/lib/sermon/pipeline-stats';
 import { ConfidenceStore } from '@/lib/sermon/confidence-store';
-import type { IngestConfig } from '@/lib/sermon/ingest-buffer';
 import { isMacPlatform } from '@/lib/platform';
 import { replacePhrase } from '@/lib/sermon/glossary-fix';
-
-// A sermon row shorter than this holds for an extra half-window before it
-// flushes alone — see ingest-buffer.ts's IngestConfig.minBlockWords.
-const SERMON_MIN_BLOCK_WORDS = 12;
 
 // Sermon mode is its own page/route ("/", see App.tsx) rather than a mode of
 // Home.tsx — Home's TranscriptionSegment model is chunk-level, id-less, and
@@ -41,42 +39,19 @@ const SERMON_MIN_BLOCK_WORDS = 12;
 // per-sentence identity this feature depends on. See the plan doc for the
 // full rationale. This does mean recording/audio-level plumbing is
 // duplicated rather than shared with Home.tsx — accepted as known debt for v1.
+//
+// The page wires the pieces together; each concern lives in its own hook:
+// useSegmentStore (state + applyAction), useSermonRuntimeConfig (settings ->
+// refs), useSermonIngest (recording), useTranslationQueue, useMicFailover,
+// useAutosaveRestore, useSessionArchive (edit log + transcript snapshots).
 
 export default function SermonMode() {
   const { settings, updateSettings } = useSettings();
   useDevKeyAutofill(settings, updateSettings);
   const { toast } = useToast();
 
-  const sessionIdRef = useRef(`s${Date.now().toString(36)}`);
-  const [state, dispatch] = useReducer(segmentReducer, sessionIdRef.current, initState);
-
-  // A ref mirror of `state`, kept authoritative two ways: (1) every action
-  // dispatched through applyAction below applies the same pure reducer to it
-  // synchronously, so code that flushes a pending edit and immediately reads
-  // segment text in the same synchronous tick (see useTranslationQueue.ts's
-  // runBatch) sees the edit right away — a plain `useReducer` dispatch alone
-  // only takes effect on the next render, one tick later. (2) it's also
-  // reassigned from `state` on every render as a fallback, so it can never
-  // drift even if some future code path dispatches through the raw reducer
-  // dispatch instead of applyAction.
-  const stateRef = useRef(state);
-  stateRef.current = state;
-
-  // Whether the server is recording a session archive (ASR_DEBUG_DIR) — see the status fetch below.
-  const archiveActiveRef = useRef(false);
-  // The operator's edits, batched to <session>/edits.jsonl (nothing is sent unless the archive is on).
-  const editLog = useRef(createEditLog((body) => {
-    fetch('/api/asr-debug/edit-log', { method: 'POST', headers: { 'Content-Type': 'text/plain' }, body, keepalive: body.length < 60_000 }).catch(() => {});
-  })).current;
-
-  const applyAction = useCallback((action: SegmentAction) => {
-    if (archiveActiveRef.current) {
-      const entry = editLogEntry(action, stateRef.current, Date.now());
-      if (entry) editLog.record(entry);
-    }
-    stateRef.current = segmentReducer(stateRef.current, action);
-    dispatch(action);
-  }, [dispatch, editLog]);
+  const archive = useEditArchive();
+  const { state, stateRef, applyAction } = useSegmentStore(archive);
 
   // Registry of per-segment "flush the pending debounced source edit now"
   // callbacks, populated by SourceCell. A manual Refresh (button or hotkey)
@@ -87,55 +62,15 @@ export default function SermonMode() {
   const [isDark, setIsDark] = useState(true);
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
 
-  // Settings (persisted, useSettings) is the single source of truth for both
-  // the Sermon mode pages in SettingsDialog and the two most-used
-  // controls duplicated inline in the toolbar (plan §"Risico's", point 5) —
-  // no separate local state to fall out of sync with the dialog.
-  const autoTranslateRef = useRef(settings.sermonAutoTranslate);
-  useEffect(() => { autoTranslateRef.current = settings.sermonAutoTranslate; }, [settings.sermonAutoTranslate]);
-
-  // Single ref, re-read every tick/dispatch — this is the whole mechanism
-  // behind "a settings change takes effect on the next tick, no restart"
-  // (AC9). See ingest-buffer.ts's evaluate() and useTranslationQueue.ts.
-  const buildTranslationConfig = (): TranslationRuntimeConfig => ({
-    sourceLanguage: settings.defaultSourceLanguage || 'nl',
-    targetLanguage: settings.defaultTargetLanguage || 'en',
-    translationProvider: settings.sermonTranslationProvider,
-    model: settings.sermonModel,
-    openaiApiKey: settings.openaiApiKey,
-    anthropicApiKey: settings.anthropicApiKey,
-    ollamaBaseUrl: settings.ollamaBaseUrl,
-    ollamaModel: settings.ollamaModel,
-    glossary: settings.theologicalGlossary,
-    glossaryCsv: settings.sermonGlossaryEnabled ? settings.sermonGlossaryCsv : undefined,
-    disambiguationPrompt: settings.sermonGlossaryEnabled ? settings.sermonDisambiguationPrompt : undefined,
-    bibleVersion: settings.sermonBibleVersion,
-    deityCapitals: settings.sermonDeityCapitals,
-    glossaryWarnings: settings.sermonGlossaryWarnings,
-    scriptureEnabled: settings.sermonScriptureEnabled,
-    esvApiKey: settings.esvApiKey,
-    scriptureFallback: settings.sermonScriptureFallback,
-    stabilityMs: settings.sermonStabilityMs,
-    contextBefore: settings.sermonContextBefore,
-    contextAfter: settings.sermonContextAfter,
-    backTranslationCheck: settings.sermonBackTranslationCheck,
-    backTranslationThreshold: settings.sermonBackTranslationThreshold,
-    serviceContext: serviceContextForPrompt(settings.sermonServiceContext),
-    plannedPassages: plannedPassages(settings.sermonServiceContext),
-  });
-  const translationConfigRef = useRef<TranslationRuntimeConfig>(buildTranslationConfig());
-  useEffect(() => { translationConfigRef.current = buildTranslationConfig(); }, [settings]);
-
-  const ingestConfigRef = useRef<IngestConfig>({ maxLatencyMs: settings.sermonMaxLatencySecs * 1000, minBlockWords: SERMON_MIN_BLOCK_WORDS, showEarly: true });
-  useEffect(() => {
-    ingestConfigRef.current = { maxLatencyMs: settings.sermonMaxLatencySecs * 1000, minBlockWords: SERMON_MIN_BLOCK_WORDS, showEarly: true };
-  }, [settings.sermonMaxLatencySecs]);
+  const { autoTranslateRef, translationConfigRef, ingestConfigRef } = useSermonRuntimeConfig(settings);
 
   // Pipeline health (the audio bar's popover): chunk delays from the recorder, call times from the translator.
   const [pipelineStats] = useState(() => new PipelineStats());
   // Words Whisper was unsure about (MLX engine) -> "check" chips under the Dutch cells.
   const [confidenceStore] = useState(() => new ConfidenceStore());
-  const { refreshAll, refreshOne } = useTranslationQueue(stateRef, applyAction, translationConfigRef, autoTranslateRef, flushersRef, pipelineStats);
+  const { refreshAll, refreshOne } = useTranslationQueue({
+    stateRef, dispatch: applyAction, configRef: translationConfigRef, autoTranslateRef, flushersRef, stats: pipelineStats,
+  });
 
   // Listener mode (CLAUDE.md "Listener mode") — pushes finished translations
   // to any connected phones. Reads `state` directly (not stateRef) so it
@@ -150,27 +85,18 @@ export default function SermonMode() {
   const [levelStore] = useState(() => new LevelStore());
   const mic = useMicDevices();
 
-  // The microphone the recording runs on can stop mid-service (unplugged, a wireless transmitter
-  // out of battery). The recording then moves to the system default (the built-in mic once the
-  // receiver is gone) and this alert stays on screen, red and flickering, until it is acknowledged.
-  const [micAlert, setMicAlert] = useState<MicAlert | null>(null);
-  // Set after useSermonIngest (which provides switchMic) — the hook's own onStreamReady needs it.
-  const micEndedRef = useRef<(fromLabel: string, fromDeviceId: string) => void>(() => {});
-  // The SAVED choice (settings.micDeviceId) — not necessarily what is recording: after a fallback
-  // or a failover the recording is on another device and the saved one is kept for next time.
-  const micDeviceIdRef = useRef(settings.micDeviceId);
-  micDeviceIdRef.current = settings.micDeviceId;
-  // The deviceId the recording really runs on ('' = system default), set whenever a stream is
-  // (re)opened. The failover alert and the default-input watcher go by this, not by the setting.
-  const recordingDeviceIdRef = useRef('');
-  // An automatic switch (track ended / macOS changed the default) in flight. Both events arrive
-  // when a device is unplugged, in either order, and must produce one switch, not two.
-  const autoSwitchRef = useRef<Promise<void> | null>(null);
-  // When the recording last moved microphone — the default-input watcher ignores the macOS event
-  // that trails a switch we just made.
-  const lastMicSwitchAtRef = useRef(0);
-  // Page-level `isRecording` mirrored for stable callbacks.
-  const isRecordingRef = useRef(false);
+  // useMicFailover must come first (useSermonIngest needs its onStreamReady) yet needs what
+  // useSermonIngest returns (isRecording, switchMic), hence this ref, filled in just below.
+  const ingestRef = useRef<IngestControls>({
+    isRecording: false,
+    switchMic: () => Promise.reject(new RecordingStoppedError('Not recording')),
+  });
+  const { micAlert, clearMicAlert, onStreamReady, handleChangeMic, handleSettingsUpdate } = useMicFailover({
+    savedMicDeviceId: settings.micDeviceId,
+    updateSettings,
+    mic,
+    ingestRef,
+  });
 
   const { isRecording, isProcessing, isPaused, start, stop, pause, resume, switchMic } = useSermonIngest({
     dispatch: applyAction,
@@ -193,76 +119,11 @@ export default function SermonMode() {
     onAudioLevel: (rms, peak) => levelStore.push(rms, peak),
     pipelineStats,
     confidenceStore,
-    onStreamReady: (stream) => {
-      const label = stream.getAudioTracks()[0]?.label || 'Microphone';
-      const deviceId = realDeviceId(stream);
-      recordingDeviceIdRef.current = deviceId;
-      mic.attachStream(stream, () => micEndedRef.current(label, deviceId));
-    },
+    onStreamReady,
     onNotice: (message) => toast({ title: 'Microphone', description: message }),
     onError: (message) => toast({ title: 'Recording error', description: message, variant: 'destructive' }),
   });
-
-  isRecordingRef.current = isRecording;
-
-  // Moves the recording to the system default and raises the alert. Only one at a time. '' = the
-  // system default; the saved choice (settings.micDeviceId) is kept on purpose, so the next
-  // recording tries the original microphone again.
-  const autoSwitchToDefault = (alert: Omit<MicAlert, 'to'>) => {
-    if (autoSwitchRef.current) return;
-    lastMicSwitchAtRef.current = Date.now();
-    autoSwitchRef.current = switchMic('')
-      .then(({ label }) => setMicAlert({ ...alert, to: label }))
-      .catch((err) => {
-        // Stop pressed meanwhile: there is no recording left to warn about.
-        if (!(err instanceof RecordingStoppedError)) setMicAlert({ ...alert, to: null });
-      })
-      .finally(() => { autoSwitchRef.current = null; });
-  };
-
-  micEndedRef.current = (fromLabel: string, fromDeviceId: string) => {
-    autoSwitchToDefault({ reason: 'stopped', from: fromLabel, fromDeviceId });
-  };
-
-  // macOS moved its default input (a USB device was plugged in or removed) while recording on
-  // "System default". Chrome may or may not have followed, so reopen the default to be certain.
-  const prevDefaultLabelRef = useRef('');
-  useEffect(() => {
-    const prev = prevDefaultLabelRef.current;
-    prevDefaultLabelRef.current = mic.defaultLabel;
-    // Only when the recording really is on the system default (not merely when the setting says so).
-    if (!isRecording || recordingDeviceIdRef.current !== '' || !prev || !mic.defaultLabel || prev === mic.defaultLabel) return;
-    if (Date.now() - lastMicSwitchAtRef.current < 3000) return;
-    autoSwitchToDefault({ reason: 'default-changed', from: prev, fromDeviceId: '' });
-  }, [mic.defaultLabel]); // eslint-disable-line react-hooks/exhaustive-deps
-
-  /** Resolves true when the choice is saved and, if recording, the recording really moved to it. */
-  const handleChangeMic = useCallback(async (deviceId: string): Promise<boolean> => {
-    const previous = micDeviceIdRef.current;
-    updateSettings({ micDeviceId: deviceId });
-    if (!isRecording) return true;
-    lastMicSwitchAtRef.current = Date.now();
-    try {
-      const { label, fellBack } = await switchMic(deviceId);
-      toast({
-        title: 'Microphone changed',
-        description: fellBack ? `That microphone is not available. Now recording from ${label}.` : `Now recording from ${label}.`,
-      });
-      return true;
-    } catch (err) {
-      // Stop was pressed while the device was opening: nothing was recording, so the choice
-      // stands for the next recording and there is nothing to report.
-      if (err instanceof RecordingStoppedError) return true;
-      // Roll back only if nobody picked another microphone in the meantime.
-      if (micDeviceIdRef.current === deviceId) updateSettings({ micDeviceId: previous });
-      toast({
-        title: 'Could not switch microphone',
-        description: `${err instanceof Error ? err.message : 'The microphone could not be opened'}. The previous microphone keeps recording.`,
-        variant: 'destructive',
-      });
-      return false;
-    }
-  }, [isRecording, switchMic, updateSettings, toast]);
+  useLayoutEffect(() => { ingestRef.current = { isRecording, switchMic }; });
 
   // "Add row" / Return in the last row: an empty row to type into by hand, for when nothing comes
   // in from the microphone. If the last row is still blank, go there instead of stacking blank rows.
@@ -278,26 +139,14 @@ export default function SermonMode() {
     const t = last?.endTime ?? 0;
     pendingFocusRef.current = { id, cell };
     applyAction({ type: 'APPEND_SEGMENT', id, sourceText: '', startTime: t, endTime: t, approximateTiming: true, now: Date.now() });
-  }, [applyAction]);
+  }, [applyAction, stateRef]);
 
   // Return in the last row. While recording the live text keeps arriving below, so a row added
   // here would end up stranded mid-transcript — Return then only saves; the Add row button still adds.
   const handleEnterLastRow = useCallback((cell: CellKind) => {
-    if (isRecordingRef.current) return;
+    if (ingestRef.current.isRecording) return;
     handleAddRow(cell);
   }, [handleAddRow]);
-
-  // Settings → Microphone also writes micDeviceId; during a recording that must move the
-  // recording too (not just the saved choice), like the audio-bar picker does.
-  const handleSettingsUpdate = useCallback((updates: Partial<AppSettings>) => {
-    const { micDeviceId, ...rest } = updates;
-    if (micDeviceId === undefined || !isRecording || micDeviceId === micDeviceIdRef.current) {
-      updateSettings(updates);
-      return;
-    }
-    if (Object.keys(rest).length) updateSettings(rest);
-    handleChangeMic(micDeviceId);
-  }, [isRecording, updateSettings, handleChangeMic]);
 
   // No signal while stopped or paused: clear the meter and the "recording from" label.
   useEffect(() => {
@@ -305,58 +154,8 @@ export default function SermonMode() {
     if (!isRecording) mic.clearActive();
   }, [isRecording, isPaused, levelStore, mic.clearActive]);
 
-  // Session archive (server has ASR_DEBUG_DIR — see server/lib/chunk-transcription.ts): while
-  // recording, snapshot what is on screen every minute and once more after stop, so a gap in the
-  // transcript can be traced to the stage that lost it. A no-op when the server archive is off.
-  useEffect(() => {
-    fetch('/api/asr-debug/status').then(r => r.json()).then(j => { archiveActiveRef.current = !!j.enabled; }).catch(() => {});
-  }, []);
-  const postTranscriptSnapshot = useCallback(() => {
-    if (!archiveActiveRef.current) return;
-    const s = stateRef.current;
-    // An empty page (e.g. just reloaded) must not overwrite the previous session's snapshot.
-    if (!s.ids.length) return;
-    const segments = s.ids.map(id => {
-      const g = s.byId[id];
-      return {
-        id, index: g.index, startTime: g.startTime, endTime: g.endTime, status: g.status,
-        sourceText: g.sourceText, translatedText: g.translatedText,
-        asrText: g.asrText, machineText: g.machineText,
-        manualOverride: g.manualOverride, lastSourceChangeAt: g.lastSourceChangeAt, error: g.error,
-      };
-    });
-    fetch('/api/asr-debug/transcript', {
-      method: 'POST', headers: { 'Content-Type': 'text/plain' },
-      body: JSON.stringify({ savedAt: Date.now(), sessionId: s.sessionId, segments }),
-    }).catch(() => {});
-  }, []);
-  useEffect(() => {
-    if (!isRecording) {
-      // After stop the last ingest flush / translations may still land a moment later.
-      postTranscriptSnapshot();
-      editLog.flush();
-      const late = setTimeout(() => { postTranscriptSnapshot(); editLog.flush(); }, 4000);
-      return () => clearTimeout(late);
-    }
-    const timer = setInterval(postTranscriptSnapshot, 60_000);
-    return () => clearInterval(timer);
-  }, [isRecording, postTranscriptSnapshot, editLog]);
-
-  // Edits are flushed every few seconds (also while stopped — corrections typed after Stop count),
-  // and when the page is closed. Browser errors/warnings go to the archive the same way.
-  useEffect(() => {
-    const timer = setInterval(() => editLog.flush(), 5000);
-    const onHide = () => {
-      if (!archiveActiveRef.current) return;
-      editLog.flush();
-    };
-    window.addEventListener('pagehide', onHide);
-    const uninstall = installClientLog(
-      () => archiveActiveRef.current,
-      (body) => { fetch('/api/asr-debug/client-log', { method: 'POST', headers: { 'Content-Type': 'text/plain' }, body, keepalive: body.length < 60_000 }).catch(() => {}); },
-    );
-    return () => { clearInterval(timer); window.removeEventListener('pagehide', onHide); uninstall(); editLog.flush(); };
-  }, [editLog]);
+  // Session archive (server has ASR_DEBUG_DIR): a transcript snapshot every minute while recording.
+  useTranscriptSnapshots(stateRef, isRecording, archive);
 
   // "Add to glossary": highlighted words in a source cell -> floating bubble -> dialog.
   const [selection, setSelection] = useState<SourceSelection | null>(null);
@@ -365,21 +164,8 @@ export default function SermonMode() {
   const dismissBubble = useCallback(() => setSelection(null), []);
 
   // Suggestions: words corrected by hand (asrText vs sourceText), never again once dismissed or added.
-  const [dismissedSuggestions, setDismissedSuggestions] = useState<Set<string>>(() => {
-    try { return new Set<string>(JSON.parse(localStorage.getItem('cttay_dismissed_suggestions') || '[]')); } catch { return new Set<string>(); }
-  });
-  const dismissSuggestion = useCallback((key: string) => {
-    setDismissedSuggestions(prev => {
-      const next = new Set(prev).add(key);
-      try { localStorage.setItem('cttay_dismissed_suggestions', JSON.stringify(Array.from(next).slice(-500))); } catch { /* optional */ }
-      return next;
-    });
-  }, []);
+  const { suggestions, dismissSuggestion } = useEditSuggestions(state);
   const [suggestionBeingAdded, setSuggestionBeingAdded] = useState<EditSuggestion | null>(null);
-  const suggestions = useMemo(
-    () => editSuggestions(state.ids.map(id => state.byId[id]), dismissedSuggestions),
-    [state, dismissedSuggestions],
-  );
   // The dialog takes a row selection; a suggestion has no row, so it gets an empty segmentId.
   const suggestionSelection: SourceSelection | null = suggestionBeingAdded
     ? { segmentId: '', start: 0, end: 0, text: suggestionBeingAdded.heard, x: 0, y: 0 }
@@ -407,66 +193,13 @@ export default function SermonMode() {
       title: 'Added to glossary',
       description: (r.correctionAdded ? 'New transcripts are corrected automatically.' : 'Saved.') + rowNote,
     });
-  }, [applyAction, toast, suggestionBeingAdded, dismissSuggestion]);
+  }, [applyAction, toast, suggestionBeingAdded, dismissSuggestion, stateRef]);
 
   const dirtyCount = useMemo(() => selectDirtyIds(state).length, [state]);
 
-  // Autosave: the segments live only in this page, so write them to IndexedDB at most every 3 s
-  // while they change (a timer that is already pending is not reset — continuous live updates must
-  // not postpone the save forever) and once more when the page is hidden/closed.
-  const autosaveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const saveNow = useCallback(() => {
-    const s = stateRef.current;
-    if (s.ids.length) saveAutosave(s, s.ids.length).catch(() => {});
-  }, []);
-  useEffect(() => {
-    if (state.ids.length === 0 || autosaveTimerRef.current) return;
-    autosaveTimerRef.current = setTimeout(() => { autosaveTimerRef.current = null; saveNow(); }, 3000);
-  }, [state, saveNow]);
-  useEffect(() => {
-    window.addEventListener('pagehide', saveNow);
-    return () => { window.removeEventListener('pagehide', saveNow); if (autosaveTimerRef.current) clearTimeout(autosaveTimerRef.current); };
-  }, [saveNow]);
+  const { restoreOffer, handleRestore, handleDiscardRestore } = useAutosaveRestore(state, stateRef, applyAction);
 
-  // On load: is there an autosave from an earlier page? Offered while the grid is still empty.
-  const [restoreOffer, setRestoreOffer] = useState<AutosaveRecord | null>(null);
-  useEffect(() => {
-    loadAutosave().then(rec => { if (rec && rec.rows > 0) setRestoreOffer(rec); }).catch(() => {});
-  }, []);
-  const handleRestore = useCallback(() => {
-    const restored = restoredState(restoreOffer?.state, stateRef.current.sessionId);
-    setRestoreOffer(null);
-    if (!restored || restored.ids.length === 0) {
-      toast({ title: 'Could not restore', description: 'The saved session could not be read.', variant: 'destructive' });
-      return;
-    }
-    applyAction({ type: 'RESTORE_STATE', state: restored });
-    toast({ title: 'Session restored', description: `${restored.ids.length} rows. Unfinished translations are done again.` });
-  }, [restoreOffer, applyAction, toast]);
-  const handleDiscardRestore = useCallback(() => {
-    setRestoreOffer(null);
-    clearAutosave().catch(() => {});
-  }, []);
-
-  // Cmd/Ctrl+Shift+Enter (refresh all) and Cmd/Ctrl+Enter (refresh the
-  // segment under the cursor) — capture phase on window so preventDefault
-  // wins even while the cursor is inside a source textarea (AC10). See
-  // hotkeys.ts for the chord predicates and the plan §7 for why capture.
-  useEffect(() => {
-    const handler = (e: KeyboardEvent) => {
-      if (document.querySelector('[role="dialog"][data-state="open"]')) return;
-      const chord: KeyChord = { metaKey: e.metaKey, ctrlKey: e.ctrlKey, shiftKey: e.shiftKey, code: e.code };
-      if (isRefreshAllChord(chord)) {
-        e.preventDefault(); e.stopPropagation();
-        refreshAll();
-      } else if (isRefreshOneChord(chord)) {
-        e.preventDefault(); e.stopPropagation();
-        refreshOne(activeSegmentIdRef.current);
-      }
-    };
-    window.addEventListener('keydown', handler, true);
-    return () => window.removeEventListener('keydown', handler, true);
-  }, [refreshAll, refreshOne]);
+  useRefreshHotkeys(refreshAll, refreshOne, activeSegmentIdRef);
 
   useEffect(() => {
     document.documentElement.classList.toggle('dark', isDark);
@@ -524,8 +257,8 @@ export default function SermonMode() {
         <MicAlertBanner
           alert={micAlert}
           canSwitchBack={isRecording && !!micAlert.fromDeviceId && mic.devices.some(d => d.deviceId === micAlert.fromDeviceId)}
-          onSwitchBack={() => { handleChangeMic(micAlert.fromDeviceId).then(ok => { if (ok) setMicAlert(null); }); }}
-          onAcknowledge={() => setMicAlert(null)}
+          onSwitchBack={() => { handleChangeMic(micAlert.fromDeviceId).then(ok => { if (ok) clearMicAlert(); }); }}
+          onAcknowledge={clearMicAlert}
         />
       )}
       <SegmentGrid

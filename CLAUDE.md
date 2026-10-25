@@ -52,6 +52,14 @@ client/src/
   hooks/
     useSettings.ts                — AppSettings type + localStorage persistence
     useListenerBroadcast.ts       — operator-side publisher for listener mode, see "Listener mode" below
+    (sermon page hooks — SermonMode.tsx only wires these together)
+    useSegmentStore.ts            — reducer state + stateRef + applyAction (edit-log aware)
+    useSermonRuntimeConfig.ts     — settings -> the refs the ingest buffer / translation queue re-read each tick
+    useMicFailover.ts             — mic failover, red alert, default-input watcher, mic switching; reaches
+                                       useSermonIngest's isRecording/switchMic through `ingestRef` (set by the page)
+    useAutosaveRestore.ts, useSessionArchive.ts (edit log + transcript snapshots), useEditSuggestions.ts,
+    useRefreshHotkeys.ts, useLatest.ts (ref of the latest committed value, written in a layout effect)
+    lib/settings-validate.ts      — sanitizeSettings(): what useSettings' loadSettings does to stored values
   components/
     settings/                     — settings dialog, see "Settings" below (settings-index.ts = page/item registry)
     sermon/                       — SegmentGrid, SegmentRow, SourceCell, TargetCell, SermonToolbar,

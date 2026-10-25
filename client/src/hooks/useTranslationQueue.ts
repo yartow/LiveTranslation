@@ -37,14 +37,16 @@ const CONFIRM_ABOVE_DIRTY_COUNT = 50;
  * `state` during render rather than in an effect, so it can never lag a
  * commit behind — see the header comment there for why that used to matter.
  */
-export function useTranslationQueue(
-  stateRef: React.MutableRefObject<SegmentStoreState>,
-  dispatch: React.Dispatch<SegmentAction>,
-  configRef: React.MutableRefObject<TranslationRuntimeConfig>,
-  autoTranslateRef: React.MutableRefObject<boolean>,
-  flushersRef: React.MutableRefObject<Map<string, () => void>>,
-  stats?: PipelineStats,
-) {
+export interface TranslationQueueArgs {
+  stateRef: React.MutableRefObject<SegmentStoreState>;
+  dispatch: React.Dispatch<SegmentAction>;
+  configRef: React.MutableRefObject<TranslationRuntimeConfig>;
+  autoTranslateRef: React.MutableRefObject<boolean>;
+  flushersRef: React.MutableRefObject<Map<string, () => void>>;
+  stats?: PipelineStats;
+}
+
+export function useTranslationQueue({ stateRef, dispatch, configRef, autoTranslateRef, flushersRef, stats }: TranslationQueueArgs) {
   // Segment ids currently part of an in-flight batch — guards refreshAll/
   // refreshOne/auto-translate against issuing a second provider call for a
   // segment that's already TRANSLATING in another batch (e.g. a manual
