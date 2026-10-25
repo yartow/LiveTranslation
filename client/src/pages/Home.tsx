@@ -22,6 +22,7 @@ import { BrowserSpeechTranscription } from '@/lib/browser-speech-transcription';
 import { StreamingTranscription } from '@/lib/streaming-transcription';
 import { LocalWhisperTranscription } from '@/lib/local-whisper-transcription';
 import type { TranscriptionBackend } from '@/lib/transcription-backend';
+import DebugPanel from '@/components/DebugPanel';
 import { useAudioQuality } from '@/hooks/useAudioQuality';
 import { saveSession } from '@/lib/session-db';
 
@@ -94,7 +95,6 @@ export default function Home() {
   const [debugLogs, setDebugLogs] = useState<string[]>([]);
   const [debugPanelCollapsed, setDebugPanelCollapsed] = useState(true);
   const [debugPanelHeight, setDebugPanelHeight] = useState(0);
-  const debugPanelRef = useRef<HTMLDivElement>(null);
   const [isImproving, setIsImproving] = useState(false);
   const [lookbackChars, setLookbackChars] = useState(() => settings.defaultLookbackChars);
   useEffect(() => { setLookbackChars(settings.defaultLookbackChars); }, [settings.defaultLookbackChars]);
@@ -109,19 +109,6 @@ export default function Home() {
       .then(a => setWebGpuSupported(a !== null))
       .catch(() => setWebGpuSupported(false));
   }, []);
-
-  // Measure the debug panel (header + body, whichever is currently rendered) so the
-  // text-display container below can reserve exactly that much bottom padding — the
-  // panel used to be a fixed overlay that simply covered the last line of text.
-  useEffect(() => {
-    const el = debugPanelRef.current;
-    if (!el) { setDebugPanelHeight(0); return; }
-    const observer = new ResizeObserver(([entry]) => {
-      setDebugPanelHeight(entry.contentRect.height);
-    });
-    observer.observe(el);
-    return () => observer.disconnect();
-  }, [settings.debugMode, debugLogs.length, debugPanelCollapsed]);
 
   const [subtitleCurrent, setSubtitleCurrent] = useState('');
   const [subtitlePrevious, setSubtitlePrevious] = useState('');
@@ -892,42 +879,16 @@ export default function Home() {
 
       {/* ── Debug overlay ────────────────────────────────────────────────── */}
       {/* Collapsed by default — only the header bar's height needs reserving
-          most of the time. Whichever state is rendered, debugPanelRef measures
-          it and the text-display container above reserves that much space. */}
+          most of the time. DebugPanel reports its height (debugPanelHeight) and the
+          text-display container above reserves that much space. */}
       {settings.debugMode && debugLogs.length > 0 && (
-        <div
-          ref={debugPanelRef}
-          className="fixed left-0 right-0 mx-4 z-10"
-          style={{ bottom: 'calc(88px + env(safe-area-inset-bottom, 0px))' }}
-        >
-          <div className="rounded-lg border border-border bg-background/95 backdrop-blur-sm shadow-lg overflow-hidden">
-            <div className="px-3 py-1.5 border-b border-border flex items-center justify-between">
-              <button
-                type="button"
-                onClick={() => setDebugPanelCollapsed(c => !c)}
-                className="flex items-center gap-1 text-xs font-semibold text-muted-foreground hover:text-foreground"
-                data-testid="button-debug-panel-toggle"
-              >
-                {debugPanelCollapsed ? <ChevronDown className="w-3 h-3" /> : <ChevronUp className="w-3 h-3" />}
-                Debug log ({debugLogs.length})
-              </button>
-              <button
-                type="button"
-                onClick={() => setDebugLogs([])}
-                className="text-xs text-muted-foreground hover:text-foreground"
-              >
-                Clear
-              </button>
-            </div>
-            {!debugPanelCollapsed && (
-              <div className="max-h-32 overflow-y-auto px-3 py-2 space-y-0.5">
-                {debugLogs.map((log, i) => (
-                  <p key={i} className="text-xs font-mono text-muted-foreground leading-relaxed">{log}</p>
-                ))}
-              </div>
-            )}
-          </div>
-        </div>
+        <DebugPanel
+          logs={debugLogs}
+          collapsed={debugPanelCollapsed}
+          onToggleCollapsed={() => setDebugPanelCollapsed(c => !c)}
+          onClear={() => setDebugLogs([])}
+          onHeightChange={setDebugPanelHeight}
+        />
       )}
 
       {/* ── Fixed bottom action bar ───────────────────────────────────────── */}
