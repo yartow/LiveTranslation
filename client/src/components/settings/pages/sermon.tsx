@@ -112,6 +112,32 @@ export function SermonTranslationPage({ settings, onUpdate }: SettingsPageProps)
         />
       </SettingItem>
 
+      <SettingItem id="sermon-back-translation" layout="row" htmlFor="sermon-back-translation-switch">
+        <Switch
+          id="sermon-back-translation-switch"
+          checked={settings.sermonBackTranslationCheck}
+          onCheckedChange={(checked) => onUpdate({ sermonBackTranslationCheck: checked })}
+        />
+      </SettingItem>
+
+      {settings.sermonBackTranslationCheck && (
+        <SettingItem id="sermon-back-translation-threshold" htmlFor="sermon-back-translation-threshold-input">
+          <Input
+            id="sermon-back-translation-threshold-input"
+            type="number"
+            min={0.05}
+            max={0.6}
+            step={0.05}
+            value={settings.sermonBackTranslationThreshold}
+            onChange={(e) => {
+              const v = parseFloat(e.target.value);
+              if (!Number.isNaN(v)) onUpdate({ sermonBackTranslationThreshold: clamp(v, 0.05, 0.6) });
+            }}
+            className="w-24 text-xs text-center"
+          />
+        </SettingItem>
+      )}
+
       <SettingItem id="sermon-context">
         <div className="flex flex-wrap items-center gap-x-6 gap-y-2">
           <div className="flex items-center gap-2">

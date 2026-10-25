@@ -1,5 +1,5 @@
 import { memo } from 'react';
-import { AlertCircle, AlertTriangle, BookOpen, Clock, Loader2, RefreshCw } from 'lucide-react';
+import { AlertCircle, AlertTriangle, BookOpen, Clock, Loader2, RefreshCw, Scale } from 'lucide-react';
 import type { Segment } from '@/lib/sermon/segment-model';
 import type { SegmentAction } from '@/lib/sermon/segment-store';
 import { isMacPlatform } from '@/lib/platform';
@@ -7,6 +7,7 @@ import SourceCell from './SourceCell';
 import TargetCell from './TargetCell';
 import type { SourceSelection } from './AddToGlossaryBubble';
 import type { CellKind } from '@/lib/sermon/focus-cell';
+import type { ConfidenceStore } from '@/lib/sermon/confidence-store';
 
 const REFRESH_ONE_HINT = isMacPlatform ? '⌘⏎' : 'Ctrl+⏎';
 
@@ -18,6 +19,7 @@ interface SegmentRowProps {
   flushersRef: React.MutableRefObject<Map<string, () => void>>;
   onSelectText: (selection: SourceSelection | null) => void;
   onEnterNext: (id: string, cell: CellKind) => void;
+  confidenceStore: ConfidenceStore;
 }
 
 // Single scroll-container row: source and target are two flex children of
@@ -30,14 +32,14 @@ interface SegmentRowProps {
 // translating a different one re-renders zero unrelated rows — that's the
 // primary mechanism (ahead of the uncontrolled-input trick in SourceCell)
 // behind "editing survives new segments streaming in".
-function SegmentRowImpl({ segment, dispatch, activeSegmentIdRef, onRefreshOne, flushersRef, onSelectText, onEnterNext }: SegmentRowProps) {
+function SegmentRowImpl({ segment, dispatch, activeSegmentIdRef, onRefreshOne, flushersRef, onSelectText, onEnterNext, confidenceStore }: SegmentRowProps) {
   return (
     <div
       className="flex items-stretch flex-col md:flex-row border-b border-border/60 last:border-b-0"
       data-testid={`row-${segment.id}`}
     >
       <div className="flex-1 min-w-0 md:border-r border-border/60">
-        <SourceCell segment={segment} dispatch={dispatch} activeSegmentIdRef={activeSegmentIdRef} flushersRef={flushersRef} onSelectText={onSelectText} onEnterNext={onEnterNext} />
+        <SourceCell segment={segment} dispatch={dispatch} activeSegmentIdRef={activeSegmentIdRef} flushersRef={flushersRef} onSelectText={onSelectText} onEnterNext={onEnterNext} confidenceStore={confidenceStore} />
       </div>
 
       <div className="flex md:flex-col items-center justify-center md:w-7 shrink-0 py-1 md:py-2.5">
@@ -113,6 +115,15 @@ function SegmentRowImpl({ segment, dispatch, activeSegmentIdRef, onRefreshOne, f
             />
           </span>
         )}
+        {segment.status === 'TRANSLATED' && segment.lowFidelity && (
+          <span
+            role="img"
+            aria-label="This translation may differ from what was said"
+            title={`Translated back to Dutch, this line matches what was said only ${Math.round((segment.fidelity ?? 0) * 100)}% — worth a look`}
+          >
+            <Scale className="w-3.5 h-3.5 text-amber-500/80" data-testid={`low-fidelity-${segment.id}`} />
+          </span>
+        )}
       </div>
 
       <div className="flex-1 min-w-0">
@@ -125,5 +136,6 @@ function SegmentRowImpl({ segment, dispatch, activeSegmentIdRef, onRefreshOne, f
 export default memo(SegmentRowImpl, (prev, next) =>
   prev.segment === next.segment && prev.dispatch === next.dispatch &&
   prev.onRefreshOne === next.onRefreshOne && prev.flushersRef === next.flushersRef &&
-  prev.onSelectText === next.onSelectText && prev.onEnterNext === next.onEnterNext,
+  prev.onSelectText === next.onSelectText && prev.onEnterNext === next.onEnterNext &&
+  prev.confidenceStore === next.confidenceStore,
 );

@@ -15,6 +15,7 @@ import { transcribeWithMlx } from './lib/mlx-whisper';
 import { isAsrArtifact, stripAsrArtifacts } from './lib/asr-artifacts';
 import { translateSegments, type TranslateItemResult, type SermonTranslationProvider } from './lib/sermon-translate';
 import { parseSermonItems } from './lib/sermon-items';
+import { parseCorrectionExamples } from './lib/sermon-prompt';
 import { addToGlossary } from './lib/glossary-add';
 import { applyLearnedCorrections } from './lib/asr-corrections';
 import { getInputVolume, setInputVolume, isValidInputVolume } from './lib/mac-input-volume';
@@ -22,6 +23,7 @@ import { isOperatorRequest } from './lib/loopback';
 import { getGlossaryStatus, reloadGlossary } from './lib/glossary-store';
 import { isSafeGlossaryName } from './lib/glossary-file';
 import { archiveEnabled, getCurrentArchiveDir } from './lib/chunk-transcription';
+import { appendToArchive, logTranslation } from './lib/session-archive';
 import { join as joinPath } from 'path';
 import fs from 'fs';
 import os from 'os';
@@ -342,7 +344,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
       const {
         targetLanguage, translationProvider, model,
         openaiApiKey, anthropicApiKey, ollamaBaseUrl, ollamaModel,
-        glossary, items,
+        glossary, items, serviceContext, examples, backTranslationCheck, backTranslationThreshold,
         glossaryCsv, disambiguationPrompt, bibleVersion, deityCapitals, glossaryWarnings,
         scriptureEnabled, esvApiKey, scriptureFallback,
       } = req.body;
@@ -394,6 +396,10 @@ export async function registerRoutes(app: Express): Promise<Server> {
         ollamaBaseUrl: ollamaBaseUrl || undefined,
         ollamaModel: ollamaModel || undefined,
         glossaryOverride: glossary || undefined,
+        serviceContext: typeof serviceContext === 'string' && serviceContext.length <= 8000 ? serviceContext : undefined,
+        examples: parseCorrectionExamples(examples),
+        backTranslationCheck: backTranslationCheck === true,
+        backTranslationThreshold: typeof backTranslationThreshold === 'number' && backTranslationThreshold > 0 && backTranslationThreshold < 1 ? backTranslationThreshold : undefined,
         glossaryCsv: parsedGlossaryCsv || undefined,
         disambiguationPrompt: parsedDisambiguationPrompt || undefined,
         bibleVersion: VALID_BIBLE_VERSIONS.has(bibleVersion) ? bibleVersion : undefined,
@@ -403,7 +409,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
         esvApiKey: esvApiKey || undefined,
         scriptureFallback: scriptureFallback === 'none' ? 'none' : 'kjv',
         signal: controller.signal,
-      });
+      }, { log: logTranslation });
 
       // A blank cell fails alone instead of taking the whole batch down with a 400.
       const blank: TranslateItemResult[] = parsedItems.blankIds.map(id => ({ id, status: 'error', error: 'Nothing to translate — the source text is empty' }));
@@ -547,6 +553,27 @@ export async function registerRoutes(app: Express): Promise<Server> {
       res.json({ ok: true });
     });
   });
+
+  // Session archive extras: the page batches the operator's edits and its own errors and posts
+  // them as JSON lines. Each line is parsed and re-serialised so the .jsonl files stay well-formed;
+  // text/plain for the same reason as /transcript above. Operator-only, like the other writers.
+  const archiveLines = (fileName: string) => [
+    express.text({ type: '*/*', limit: '2mb' }),
+    (req: Request, res: Response) => {
+      if (!isOperatorRequest(req.socket.remoteAddress)) return res.status(403).json({ error: 'Only available to the operator' });
+      if (!archiveEnabled() || !getCurrentArchiveDir()) return res.status(404).json({ error: 'archive not active' });
+      if (typeof req.body !== 'string' || !req.body) return res.status(400).json({ error: 'empty body' });
+      const lines: string[] = [];
+      for (const line of req.body.split('\n')) {
+        if (!line.trim()) continue;
+        try { lines.push(JSON.stringify(JSON.parse(line))); } catch { /* drop a malformed line */ }
+      }
+      if (lines.length) appendToArchive(fileName, lines.join('\n') + '\n');
+      res.json({ ok: true, lines: lines.length });
+    },
+  ];
+  app.post('/api/asr-debug/edit-log', ...archiveLines('edits.jsonl'));
+  app.post('/api/asr-debug/client-log', ...archiveLines('client-errors.jsonl'));
 
   // Listener mode (CLAUDE.md "Listener mode"): the address(es) the operator
   // reads out to the congregation, shown in SermonToolbar's "Luisteraars"

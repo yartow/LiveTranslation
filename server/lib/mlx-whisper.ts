@@ -8,6 +8,7 @@ import { spawn, type ChildProcessWithoutNullStreams } from 'child_process';
 import { createInterface } from 'readline';
 import { join } from 'path';
 import { existsSync } from 'fs';
+import { parseUncertain, type UncertainWord } from './low-confidence';
 
 // In dev (tsx running server/index.ts directly), import.meta.dirname here is
 // server/lib, so '../python/...' resolves to server/python. In a production
@@ -65,6 +66,8 @@ export interface MlxDiag {
 export interface MlxResult {
   text: string;
   diag: MlxDiag | null;
+  /** Words Whisper was unsure about (probability < 0.6), most doubtful first — see low-confidence.ts. */
+  uncertain?: UncertainWord[];
 }
 
 /** Decode overrides forwarded to the worker (see DEFAULT_OPTS in mlx_worker.py). null disables a check. */
@@ -202,7 +205,7 @@ class MlxWorkerManager {
       if (typeof msg.error === 'string') {
         pending.reject(new Error(msg.error));
       } else {
-        pending.resolve({ text: typeof msg.text === 'string' ? msg.text : '', diag: msg.diag ?? null });
+        pending.resolve({ text: typeof msg.text === 'string' ? msg.text : '', diag: msg.diag ?? null, uncertain: parseUncertain(msg.uncertain) });
       }
     }
     this.releaseWorker(msg.id);

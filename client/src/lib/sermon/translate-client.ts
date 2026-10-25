@@ -39,6 +39,9 @@ export interface TranslateResultOk {
   translation: string;
   warnings?: { term: string; expected: string }[];
   scripture?: ScriptureResult;
+  /** Back-translation check only — see server/lib/sermon-translate.ts. */
+  fidelity?: number;
+  lowFidelity?: boolean;
 }
 
 export interface TranslateResultError {
@@ -67,6 +70,13 @@ export interface TranslateRequestOptions {
   deityCapitals?: boolean;
   glossaryWarnings?: boolean;
   sermonContext?: string;
+  /** "Today's service" as labelled lines (service-context.ts's serviceContextForPrompt); '' / undefined = none. */
+  serviceContext?: string;
+  /** The operator's recent hand corrections (segment-store.ts's selectCorrectionExamples) — the translator learns their style from them. */
+  examples?: Array<{ source: string; machine?: string; human: string }>;
+  /** Translate every result back to Dutch and flag the ones that drift (a second call per segment). */
+  backTranslationCheck?: boolean;
+  backTranslationThreshold?: number;
   /** Master switch for the Bible-quote pipeline — see CLAUDE.md "Scripture pipeline". */
   scriptureEnabled?: boolean;
   esvApiKey?: string;
@@ -110,6 +120,10 @@ export async function translateItems(items: TranslateItem[], opts: TranslateRequ
       deityCapitals: opts.deityCapitals,
       glossaryWarnings: opts.glossaryWarnings,
       sermonContext: opts.sermonContext,
+      serviceContext: opts.serviceContext || undefined,
+      examples: opts.examples && opts.examples.length ? opts.examples : undefined,
+      backTranslationCheck: opts.backTranslationCheck || undefined,
+      backTranslationThreshold: opts.backTranslationCheck ? opts.backTranslationThreshold : undefined,
       scriptureEnabled: opts.scriptureEnabled,
       esvApiKey: opts.esvApiKey,
       scriptureFallback: opts.scriptureFallback,

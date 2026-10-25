@@ -12,3 +12,15 @@ export function focusSegmentCell(id: string, cell: CellKind, root: ParentNode = 
   el.scrollIntoView({ block: 'nearest' });
   return true;
 }
+
+/** Focuses a segment's Dutch cell and selects the first whole-word match of `word`; false if the row or the word is not there. */
+export function selectWordInCell(id: string, word: string, findIndex: (text: string, word: string) => number, root: ParentNode = document): boolean {
+  const el = root.querySelector<HTMLTextAreaElement>(`[data-segment-id="${id}"][data-cell="source"]`);
+  if (!el) return false;
+  const i = findIndex(el.value, word);
+  if (i < 0) return false;
+  el.focus({ preventScroll: true });
+  el.setSelectionRange(i, i + word.length);
+  el.scrollIntoView({ block: 'nearest' });
+  return true;
+}

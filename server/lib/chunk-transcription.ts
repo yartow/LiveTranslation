@@ -3,6 +3,7 @@ import { transcribeAudio, correctAndTranslateText, correctTranscript, buildWhisp
 import { correctAndTranslateWithClaude, correctTranscriptWithClaude } from './anthropic';
 import { correctAndTranslateWithOllama, correctTranscriptWithOllama } from './ollama';
 import { transcribeWithMlxDetailed, type MlxDiag } from './mlx-whisper';
+import { selectLowConfidenceWords, type UncertainWord } from './low-confidence';
 import { isAsrArtifact, stripAsrArtifacts } from './asr-artifacts';
 import { applyLearnedCorrections, effectiveGlossary } from './asr-corrections';
 import { transcribeGuarded, wavDurationSecs } from './whisper-guard';
@@ -56,6 +57,8 @@ interface ChunkSession {
 export interface ChunkResult {
   correctedText: string;
   translatedText: string;
+  /** Words Whisper was clearly unsure about in this chunk (MLX engine only) — the page offers them for a second look. */
+  lowWords?: string[];
   // Called by flushInOrder once this result has actually been sent on (archive timestamps).
   onDelivered?: () => void;
 }
@@ -238,11 +241,24 @@ export function flushInOrder(session: ChunkSessionForTest): void {
         translated: result.translatedText,
         chunkIndex: session.nextExpectedChunk,
         isFinal: true,
+        ...(result.lowWords?.length ? { lowWords: result.lowWords } : {}),
       }));
     }
 
     result.onDelivered?.();
     session.nextExpectedChunk++;
+  }
+}
+
+// flushInOrder plus a progress note for the client: "every chunk below `done` has been handled".
+// A chunk that produced no text (silence, a caption artifact) sends no 'translation' message, so
+// without this the page could not tell an empty chunk from one still in flight (its pipeline-health
+// backlog). Kept out of flushInOrder itself, whose message stream is pinned by unit tests.
+function deliverInOrder(session: ChunkSessionForTest & { clientWs: { readyState: number; send: (data: string) => void } }): void {
+  const before = session.nextExpectedChunk;
+  flushInOrder(session);
+  if (session.nextExpectedChunk > before && session.clientWs.readyState === 1 /* WS OPEN */) {
+    session.clientWs.send(JSON.stringify({ type: 'chunk_progress', done: session.nextExpectedChunk }));
   }
 }
 
@@ -316,7 +332,7 @@ async function processChunk(
 
     if (signal.aborted) {
       session.pendingResults.set(chunkIndex, { correctedText: '', translatedText: '' });
-      flushInOrder(session);
+      deliverInOrder(session);
       return;
     }
 
@@ -324,14 +340,18 @@ async function processChunk(
     const audioDurationSecs = isWav ? wavDurationSecs(audioBuffer.length) : Number.NaN;
 
     let rawText: string;
+    let uncertainWords: UncertainWord[] | undefined;
     if (session.engine === 'mlx') {
       sendDebug(session, `Chunk #${chunkIndex}: sending to local MLX Whisper (${session.sourceLanguage})…`);
       const initialPrompt = buildWhisperPrompt(effectiveGlossary(session.glossary) || undefined, session.sermonContext || undefined, session.previousTranscript || undefined, session.sourceLanguage);
-      const attempts: Array<{ usePrompt: boolean; diag: MlxDiag | null }> = [];
+      const attempts: Array<{ usePrompt: boolean; diag: MlxDiag | null; uncertain?: UncertainWord[]; text?: string }> = [];
+      // The text that wins (first or retry attempt) decides which attempt's uncertain words apply.
+      const uncertainByText = new Map<string, UncertainWord[] | undefined>();
       const guarded = await transcribeGuarded(
         async (usePrompt) => {
           const res = await transcribeWithMlxDetailed(audioPath!, session.sourceLanguage, usePrompt ? initialPrompt : undefined, signal);
-          attempts.push({ usePrompt, diag: res.diag });
+          attempts.push({ usePrompt, diag: res.diag, uncertain: res.uncertain, text: res.text });
+          uncertainByText.set(res.text, res.uncertain);
           return res.text;
         },
         !!initialPrompt, audioDurationSecs,
@@ -344,6 +364,7 @@ async function processChunk(
       if (guarded.retried) sendDebug(session, `Chunk #${chunkIndex}: transcript implausibly short for ${audioDurationSecs.toFixed(1)}s of audio — retried without the prompt`);
       rawText = guarded.text;
       archive.rawText = rawText;
+      uncertainWords = uncertainByText.get(guarded.text);
     } else {
       const hasOpenAIKey = !!(session.openaiApiKey || process.env.OPENAI_API_KEY);
       if (!hasOpenAIKey) {
@@ -369,7 +390,7 @@ async function processChunk(
     if (!rawText.trim()) {
       sendDebug(session, `Chunk #${chunkIndex}: silent — no speech detected`);
       session.pendingResults.set(chunkIndex, { correctedText: '', translatedText: '' });
-      flushInOrder(session);
+      deliverInOrder(session);
       return;
     }
 
@@ -382,7 +403,7 @@ async function processChunk(
     if (isAsrArtifact(rawText, session.sourceLanguage)) {
       sendDebug(session, `Chunk #${chunkIndex}: discarded — ASR artifact ("${rawText.slice(0, 40)}")`);
       session.pendingResults.set(chunkIndex, { correctedText: '', translatedText: '' });
-      flushInOrder(session);
+      deliverInOrder(session);
       return;
     }
 
@@ -393,7 +414,7 @@ async function processChunk(
     if (!strippedText) {
       sendDebug(session, `Chunk #${chunkIndex}: discarded — nothing left after artifact stripping ("${rawText.slice(0, 40)}")`);
       session.pendingResults.set(chunkIndex, { correctedText: '', translatedText: '' });
-      flushInOrder(session);
+      deliverInOrder(session);
       return;
     }
     if (strippedText !== rawText.trim()) {
@@ -422,7 +443,7 @@ async function processChunk(
 
     if (signal.aborted) {
       session.pendingResults.set(chunkIndex, { correctedText: rawText, translatedText: '' });
-      flushInOrder(session);
+      deliverInOrder(session);
       return;
     }
 
@@ -511,15 +532,16 @@ async function processChunk(
     sendDebug(session, `Chunk #${chunkIndex}: ✓ done`);
     session.pendingResults.set(chunkIndex, {
       correctedText, translatedText,
+      lowWords: selectLowConfidenceWords(uncertainWords),
       // A chunk finished early can wait behind a slower earlier one — record when it actually left.
       onDelivered: session.archiveDir ? () => { archive.deliveredAt = new Date().toISOString(); void writeArchive(); } : undefined,
     });
-    flushInOrder(session);
+    deliverInOrder(session);
 
   } catch (error) {
     if (error instanceof Error && error.name === 'AbortError') {
       session.pendingResults.set(chunkIndex, { correctedText: '', translatedText: '' });
-      flushInOrder(session);
+      deliverInOrder(session);
       return;
     }
     const label = classifyError(error);
@@ -533,7 +555,7 @@ async function processChunk(
       }));
     }
     session.pendingResults.set(chunkIndex, { correctedText: '', translatedText: '' });
-    flushInOrder(session);
+    deliverInOrder(session);
   } finally {
     semaphore.release();
     if (audioPath) await safeUnlink(audioPath);
@@ -683,7 +705,7 @@ export function setupChunkTranscriptionWebSocket(wss: WebSocketServer): void {
           const dropChunk = (reason: string): void => {
             console.warn(`Chunk ${chunkIndex} dropped: ${reason}`);
             activeSession.pendingResults.set(chunkIndex, { correctedText: '', translatedText: '' });
-            flushInOrder(activeSession);
+            deliverInOrder(activeSession);
           };
 
           if (buf.length < 6) { dropChunk('frame too short'); return; }

@@ -1,4 +1,5 @@
 import { useState, useCallback } from 'react';
+import { EMPTY_SERVICE_CONTEXT, normalizeServiceContext, type ServiceContext } from '@/lib/sermon/service-context';
 
 export type TranscriptionProvider = 'whisper' | 'browser' | 'transformers' | 'mlx';
 export type TranslationProvider = 'openai' | 'claude' | 'ollama' | 'none';
@@ -76,6 +77,10 @@ export interface AppSettings {
   // own text as-is (faster, no risk of the model rewriting correct words).
   sermonAsrCorrection: boolean;
   sermonAutoTranslate: boolean;
+  // Translate every result back to Dutch and flag lines that drift (a second model call per segment).
+  sermonBackTranslationCheck: boolean;
+  // Flagged when the back-translation's similarity to the source is below this (0.05-0.6).
+  sermonBackTranslationThreshold: number;
   // sermon mode — file-based glossary (see server/lib/glossary-store.ts)
   sermonGlossaryEnabled: boolean;
   sermonGlossaryCsv: string;
@@ -87,6 +92,9 @@ export interface AppSettings {
   sermonScriptureEnabled: boolean;
   esvApiKey: string; // sessionStorage, like openaiApiKey/anthropicApiKey
   sermonScriptureFallback: SermonScriptureFallback;
+  // sermon mode — "Today's service" (title, passages, names/terms, notes). sessionStorage, not localStorage:
+  // it is about THIS service, and must not silently bias next week's.
+  sermonServiceContext: ServiceContext;
 }
 
 const PREFS_KEY = 'cttay_prefs';
@@ -133,6 +141,8 @@ const defaultSettings: AppSettings = {
   sermonCorrectionProvider: 'openai',
   sermonAsrCorrection: true,
   sermonAutoTranslate: true,
+  sermonBackTranslationCheck: false,
+  sermonBackTranslationThreshold: 0.2,
   sermonGlossaryEnabled: true,
   sermonGlossaryCsv: 'preek_woordenlijst_NL_EN_1.csv',
   sermonDisambiguationPrompt: 'context_afhankelijke_termen_prompt_v2.md',
@@ -142,6 +152,7 @@ const defaultSettings: AppSettings = {
   sermonScriptureEnabled: true,
   esvApiKey: '',
   sermonScriptureFallback: 'kjv',
+  sermonServiceContext: EMPTY_SERVICE_CONTEXT,
 };
 
 const VALID_TRANSCRIPTION: TranscriptionProvider[] = ['whisper', 'browser', 'transformers', 'mlx'];
@@ -266,6 +277,14 @@ function loadSettings(): AppSettings {
   if (typeof merged.sermonAutoTranslate !== 'boolean') {
     merged.sermonAutoTranslate = defaultSettings.sermonAutoTranslate;
   }
+  if (typeof merged.sermonBackTranslationCheck !== 'boolean') {
+    merged.sermonBackTranslationCheck = defaultSettings.sermonBackTranslationCheck;
+  }
+  if (typeof merged.sermonBackTranslationThreshold !== 'number' || Number.isNaN(merged.sermonBackTranslationThreshold)) {
+    merged.sermonBackTranslationThreshold = defaultSettings.sermonBackTranslationThreshold;
+  } else {
+    merged.sermonBackTranslationThreshold = clamp(merged.sermonBackTranslationThreshold, 0.05, 0.6);
+  }
 
   // Sermon mode — file-based glossary validation
   if (typeof merged.sermonGlossaryEnabled !== 'boolean') {
@@ -297,6 +316,7 @@ function loadSettings(): AppSettings {
   if (!VALID_SCRIPTURE_FALLBACK.includes(merged.sermonScriptureFallback)) {
     merged.sermonScriptureFallback = defaultSettings.sermonScriptureFallback;
   }
+  merged.sermonServiceContext = normalizeServiceContext(merged.sermonServiceContext);
 
   return merged;
 }
@@ -346,6 +366,8 @@ export function useSettings() {
           sermonCorrectionProvider: next.sermonCorrectionProvider,
           sermonAsrCorrection: next.sermonAsrCorrection,
           sermonAutoTranslate: next.sermonAutoTranslate,
+          sermonBackTranslationCheck: next.sermonBackTranslationCheck,
+          sermonBackTranslationThreshold: next.sermonBackTranslationThreshold,
           sermonGlossaryEnabled: next.sermonGlossaryEnabled,
           sermonGlossaryCsv: next.sermonGlossaryCsv,
           sermonDisambiguationPrompt: next.sermonDisambiguationPrompt,
@@ -363,6 +385,7 @@ export function useSettings() {
           openaiApiKey: next.openaiApiKey,
           anthropicApiKey: next.anthropicApiKey,
           esvApiKey: next.esvApiKey,
+          sermonServiceContext: next.sermonServiceContext,
         }));
       } catch {}
 

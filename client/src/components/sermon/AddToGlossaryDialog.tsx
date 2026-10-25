@@ -26,6 +26,8 @@ interface AddToGlossaryDialogProps {
   selection: SourceSelection | null;
   /** Glossary CSV (basename) the English translation is appended to — settings.sermonGlossaryCsv. */
   glossaryCsv: string;
+  /** Prefills the Dutch word (a suggestion already knows the correct spelling). */
+  suggestedDutch?: string;
   onClose: () => void;
   onSaved: (result: GlossarySaved) => void;
 }
@@ -33,7 +35,9 @@ interface AddToGlossaryDialogProps {
 // Dutch term on the left, English on the right. The highlighted words are kept as the
 // "heard as" phrase: from then on the server replaces that phrase with the Dutch term in
 // every new transcript chunk (server/lib/asr-corrections.ts), correction pass on or off.
-export default function AddToGlossaryDialog({ selection, glossaryCsv, onClose, onSaved }: AddToGlossaryDialogProps) {
+export default function AddToGlossaryDialog({ selection, glossaryCsv, suggestedDutch, onClose, onSaved }: AddToGlossaryDialogProps) {
+  // A suggestion (edit-suggestions.ts) has no row to fix: its selection has an empty segmentId.
+  const rowless = selection?.segmentId === '';
   const [heard, setHeard] = useState('');
   const [dutch, setDutch] = useState('');
   const [english, setEnglish] = useState('');
@@ -47,10 +51,10 @@ export default function AddToGlossaryDialog({ selection, glossaryCsv, onClose, o
   useEffect(() => {
     if (!selection) return;
     setHeard(selection.text);
-    setDutch('');
+    setDutch(suggestedDutch ?? '');
     setEnglish('');
     setCategory(CATEGORIES[0]);
-    setFixRow(true);
+    setFixRow(selection.segmentId !== '');
     setError(null);
     setDuplicateOf(null);
     setBusy(false);
@@ -72,7 +76,7 @@ export default function AddToGlossaryDialog({ selection, glossaryCsv, onClose, o
       if (res.status === 409) { setDuplicateOf(json.existingEnglish ?? ''); return; }
       if (!res.ok) { setError(json.error ?? `Could not save (${res.status})`); return; }
       onSaved({
-        selection, heard: heard.trim(), dutch: dutch.trim(), fixRow,
+        selection, heard: heard.trim(), dutch: dutch.trim(), fixRow: fixRow && !rowless,
         glossaryRowAdded: !!json.glossaryRowAdded, correctionAdded: !!json.correctionAdded,
       });
     } catch {
@@ -141,10 +145,12 @@ export default function AddToGlossaryDialog({ selection, glossaryCsv, onClose, o
             </Select>
           </div>
 
-          <div className="flex items-center gap-2">
-            <Checkbox id="glossary-fix-row" checked={fixRow} onCheckedChange={(v) => setFixRow(v === true)} />
-            <Label htmlFor="glossary-fix-row" className="text-xs font-normal">Also correct it in this row now</Label>
-          </div>
+          {!rowless && (
+            <div className="flex items-center gap-2">
+              <Checkbox id="glossary-fix-row" checked={fixRow} onCheckedChange={(v) => setFixRow(v === true)} />
+              <Label htmlFor="glossary-fix-row" className="text-xs font-normal">Also correct it in this row now</Label>
+            </div>
+          )}
 
           {duplicateOf !== null && (
             <p className="text-xs text-amber-600 dark:text-amber-400" data-testid="glossary-duplicate">

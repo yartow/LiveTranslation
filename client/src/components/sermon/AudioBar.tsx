@@ -4,6 +4,8 @@ import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover
 import { useMacInputVolume } from '@/hooks/useMacInputVolume';
 import { isBuiltInMic, type MicDevice } from '@/hooks/useMicDevices';
 import { dbToFraction, levelZone, type LevelStore, type LevelZone } from '@/lib/sermon/audio-level';
+import type { PipelineStats } from '@/lib/sermon/pipeline-stats';
+import PipelineHealth from './PipelineHealth';
 
 const ZONE_BAR: Record<LevelZone, string> = {
   silent: 'bg-muted-foreground/30',
@@ -42,6 +44,7 @@ const NO_SOUND_MS = 20_000;
 
 interface AudioBarProps {
   levelStore: LevelStore;
+  pipelineStats: PipelineStats;
   isRecording: boolean;
   /** Listening is paused: silence is expected then. */
   isPaused: boolean;
@@ -60,7 +63,7 @@ interface AudioBarProps {
 // went wrong on the day a service was recorded from the wrong input), how loud
 // the signal is, and the macOS input volume as a number.
 export default function AudioBar({
-  levelStore, isRecording, isPaused, micDeviceId, onChangeMicDeviceId, devices, defaultLabel, hasLabels, activeLabel,
+  levelStore, pipelineStats, isRecording, isPaused, micDeviceId, onChangeMicDeviceId, devices, defaultLabel, hasLabels, activeLabel,
 }: AudioBarProps) {
   const [open, setOpen] = useState(false);
   const { state: volume, setVolume } = useMacInputVolume();
@@ -143,6 +146,8 @@ export default function AudioBar({
       )}
 
       <LevelMeter store={levelStore} />
+
+      <PipelineHealth stats={pipelineStats} />
 
       <div className="flex items-center gap-2" data-testid="mac-input-volume">
         <label htmlFor="mac-input-volume-slider" className="text-xs text-muted-foreground whitespace-nowrap">Input volume</label>

@@ -3,6 +3,8 @@ import type { Segment } from '@/lib/sermon/segment-model';
 import type { SegmentAction } from '@/lib/sermon/segment-store';
 import { isNextRowChord } from '@/lib/sermon/hotkeys';
 import type { CellKind } from '@/lib/sermon/focus-cell';
+import type { ConfidenceStore } from '@/lib/sermon/confidence-store';
+import ConfidenceChips from './ConfidenceChips';
 import type { SourceSelection } from './AddToGlossaryBubble';
 
 interface SourceCellProps {
@@ -18,6 +20,8 @@ interface SourceCellProps {
   onSelectText?: (selection: SourceSelection | null) => void;
   /** Return in this cell: the grid moves to the same cell of the next row (or adds a row after the last). Must be stable. */
   onEnterNext?: (id: string, cell: CellKind) => void;
+  /** Words Whisper was unsure about — shown as "check" chips under the text. Must be a stable object. */
+  confidenceStore?: ConfidenceStore;
 }
 
 const EDIT_DEBOUNCE_MS = 150;
@@ -30,7 +34,7 @@ const MAX_SELECTION_CHARS = 80;
 // caret. Text only gets pushed into the DOM element imperatively, and only
 // when sourceRevision changes (a non-user write — see segment-store.ts) AND
 // the field isn't the one currently focused.
-export default function SourceCell({ segment, dispatch, activeSegmentIdRef, flushersRef, onSelectText, onEnterNext }: SourceCellProps) {
+export default function SourceCell({ segment, dispatch, activeSegmentIdRef, flushersRef, onSelectText, onEnterNext, confidenceStore }: SourceCellProps) {
   const ref = useRef<HTMLTextAreaElement>(null);
   const revisionRef = useRef(segment.sourceRevision);
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -197,6 +201,7 @@ export default function SourceCell({ segment, dispatch, activeSegmentIdRef, flus
             : 'border-l-2 border-transparent')
         }
       />
+      {confidenceStore && <ConfidenceChips segmentId={segment.id} text={segment.sourceText} store={confidenceStore} />}
     </div>
   );
 }

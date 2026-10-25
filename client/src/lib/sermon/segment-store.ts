@@ -88,7 +88,7 @@ export type SegmentAction =
   // The human emptied a hand-typed translation: give the row back to the translator.
   | { type: 'CLEAR_TARGET_MANUAL'; id: string }
   | { type: 'MARK_TRANSLATING'; ids: string[] }
-  | { type: 'APPLY_TRANSLATION'; id: string; translation: string; requestHash: string; warnings?: GlossaryWarning[] }
+  | { type: 'APPLY_TRANSLATION'; id: string; translation: string; requestHash: string; warnings?: GlossaryWarning[]; fidelity?: number; lowFidelity?: boolean }
   | { type: 'SET_ERROR'; id: string; error: string; requestHash: string }
   // Scripture pipeline (see ActiveReading above and CLAUDE.md "Scripture pipeline").
   | { type: 'APPLY_SCRIPTURE'; id: string; text: string; reference: string; version: ScriptureInfo['version']; requestHash: string }
@@ -96,7 +96,35 @@ export type SegmentAction =
   | { type: 'SET_ACTIVE_READING'; bookNumber: number; chapter: number; verse: number; matched?: boolean }
   | { type: 'NOTE_READING_MISS' }
   | { type: 'CLEAR_ACTIVE_READING' }
-  | { type: 'CLEAR_ALL'; sessionId: string };
+  | { type: 'CLEAR_ALL'; sessionId: string }
+  // Autosave restore (see restoredState): replaces the whole store.
+  | { type: 'RESTORE_STATE'; state: SegmentStoreState };
+
+/**
+ * Turns a saved store (IndexedDB autosave, see session-db.ts) back into a usable one for a new page
+ * load, or null if it isn't a store at all. In-flight work does not survive a reload: TRANSLATING and
+ * PROVISIONAL rows become PENDING (they get translated again), the active Bible reading is dropped,
+ * and the new page's `sessionId` is kept so ids made from now on never repeat the old page's.
+ */
+export function restoredState(saved: unknown, sessionId: string): SegmentStoreState | null {
+  const s = saved as Partial<SegmentStoreState> | null;
+  if (!s || !Array.isArray(s.ids) || !s.byId || typeof s.byId !== 'object') return null;
+  const ids: string[] = [];
+  const byId: Record<string, Segment> = {};
+  for (const id of s.ids) {
+    const seg = s.byId[id];
+    if (!seg || typeof seg.sourceText !== 'string' || typeof seg.translatedText !== 'string') continue;
+    const inFlight = seg.status === 'TRANSLATING' || seg.status === 'PROVISIONAL';
+    byId[id] = {
+      ...seg,
+      asrText: typeof seg.asrText === 'string' ? seg.asrText : seg.sourceText,
+      status: inFlight ? 'PENDING' : seg.status,
+      index: ids.length,
+    };
+    ids.push(id);
+  }
+  return { ids, byId, nextSeq: Math.max(typeof s.nextSeq === 'number' ? s.nextSeq : 0, ids.length), sessionId, activeReading: null };
+}
 
 function replace(state: SegmentStoreState, id: string, segment: Segment): SegmentStoreState {
   return { ...state, byId: { ...state.byId, [id]: segment } };
@@ -158,6 +186,7 @@ export function segmentReducer(state: SegmentStoreState, action: SegmentAction):
       return replace(state, action.id, {
         ...seg,
         sourceText: action.sourceText,
+        asrText: action.sourceText,
         endTime: action.endTime,
         status: 'PROVISIONAL',
         lastSourceChangeAt: action.now,
@@ -171,6 +200,7 @@ export function segmentReducer(state: SegmentStoreState, action: SegmentAction):
       return replace(state, action.id, {
         ...seg,
         sourceText: action.sourceText,
+        asrText: action.sourceText,
         endTime: action.endTime,
         status: 'PENDING',
         approximateTiming: seg.approximateTiming,
@@ -191,7 +221,9 @@ export function segmentReducer(state: SegmentStoreState, action: SegmentAction):
         sourceText: action.sourceText,
         status: 'EDITED',
         lastSourceChangeAt: action.now,
-        glossaryWarnings: undefined, // stale against the edited source — a fresh translation will re-check
+        glossaryWarnings: undefined,
+        fidelity: undefined,
+        lowFidelity: undefined, // stale against the edited source — a fresh translation will re-check
         scripture: undefined, // stale — a corrected/edited reference gets a fresh lookup on the next translate
         scriptureOverride: false, // an edit is a fresh start — re-enable scripture detection even if the human previously dismissed it
       });
@@ -207,6 +239,8 @@ export function segmentReducer(state: SegmentStoreState, action: SegmentAction):
         lastSourceChangeAt: action.now,
         sourceRevision: seg.sourceRevision + 1,
         glossaryWarnings: undefined,
+        fidelity: undefined,
+        lowFidelity: undefined,
         scripture: undefined,
         scriptureOverride: false,
       });
@@ -221,7 +255,9 @@ export function segmentReducer(state: SegmentStoreState, action: SegmentAction):
         manualOverride: true,
         status: 'TRANSLATED',
         error: undefined,
-        glossaryWarnings: undefined, // the human's hand-written translation is authoritative
+        glossaryWarnings: undefined,
+        fidelity: undefined,
+        lowFidelity: undefined, // the human's hand-written translation is authoritative
         scripture: undefined,
       });
     }
@@ -237,6 +273,7 @@ export function segmentReducer(state: SegmentStoreState, action: SegmentAction):
       return replace(state, action.id, {
         ...seg,
         translatedText: '',
+        machineText: undefined,
         translatedHash: null,
         manualOverride: false,
         status: 'PENDING',
@@ -269,10 +306,13 @@ export function segmentReducer(state: SegmentStoreState, action: SegmentAction):
       return replace(state, action.id, {
         ...seg,
         translatedText: action.translation,
+        machineText: action.translation,
         translatedHash: action.requestHash,
         status: 'TRANSLATED',
         error: undefined,
         glossaryWarnings: action.warnings,
+        fidelity: action.fidelity,
+        lowFidelity: action.lowFidelity,
         scripture: undefined, // may have been SCRIPTURE before a corrected source resolved to an ordinary translation
       });
     }
@@ -282,7 +322,7 @@ export function segmentReducer(state: SegmentStoreState, action: SegmentAction):
       if (!seg) return state;
       if (seg.manualOverride) return state;
       if (hashText(seg.sourceText) !== action.requestHash) return recoverFromStaleReply(state, action.id, seg);
-      return replace(state, action.id, { ...seg, status: 'ERROR', error: action.error, glossaryWarnings: undefined });
+      return replace(state, action.id, { ...seg, status: 'ERROR', error: action.error, glossaryWarnings: undefined, fidelity: undefined, lowFidelity: undefined });
     }
 
     // A verbatim reading (server/lib/scripture.ts) — the exact quoted verse
@@ -299,10 +339,13 @@ export function segmentReducer(state: SegmentStoreState, action: SegmentAction):
       return replace(state, action.id, {
         ...seg,
         translatedText: action.text,
+        machineText: action.text,
         translatedHash: action.requestHash,
         status: 'SCRIPTURE',
         error: undefined,
         glossaryWarnings: undefined,
+        fidelity: undefined,
+        lowFidelity: undefined,
         scripture: { reference: action.reference, version: action.version, verses: action.text },
       });
     }
@@ -347,6 +390,9 @@ export function segmentReducer(state: SegmentStoreState, action: SegmentAction):
 
     case 'CLEAR_ALL':
       return initState(action.sessionId);
+
+    case 'RESTORE_STATE':
+      return action.state;
 
     default:
       return state;
@@ -461,4 +507,35 @@ export function selectPublishableLines(state: SegmentStoreState): PublishableLin
     lines.push({ id: seg.id, index: seg.index, text: seg.translatedText, manual: seg.manualOverride });
   }
   return lines;
+}
+
+/** One earlier hand correction, as handed to the translator (see server/lib/sermon-prompt.ts's CorrectionExample). */
+export interface CorrectionExample {
+  source: string;
+  machine?: string;
+  human: string;
+}
+
+const EXAMPLE_FIELD_MAX = 400;
+
+/**
+ * The operator's most recent hand-typed translations, oldest first, for the translator to learn their
+ * style and terminology from: a row they wrote or changed (manualOverride) with its Dutch, and the machine
+ * version they changed it from when there was one (machineText; absent = typed from scratch). A row whose
+ * text equals the machine text taught nothing and is skipped. Fields are capped to keep the prompt small.
+ */
+export function selectCorrectionExamples(state: SegmentStoreState, max = 5): CorrectionExample[] {
+  const picked: CorrectionExample[] = [];
+  for (let i = state.ids.length - 1; i >= 0 && picked.length < max; i--) {
+    const seg = state.byId[state.ids[i]];
+    if (!seg.manualOverride) continue;
+    const human = seg.translatedText.trim(), source = seg.sourceText.trim(), machine = seg.machineText?.trim();
+    if (!human || !source || human === machine) continue;
+    picked.push({
+      source: source.slice(0, EXAMPLE_FIELD_MAX),
+      ...(machine ? { machine: machine.slice(0, EXAMPLE_FIELD_MAX) } : {}),
+      human: human.slice(0, EXAMPLE_FIELD_MAX),
+    });
+  }
+  return picked.reverse();
 }

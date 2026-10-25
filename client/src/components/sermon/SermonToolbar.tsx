@@ -4,6 +4,10 @@ import { Button } from '@/components/ui/button';
 import { Label } from '@/components/ui/label';
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
 import ListenerAddressPanel from './ListenerAddressPanel';
+import ServiceContextPopover from './ServiceContextPopover';
+import SuggestionsPopover from './SuggestionsPopover';
+import type { EditSuggestion } from '@/lib/sermon/edit-suggestions';
+import type { ServiceContext } from '@/lib/sermon/service-context';
 
 interface SermonToolbarProps {
   isRecording: boolean;
@@ -26,6 +30,13 @@ interface SermonToolbarProps {
   listenersEnabled: boolean;
   onToggleListeners: () => void;
   onOpenSettings: () => void;
+  /** "Today's service" — see ServiceContextPopover. */
+  serviceContext: ServiceContext;
+  onChangeServiceContext: (next: ServiceContext) => void;
+  /** Corrections the operator keeps making by hand, offered as glossary entries. */
+  suggestions: EditSuggestion[];
+  onAddSuggestion: (suggestion: EditSuggestion) => void;
+  onDismissSuggestion: (suggestion: EditSuggestion) => void;
   isMac: boolean;
 }
 
@@ -55,7 +66,7 @@ function ToggleChip({ on, onClick, icon, label, title, testId }: {
 export default function SermonToolbar({
   isRecording, isProcessing, isPaused, onTogglePause, onToggleRecording, dirtyCount, onRefreshAll, onAddRow,
   autoTranslate, onToggleAutoTranslate, maxLatencySecs, onChangeMaxLatencySecs,
-  listenerCount, listenersEnabled, onToggleListeners, onOpenSettings, isMac,
+  listenerCount, listenersEnabled, onToggleListeners, onOpenSettings, serviceContext, onChangeServiceContext, suggestions, onAddSuggestion, onDismissSuggestion, isMac,
 }: SermonToolbarProps) {
   const refreshHint = isMac ? '⌘⇧⏎' : 'Ctrl+Shift+Enter';
   const [isListenerPopoverOpen, setIsListenerPopoverOpen] = useState(false);
@@ -163,6 +174,10 @@ export default function SermonToolbar({
       </div>
 
       <div className="flex-1" />
+
+      <SuggestionsPopover suggestions={suggestions} onAdd={onAddSuggestion} onDismiss={onDismissSuggestion} />
+
+      <ServiceContextPopover value={serviceContext} onChange={onChangeServiceContext} />
 
       <Popover open={isListenerPopoverOpen} onOpenChange={setIsListenerPopoverOpen}>
         <PopoverTrigger asChild>

@@ -41,8 +41,19 @@ export interface Segment {
   approximateTiming: boolean;
   /** Dutch, editable by the human translator. */
   sourceText: string;
+  /**
+   * What the speech recognizer gave for this row. Follows the live ASR updates (UPDATE/COMPLETE_PROVISIONAL)
+   * but is never touched by a human edit, so `asrText` vs `sourceText` is exactly "what the human changed".
+   */
+  asrText: string;
   /** English (or whatever targetLanguage is). */
   translatedText: string;
+  /**
+   * The last machine-generated translation (APPLY_TRANSLATION / APPLY_SCRIPTURE). A hand edit (SET_TARGET_MANUAL)
+   * keeps it, so a human correction is the pair machineText -> translatedText. Cleared when the row is handed back
+   * to the translator; undefined when the row never had a machine translation (typed from scratch).
+   */
+  machineText?: string;
   status: SegmentStatus;
   /** Hash of the sourceText the current translatedText was computed from. null = never translated. */
   translatedHash: string | null;
@@ -55,6 +66,9 @@ export interface Segment {
   error?: string;
   /** Non-blocking glossary-adherence warnings from the last translation, or undefined when there are none. Cleared on any edit/override/error — see segment-store.ts. */
   glossaryWarnings?: GlossaryWarning[];
+  /** Back-translation check (setting, off by default): similarity 0-1 of the English translated back to Dutch to what was said, and whether it fell below the operator's threshold. Cleared with the translation, like glossaryWarnings. */
+  fidelity?: number;
+  lowFidelity?: boolean;
   /** Set when status is SCRIPTURE — the verse reference/version/text that was substituted. Cleared on any edit — see segment-store.ts. */
   scripture?: ScriptureInfo;
   /** True once the human has told this row "not scripture" (CLEAR_SCRIPTURE) — future refreshes translate it normally even if a Bible reference is still detected in its text. Reset to false on the next edit, so correcting the reference re-enables detection. */
@@ -112,6 +126,7 @@ export function createSegment(input: CreateSegmentInput): Segment {
     endTime: input.endTime,
     approximateTiming: input.approximateTiming ?? true,
     sourceText: input.sourceText,
+    asrText: input.sourceText,
     translatedText: '',
     status: input.status ?? 'PENDING',
     translatedHash: null,

@@ -1,4 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
+import type { PipelineStats } from '@/lib/sermon/pipeline-stats';
+import type { ConfidenceStore } from '@/lib/sermon/confidence-store';
 import { ChunkBasedTranscription, RecordingStoppedError, type ChunkTranscriptionEvents, type TranscriptionEngine } from '@/lib/chunk-based-transcription';
 import { initIngestState, appendChunk, finalizeBuffer, releaseProvisional, tick as ingestTick, type IngestConfig, type IngestEffect } from '@/lib/sermon/ingest-buffer';
 import { canWriteLive, type SegmentAction, type SegmentStoreState } from '@/lib/sermon/segment-store';
@@ -40,6 +42,10 @@ export interface SermonIngestArgs {
   onStreamReady?: (stream: MediaStream) => void;
   /** Non-fatal heads-up (e.g. the chosen mic was missing and the default was used). */
   onNotice?: (message: string) => void;
+  /** Feeds the audio bar's pipeline-health popover (lib/sermon/pipeline-stats.ts). */
+  pipelineStats?: PipelineStats;
+  /** Collects the words Whisper was unsure about (MLX engine) for the "check" chips. */
+  confidenceStore?: ConfidenceStore;
   onError: (message: string) => void;
 }
 
@@ -47,6 +53,11 @@ const CAP_TICK_MS = 250;
 // How much of the already-transcribed text is fed back to Whisper as its
 // prompt for the next chunk (server trims further, see buildWhisperPrompt).
 const WHISPER_CONTEXT_CHARS = 300;
+
+// Folded into every live row id. Rows can outlive a page load (the autosave restores them), and
+// the session/sequence counters below restart at 0 on every load — without this a restored
+// `live-1-0` would collide with the next recording's first row and APPEND_SEGMENT would refuse it.
+const PAGE_NONCE = Date.now().toString(36);
 
 /**
  * Wires ChunkBasedTranscription (outputMode:'correct-only', VAD chunking,
@@ -87,7 +98,7 @@ export function useSermonIngest(args: SermonIngestArgs) {
     return { startTime: Math.max(0, end - durationMs), endTime: end };
   }, []);
 
-  const nextLiveId = useCallback(() => `live-${liveSessionRef.current}-${liveSeqRef.current++}`, []);
+  const nextLiveId = useCallback(() => `live-${PAGE_NONCE}-${liveSessionRef.current}-${liveSeqRef.current++}`, []);
 
   // If the human has taken over the open provisional row (edited it), hand it
   // over in the ingest buffer too, so the text that row already shows isn't
@@ -194,6 +205,7 @@ export function useSermonIngest(args: SermonIngestArgs) {
 
   const start = useCallback(async () => {
     const a = argsRef.current;
+    a.pipelineStats?.resetPending();
     setIsProcessing(true);
     setIsPaused(false);
     // A previous session that ended without stop() (e.g. a transport error)
@@ -213,7 +225,10 @@ export function useSermonIngest(args: SermonIngestArgs) {
       // element — the corrected text (onTranslation, outputMode:'correct-only')
       // is the only thing that becomes a segment.
       onRawTranscript: () => {},
-      onTranslation: (original, _translated, chunkIndex) => handleCorrected(original, chunkIndex),
+      onTranslation: (original, _translated, chunkIndex, lowWords) => {
+        argsRef.current.confidenceStore?.add(lowWords);
+        handleCorrected(original, chunkIndex);
+      },
       onError: (message) => {
         argsRef.current.onError(message);
         setIsRecording(false);
@@ -224,6 +239,9 @@ export function useSermonIngest(args: SermonIngestArgs) {
       onAudioLevel: (rms, peak) => argsRef.current.onAudioLevel?.(rms, peak),
       onStreamReady: (stream) => argsRef.current.onStreamReady?.(stream),
       onNotice: (message) => argsRef.current.onNotice?.(message),
+      onChunkSent: (chunkIndex) => argsRef.current.pipelineStats?.chunkSent(chunkIndex, Date.now()),
+      onChunkProgress: (done) => argsRef.current.pipelineStats?.chunkProgress(done, Date.now()),
+      onReconnecting: () => argsRef.current.pipelineStats?.reconnecting(),
       onDebug: (message) => { if (argsRef.current.debugMode) console.debug('[sermon-ingest]', message); },
     };
 
@@ -288,6 +306,11 @@ export function useSermonIngest(args: SermonIngestArgs) {
     backendRef.current.resume();
     setIsPaused(false);
   }, []);
+
+  // The vocabulary (standing glossary + today's names and terms) can change during a recording:
+  // the server takes it from the next chunk on.
+  const glossaryArg = args.glossary;
+  useEffect(() => { backendRef.current?.setGlossary(glossaryArg); }, [glossaryArg]);
 
   // Moves the running recording to another microphone ('' = system default); see
   // ChunkBasedTranscription.switchInputDevice. Rejects when not recording or when the

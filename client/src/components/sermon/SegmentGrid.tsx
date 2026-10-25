@@ -2,6 +2,7 @@ import { useRef, useState, useEffect, useCallback } from 'react';
 import { ChevronDown } from 'lucide-react';
 import { selectOrdered, selectNextId, type SegmentStoreState, type SegmentAction } from '@/lib/sermon/segment-store';
 import { focusSegmentCell, type CellKind } from '@/lib/sermon/focus-cell';
+import type { ConfidenceStore } from '@/lib/sermon/confidence-store';
 import SegmentRow from './SegmentRow';
 import type { SourceSelection } from './AddToGlossaryBubble';
 
@@ -16,6 +17,7 @@ interface SegmentGridProps {
   onAddRow: (cell: CellKind) => void;
   /** A row SermonMode just added, to focus once it has rendered — see the ids.length effect below. */
   pendingFocusRef: React.MutableRefObject<{ id: string; cell: CellKind } | null>;
+  confidenceStore: ConfidenceStore;
 }
 
 const NEAR_BOTTOM_PX = 80;
@@ -24,7 +26,7 @@ const NEAR_BOTTOM_PX = 80;
 // is already near it AND nothing inside the grid is focused. Otherwise a
 // "N nieuwe segmenten" pill appears instead of yanking the view out from
 // under someone mid-edit or mid-read.
-export default function SegmentGrid({ state, dispatch, activeSegmentIdRef, onRefreshOne, flushersRef, onSelectText, onAddRow, pendingFocusRef }: SegmentGridProps) {
+export default function SegmentGrid({ state, dispatch, activeSegmentIdRef, onRefreshOne, flushersRef, onSelectText, onAddRow, pendingFocusRef, confidenceStore }: SegmentGridProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const [pendingNew, setPendingNew] = useState(0);
   const prevCountRef = useRef(state.ids.length);
@@ -99,6 +101,7 @@ export default function SegmentGrid({ state, dispatch, activeSegmentIdRef, onRef
             flushersRef={flushersRef}
             onSelectText={onSelectText}
             onEnterNext={handleEnterNext}
+            confidenceStore={confidenceStore}
           />
         ))}
       </div>

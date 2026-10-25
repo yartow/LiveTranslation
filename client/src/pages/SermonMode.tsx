@@ -3,6 +3,7 @@ import Header from '@/components/Header';
 import SermonToolbar from '@/components/sermon/SermonToolbar';
 import AudioBar from '@/components/sermon/AudioBar';
 import MicAlertBanner, { type MicAlert } from '@/components/sermon/MicAlertBanner';
+import RestoreBanner from '@/components/sermon/RestoreBanner';
 import AddToGlossaryBubble, { type SourceSelection } from '@/components/sermon/AddToGlossaryBubble';
 import AddToGlossaryDialog, { type GlossarySaved } from '@/components/sermon/AddToGlossaryDialog';
 import SegmentGrid from '@/components/sermon/SegmentGrid';
@@ -10,8 +11,13 @@ import SettingsDialog from '@/components/settings/SettingsDialog';
 import { useToast } from '@/hooks/use-toast';
 import { useSettings, type AppSettings } from '@/hooks/useSettings';
 import { useDevKeyAutofill } from '@/hooks/useDevKeyAutofill';
-import { segmentReducer, initState, nextSegmentId, selectDirtyIds, type SegmentAction } from '@/lib/sermon/segment-store';
+import { segmentReducer, initState, nextSegmentId, restoredState, selectDirtyIds, type SegmentAction } from '@/lib/sermon/segment-store';
+import { saveAutosave, loadAutosave, clearAutosave, type AutosaveRecord } from '@/lib/session-db';
 import { focusSegmentCell, type CellKind } from '@/lib/sermon/focus-cell';
+import { createEditLog, editLogEntry } from '@/lib/sermon/edit-log';
+import { installClientLog } from '@/lib/client-log';
+import { serviceContextForPrompt, plannedPassages, glossaryWithService } from '@/lib/sermon/service-context';
+import { editSuggestions, type EditSuggestion } from '@/lib/sermon/edit-suggestions';
 import { RecordingStoppedError, realDeviceId } from '@/lib/chunk-based-transcription';
 import { isRefreshAllChord, isRefreshOneChord, type KeyChord } from '@/lib/sermon/hotkeys';
 import { useTranslationQueue, type TranslationRuntimeConfig } from '@/hooks/useTranslationQueue';
@@ -19,6 +25,8 @@ import { useSermonIngest } from '@/hooks/useSermonIngest';
 import { useListenerBroadcast } from '@/hooks/useListenerBroadcast';
 import { useMicDevices } from '@/hooks/useMicDevices';
 import { LevelStore } from '@/lib/sermon/audio-level';
+import { PipelineStats } from '@/lib/sermon/pipeline-stats';
+import { ConfidenceStore } from '@/lib/sermon/confidence-store';
 import type { IngestConfig } from '@/lib/sermon/ingest-buffer';
 import { isMacPlatform } from '@/lib/platform';
 import { replacePhrase } from '@/lib/sermon/glossary-fix';
@@ -54,10 +62,21 @@ export default function SermonMode() {
   const stateRef = useRef(state);
   stateRef.current = state;
 
+  // Whether the server is recording a session archive (ASR_DEBUG_DIR) — see the status fetch below.
+  const archiveActiveRef = useRef(false);
+  // The operator's edits, batched to <session>/edits.jsonl (nothing is sent unless the archive is on).
+  const editLog = useRef(createEditLog((body) => {
+    fetch('/api/asr-debug/edit-log', { method: 'POST', headers: { 'Content-Type': 'text/plain' }, body, keepalive: body.length < 60_000 }).catch(() => {});
+  })).current;
+
   const applyAction = useCallback((action: SegmentAction) => {
+    if (archiveActiveRef.current) {
+      const entry = editLogEntry(action, stateRef.current, Date.now());
+      if (entry) editLog.record(entry);
+    }
     stateRef.current = segmentReducer(stateRef.current, action);
     dispatch(action);
-  }, [dispatch]);
+  }, [dispatch, editLog]);
 
   // Registry of per-segment "flush the pending debounced source edit now"
   // callbacks, populated by SourceCell. A manual Refresh (button or hotkey)
@@ -99,6 +118,10 @@ export default function SermonMode() {
     stabilityMs: settings.sermonStabilityMs,
     contextBefore: settings.sermonContextBefore,
     contextAfter: settings.sermonContextAfter,
+    backTranslationCheck: settings.sermonBackTranslationCheck,
+    backTranslationThreshold: settings.sermonBackTranslationThreshold,
+    serviceContext: serviceContextForPrompt(settings.sermonServiceContext),
+    plannedPassages: plannedPassages(settings.sermonServiceContext),
   });
   const translationConfigRef = useRef<TranslationRuntimeConfig>(buildTranslationConfig());
   useEffect(() => { translationConfigRef.current = buildTranslationConfig(); }, [settings]);
@@ -108,7 +131,11 @@ export default function SermonMode() {
     ingestConfigRef.current = { maxLatencyMs: settings.sermonMaxLatencySecs * 1000, minBlockWords: SERMON_MIN_BLOCK_WORDS, showEarly: true };
   }, [settings.sermonMaxLatencySecs]);
 
-  const { refreshAll, refreshOne } = useTranslationQueue(stateRef, applyAction, translationConfigRef, autoTranslateRef, flushersRef);
+  // Pipeline health (the audio bar's popover): chunk delays from the recorder, call times from the translator.
+  const [pipelineStats] = useState(() => new PipelineStats());
+  // Words Whisper was unsure about (MLX engine) -> "check" chips under the Dutch cells.
+  const [confidenceStore] = useState(() => new ConfidenceStore());
+  const { refreshAll, refreshOne } = useTranslationQueue(stateRef, applyAction, translationConfigRef, autoTranslateRef, flushersRef, pipelineStats);
 
   // Listener mode (CLAUDE.md "Listener mode") — pushes finished translations
   // to any connected phones. Reads `state` directly (not stateRef) so it
@@ -158,12 +185,14 @@ export default function SermonMode() {
     anthropicApiKey: settings.anthropicApiKey,
     ollamaBaseUrl: settings.ollamaBaseUrl,
     ollamaModel: settings.ollamaModel,
-    glossary: settings.theologicalGlossary,
+    glossary: glossaryWithService(settings.theologicalGlossary, settings.sermonServiceContext),
     debugMode: settings.debugMode,
     normalizationGain: settings.audioNormalizationGain,
     rawAudioCapture: settings.rawAudioCapture,
     micDeviceId: settings.micDeviceId,
     onAudioLevel: (rms, peak) => levelStore.push(rms, peak),
+    pipelineStats,
+    confidenceStore,
     onStreamReady: (stream) => {
       const label = stream.getAudioTracks()[0]?.label || 'Microphone';
       const deviceId = realDeviceId(stream);
@@ -279,7 +308,6 @@ export default function SermonMode() {
   // Session archive (server has ASR_DEBUG_DIR — see server/lib/chunk-transcription.ts): while
   // recording, snapshot what is on screen every minute and once more after stop, so a gap in the
   // transcript can be traced to the stage that lost it. A no-op when the server archive is off.
-  const archiveActiveRef = useRef(false);
   useEffect(() => {
     fetch('/api/asr-debug/status').then(r => r.json()).then(j => { archiveActiveRef.current = !!j.enabled; }).catch(() => {});
   }, []);
@@ -293,6 +321,7 @@ export default function SermonMode() {
       return {
         id, index: g.index, startTime: g.startTime, endTime: g.endTime, status: g.status,
         sourceText: g.sourceText, translatedText: g.translatedText,
+        asrText: g.asrText, machineText: g.machineText,
         manualOverride: g.manualOverride, lastSourceChangeAt: g.lastSourceChangeAt, error: g.error,
       };
     });
@@ -305,12 +334,29 @@ export default function SermonMode() {
     if (!isRecording) {
       // After stop the last ingest flush / translations may still land a moment later.
       postTranscriptSnapshot();
-      const late = setTimeout(postTranscriptSnapshot, 4000);
+      editLog.flush();
+      const late = setTimeout(() => { postTranscriptSnapshot(); editLog.flush(); }, 4000);
       return () => clearTimeout(late);
     }
     const timer = setInterval(postTranscriptSnapshot, 60_000);
     return () => clearInterval(timer);
-  }, [isRecording, postTranscriptSnapshot]);
+  }, [isRecording, postTranscriptSnapshot, editLog]);
+
+  // Edits are flushed every few seconds (also while stopped — corrections typed after Stop count),
+  // and when the page is closed. Browser errors/warnings go to the archive the same way.
+  useEffect(() => {
+    const timer = setInterval(() => editLog.flush(), 5000);
+    const onHide = () => {
+      if (!archiveActiveRef.current) return;
+      editLog.flush();
+    };
+    window.addEventListener('pagehide', onHide);
+    const uninstall = installClientLog(
+      () => archiveActiveRef.current,
+      (body) => { fetch('/api/asr-debug/client-log', { method: 'POST', headers: { 'Content-Type': 'text/plain' }, body, keepalive: body.length < 60_000 }).catch(() => {}); },
+    );
+    return () => { clearInterval(timer); window.removeEventListener('pagehide', onHide); uninstall(); editLog.flush(); };
+  }, [editLog]);
 
   // "Add to glossary": highlighted words in a source cell -> floating bubble -> dialog.
   const [selection, setSelection] = useState<SourceSelection | null>(null);
@@ -318,8 +364,30 @@ export default function SermonMode() {
   const handleSelectText = useCallback((sel: SourceSelection | null) => setSelection(sel), []);
   const dismissBubble = useCallback(() => setSelection(null), []);
 
+  // Suggestions: words corrected by hand (asrText vs sourceText), never again once dismissed or added.
+  const [dismissedSuggestions, setDismissedSuggestions] = useState<Set<string>>(() => {
+    try { return new Set<string>(JSON.parse(localStorage.getItem('cttay_dismissed_suggestions') || '[]')); } catch { return new Set<string>(); }
+  });
+  const dismissSuggestion = useCallback((key: string) => {
+    setDismissedSuggestions(prev => {
+      const next = new Set(prev).add(key);
+      try { localStorage.setItem('cttay_dismissed_suggestions', JSON.stringify(Array.from(next).slice(-500))); } catch { /* optional */ }
+      return next;
+    });
+  }, []);
+  const [suggestionBeingAdded, setSuggestionBeingAdded] = useState<EditSuggestion | null>(null);
+  const suggestions = useMemo(
+    () => editSuggestions(state.ids.map(id => state.byId[id]), dismissedSuggestions),
+    [state, dismissedSuggestions],
+  );
+  // The dialog takes a row selection; a suggestion has no row, so it gets an empty segmentId.
+  const suggestionSelection: SourceSelection | null = suggestionBeingAdded
+    ? { segmentId: '', start: 0, end: 0, text: suggestionBeingAdded.heard, x: 0, y: 0 }
+    : null;
+
   const handleGlossarySaved = useCallback((r: GlossarySaved) => {
     setGlossarySelection(null);
+    if (suggestionBeingAdded) { dismissSuggestion(suggestionBeingAdded.key); setSuggestionBeingAdded(null); }
     let rowNote = '';
     if (r.fixRow) {
       const { segmentId, start } = r.selection;
@@ -339,9 +407,46 @@ export default function SermonMode() {
       title: 'Added to glossary',
       description: (r.correctionAdded ? 'New transcripts are corrected automatically.' : 'Saved.') + rowNote,
     });
-  }, [applyAction, toast]);
+  }, [applyAction, toast, suggestionBeingAdded, dismissSuggestion]);
 
   const dirtyCount = useMemo(() => selectDirtyIds(state).length, [state]);
+
+  // Autosave: the segments live only in this page, so write them to IndexedDB at most every 3 s
+  // while they change (a timer that is already pending is not reset — continuous live updates must
+  // not postpone the save forever) and once more when the page is hidden/closed.
+  const autosaveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const saveNow = useCallback(() => {
+    const s = stateRef.current;
+    if (s.ids.length) saveAutosave(s, s.ids.length).catch(() => {});
+  }, []);
+  useEffect(() => {
+    if (state.ids.length === 0 || autosaveTimerRef.current) return;
+    autosaveTimerRef.current = setTimeout(() => { autosaveTimerRef.current = null; saveNow(); }, 3000);
+  }, [state, saveNow]);
+  useEffect(() => {
+    window.addEventListener('pagehide', saveNow);
+    return () => { window.removeEventListener('pagehide', saveNow); if (autosaveTimerRef.current) clearTimeout(autosaveTimerRef.current); };
+  }, [saveNow]);
+
+  // On load: is there an autosave from an earlier page? Offered while the grid is still empty.
+  const [restoreOffer, setRestoreOffer] = useState<AutosaveRecord | null>(null);
+  useEffect(() => {
+    loadAutosave().then(rec => { if (rec && rec.rows > 0) setRestoreOffer(rec); }).catch(() => {});
+  }, []);
+  const handleRestore = useCallback(() => {
+    const restored = restoredState(restoreOffer?.state, stateRef.current.sessionId);
+    setRestoreOffer(null);
+    if (!restored || restored.ids.length === 0) {
+      toast({ title: 'Could not restore', description: 'The saved session could not be read.', variant: 'destructive' });
+      return;
+    }
+    applyAction({ type: 'RESTORE_STATE', state: restored });
+    toast({ title: 'Session restored', description: `${restored.ids.length} rows. Unfinished translations are done again.` });
+  }, [restoreOffer, applyAction, toast]);
+  const handleDiscardRestore = useCallback(() => {
+    setRestoreOffer(null);
+    clearAutosave().catch(() => {});
+  }, []);
 
   // Cmd/Ctrl+Shift+Enter (refresh all) and Cmd/Ctrl+Enter (refresh the
   // segment under the cursor) — capture phase on window so preventDefault
@@ -393,10 +498,16 @@ export default function SermonMode() {
         listenersEnabled={listenersEnabled}
         onToggleListeners={() => setListenersEnabled(v => !v)}
         onOpenSettings={() => setIsSettingsOpen(true)}
+        serviceContext={settings.sermonServiceContext}
+        onChangeServiceContext={(next) => updateSettings({ sermonServiceContext: next })}
+        suggestions={suggestions}
+        onAddSuggestion={setSuggestionBeingAdded}
+        onDismissSuggestion={(s) => dismissSuggestion(s.key)}
         isMac={isMacPlatform}
       />
       <AudioBar
         levelStore={levelStore}
+        pipelineStats={pipelineStats}
         isRecording={isRecording}
         isPaused={isPaused}
         micDeviceId={settings.micDeviceId}
@@ -406,6 +517,9 @@ export default function SermonMode() {
         hasLabels={mic.hasLabels}
         activeLabel={mic.activeLabel}
       />
+      {restoreOffer && state.ids.length === 0 && (
+        <RestoreBanner rows={restoreOffer.rows} savedAt={restoreOffer.savedAt} onRestore={handleRestore} onDiscard={handleDiscardRestore} />
+      )}
       {micAlert && (
         <MicAlertBanner
           alert={micAlert}
@@ -423,6 +537,7 @@ export default function SermonMode() {
         onSelectText={handleSelectText}
         onAddRow={handleEnterLastRow}
         pendingFocusRef={pendingFocusRef}
+        confidenceStore={confidenceStore}
       />
       {selection && !glossarySelection && (
         <AddToGlossaryBubble
@@ -432,9 +547,10 @@ export default function SermonMode() {
         />
       )}
       <AddToGlossaryDialog
-        selection={glossarySelection}
+        selection={glossarySelection ?? suggestionSelection}
         glossaryCsv={settings.sermonGlossaryCsv}
-        onClose={() => setGlossarySelection(null)}
+        suggestedDutch={suggestionBeingAdded?.correct}
+        onClose={() => { setGlossarySelection(null); setSuggestionBeingAdded(null); }}
         onSaved={handleGlossarySaved}
       />
       <SettingsDialog

@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import {
   initState, segmentReducer, selectDirtyIds, selectTranslatable, selectOrdered, selectContext, canWriteLive, READING_GRACE_SEGMENTS,
-  selectPublishableLines, selectNextId,
+  selectPublishableLines, selectNextId, restoredState, selectCorrectionExamples,
   type SegmentStoreState,
 } from '../../client/src/lib/sermon/segment-store.js';
 import { hashText } from '../../client/src/lib/sermon/segment-model.js';
@@ -650,5 +650,183 @@ describe('selectNextId', () => {
     expect(selectNextId(state, b)).toBe(c);
     expect(selectNextId(state, c)).toBeNull();
     expect(selectNextId(state, 'nope')).toBeNull();
+  });
+});
+
+describe('asrText / machineText (what the human changed)', () => {
+  const seed = () => {
+    let state = initState('t');
+    state = segmentReducer(state, { type: 'APPEND_SEGMENT', id: 'a', sourceText: 'Kik is geboren', startTime: 0, endTime: 1, status: 'PROVISIONAL', now: 0 });
+    return state;
+  };
+
+  it('asrText follows live ASR updates but never a human edit', () => {
+    let state = seed();
+    expect(state.byId.a.asrText).toBe('Kik is geboren');
+    state = segmentReducer(state, { type: 'UPDATE_PROVISIONAL', id: 'a', sourceText: 'Kik is geboren in Betlehem', endTime: 2, now: 1 });
+    expect(state.byId.a.asrText).toBe('Kik is geboren in Betlehem');
+    state = segmentReducer(state, { type: 'COMPLETE_PROVISIONAL', id: 'a', sourceText: 'Kik is geboren in Betlehem.', endTime: 3, now: 2 });
+    expect(state.byId.a.asrText).toBe('Kik is geboren in Betlehem.');
+    state = segmentReducer(state, { type: 'EDIT_SOURCE', id: 'a', sourceText: 'Kind is geboren in Betlehem.', now: 3 });
+    expect(state.byId.a.sourceText).toBe('Kind is geboren in Betlehem.');
+    expect(state.byId.a.asrText).toBe('Kik is geboren in Betlehem.');
+    state = segmentReducer(state, { type: 'REPLACE_SOURCE', id: 'a', sourceText: 'Het Kind is geboren.', now: 4 });
+    expect(state.byId.a.asrText).toBe('Kik is geboren in Betlehem.');
+  });
+
+  it('machineText is the last machine translation and survives a hand edit', () => {
+    let state = segmentReducer(seed(), { type: 'COMPLETE_PROVISIONAL', id: 'a', sourceText: 'Het Kind is geboren.', endTime: 3, now: 2 });
+    state = segmentReducer(state, { type: 'MARK_TRANSLATING', ids: ['a'] });
+    state = segmentReducer(state, { type: 'APPLY_TRANSLATION', id: 'a', translation: 'The Child is born.', requestHash: hashText('Het Kind is geboren.') });
+    expect(state.byId.a.machineText).toBe('The Child is born.');
+    state = segmentReducer(state, { type: 'SET_TARGET_MANUAL', id: 'a', translatedText: 'The Child was born.', now: 5 });
+    expect(state.byId.a.translatedText).toBe('The Child was born.');
+    expect(state.byId.a.machineText).toBe('The Child is born.');
+  });
+
+  it('handing the row back to the translator forgets the old machine text', () => {
+    let state = segmentReducer(seed(), { type: 'COMPLETE_PROVISIONAL', id: 'a', sourceText: 'Amen.', endTime: 3, now: 2 });
+    state = segmentReducer(state, { type: 'APPLY_TRANSLATION', id: 'a', translation: 'Amen.', requestHash: hashText('Amen.') });
+    state = segmentReducer(state, { type: 'SET_TARGET_MANUAL', id: 'a', translatedText: 'So be it.', now: 5 });
+    state = segmentReducer(state, { type: 'CLEAR_TARGET_MANUAL', id: 'a' });
+    expect(state.byId.a.machineText).toBeUndefined();
+  });
+
+  it('a verbatim scripture reading is also remembered as machine text', () => {
+    let state = segmentReducer(seed(), { type: 'COMPLETE_PROVISIONAL', id: 'a', sourceText: 'Want alzo lief heeft God de wereld gehad.', endTime: 3, now: 2 });
+    state = segmentReducer(state, { type: 'APPLY_SCRIPTURE', id: 'a', text: 'For God so loved the world', reference: 'John 3:16', version: 'ESV', requestHash: hashText('Want alzo lief heeft God de wereld gehad.') });
+    expect(state.byId.a.machineText).toBe('For God so loved the world');
+  });
+});
+
+describe('restoredState (autosave restore)', () => {
+  const saved = (): SegmentStoreState => {
+    let state = initState('old');
+    const add = (id: string, status: 'PROVISIONAL' | 'PENDING', text: string) =>
+      segmentReducer(state, { type: 'APPEND_SEGMENT', id, sourceText: text, startTime: 0, endTime: 1, status, now: 0 });
+    state = add('p', 'PROVISIONAL', 'Half een zin');
+    state = add('t', 'PENDING', 'Een hele zin.');
+    state = segmentReducer(state, { type: 'MARK_TRANSLATING', ids: ['t'] });
+    state = segmentReducer(state, { type: 'SET_ACTIVE_READING', bookNumber: 43, chapter: 3, verse: 16 });
+    return state;
+  };
+
+  it('puts in-flight rows back to PENDING, drops the active reading and keeps the new session id', () => {
+    const restored = restoredState(JSON.parse(JSON.stringify(saved())), 'new')!;
+    expect(restored.ids).toEqual(['p', 't']);
+    expect(restored.byId.p.status).toBe('PENDING');
+    expect(restored.byId.t.status).toBe('PENDING');
+    expect(restored.activeReading).toBeNull();
+    expect(restored.sessionId).toBe('new');
+    expect(restored.nextSeq).toBeGreaterThanOrEqual(2);
+  });
+
+  it('rows come back dirty, so auto-translate picks them up', () => {
+    const restored = restoredState(saved(), 'new')!;
+    expect(selectDirtyIds(restored).sort()).toEqual(['p', 't']);
+  });
+
+  it('keeps finished rows and hand edits as they were', () => {
+    let state = initState('old');
+    state = segmentReducer(state, { type: 'APPEND_SEGMENT', id: 'h', sourceText: 'Goed.', startTime: 0, endTime: 1, now: 0 });
+    state = segmentReducer(state, { type: 'SET_TARGET_MANUAL', id: 'h', translatedText: 'Good.', now: 1 });
+    const restored = restoredState(JSON.parse(JSON.stringify(state)), 'new')!;
+    expect(restored.byId.h).toMatchObject({ translatedText: 'Good.', manualOverride: true, status: 'TRANSLATED' });
+  });
+
+  it('fills asrText for rows saved before it existed, and renumbers index', () => {
+    const old = JSON.parse(JSON.stringify(saved()));
+    delete old.byId.t.asrText;
+    old.byId.t.index = 99;
+    const restored = restoredState(old, 'new')!;
+    expect(restored.byId.t.asrText).toBe('Een hele zin.');
+    expect(restored.byId.t.index).toBe(1);
+  });
+
+  it('skips unreadable rows and rejects something that is not a store', () => {
+    const broken = JSON.parse(JSON.stringify(saved()));
+    broken.byId.p = { nonsense: true };
+    expect(restoredState(broken, 'new')!.ids).toEqual(['t']);
+    expect(restoredState(null, 'new')).toBeNull();
+    expect(restoredState({ ids: 'x' }, 'new')).toBeNull();
+    expect(restoredState('garbage', 'new')).toBeNull();
+  });
+
+  it('a new live row id from a later page never collides with a restored one', () => {
+    // Restored ids look like live-<nonceA>-1-0; a fresh page uses another nonce, so APPEND_SEGMENT accepts it.
+    let state = initState('old');
+    state = segmentReducer(state, { type: 'APPEND_SEGMENT', id: 'live-aaa-1-0', sourceText: 'Oud.', startTime: 0, endTime: 1, now: 0 });
+    const restored = restoredState(JSON.parse(JSON.stringify(state)), 'new')!;
+    const next = segmentReducer(restored, { type: 'APPEND_SEGMENT', id: 'live-bbb-1-0', sourceText: 'Nieuw.', startTime: 1, endTime: 2, now: 1 });
+    expect(next.ids).toEqual(['live-aaa-1-0', 'live-bbb-1-0']);
+  });
+});
+
+describe('fidelity (back-translation check) lifecycle', () => {
+  const translated = () => {
+    let s = initState('t');
+    s = segmentReducer(s, { type: 'APPEND_SEGMENT', id: 'a', sourceText: 'Een zin.', startTime: 0, endTime: 1, now: 0 });
+    s = segmentReducer(s, { type: 'APPLY_TRANSLATION', id: 'a', translation: 'A sentence.', requestHash: hashText('Een zin.'), fidelity: 0.12, lowFidelity: true });
+    return s;
+  };
+
+  it('is kept with the translation it was computed for', () => {
+    expect(translated().byId.a).toMatchObject({ fidelity: 0.12, lowFidelity: true });
+  });
+
+  it('goes away with a source edit, a hand edit and an error — it describes only the machine text', () => {
+    expect(segmentReducer(translated(), { type: 'EDIT_SOURCE', id: 'a', sourceText: 'Andere zin.', now: 1 }).byId.a.lowFidelity).toBeUndefined();
+    expect(segmentReducer(translated(), { type: 'REPLACE_SOURCE', id: 'a', sourceText: 'Andere zin.', now: 1 }).byId.a.fidelity).toBeUndefined();
+    expect(segmentReducer(translated(), { type: 'SET_TARGET_MANUAL', id: 'a', translatedText: 'My own.', now: 1 }).byId.a.lowFidelity).toBeUndefined();
+    expect(segmentReducer(translated(), { type: 'SET_ERROR', id: 'a', error: 'x', requestHash: hashText('Een zin.') }).byId.a.fidelity).toBeUndefined();
+  });
+
+  it('a newer translation replaces the old verdict (also when it has none)', () => {
+    let s = segmentReducer(translated(), { type: 'EDIT_SOURCE', id: 'a', sourceText: 'Nieuwe zin.', now: 1 });
+    s = segmentReducer(s, { type: 'APPLY_TRANSLATION', id: 'a', translation: 'New sentence.', requestHash: hashText('Nieuwe zin.') });
+    expect(s.byId.a.fidelity).toBeUndefined();
+    expect(s.byId.a.lowFidelity).toBeUndefined();
+  });
+});
+
+describe('selectCorrectionExamples', () => {
+  const build = (rows: Array<{ id: string; src: string; machine?: string; human?: string }>) => {
+    let s = initState('t');
+    for (const r of rows) {
+      s = segmentReducer(s, { type: 'APPEND_SEGMENT', id: r.id, sourceText: r.src, startTime: 0, endTime: 1, now: 0 });
+      if (r.machine) s = segmentReducer(s, { type: 'APPLY_TRANSLATION', id: r.id, translation: r.machine, requestHash: hashText(r.src) });
+      if (r.human !== undefined) s = segmentReducer(s, { type: 'SET_TARGET_MANUAL', id: r.id, translatedText: r.human, now: 1 });
+    }
+    return s;
+  };
+
+  it('returns the hand-written lines, oldest first, with the machine version they replaced', () => {
+    const s = build([
+      { id: 'a', src: 'Een.', machine: 'One.', human: 'First.' },
+      { id: 'b', src: 'Twee.', machine: 'Two.' },                 // never edited
+      { id: 'c', src: 'Drie.', human: 'Three.' },                 // typed from scratch
+    ]);
+    expect(selectCorrectionExamples(s)).toEqual([
+      { source: 'Een.', machine: 'One.', human: 'First.' },
+      { source: 'Drie.', human: 'Three.' },
+    ]);
+  });
+
+  it('skips an edit that changed nothing and an empty result', () => {
+    const s = build([
+      { id: 'a', src: 'Een.', machine: 'One.', human: 'One.' },
+      { id: 'b', src: 'Twee.', machine: 'Two.', human: '   ' },
+    ]);
+    expect(selectCorrectionExamples(s)).toEqual([]);
+  });
+
+  it('keeps only the most recent ones, and caps long text', () => {
+    const rows = Array.from({ length: 8 }, (_, i) => ({ id: `r${i}`, src: `Bron ${i}.`, machine: `M${i}`, human: `H${i}` }));
+    const picked = selectCorrectionExamples(build(rows), 3);
+    expect(picked.map(p => p.human)).toEqual(['H5', 'H6', 'H7']);
+    const long = selectCorrectionExamples(build([{ id: 'x', src: 'b'.repeat(900), machine: 'm'.repeat(900), human: 'h'.repeat(900) }]))[0];
+    expect(long.source).toHaveLength(400);
+    expect(long.machine).toHaveLength(400);
+    expect(long.human).toHaveLength(400);
   });
 });

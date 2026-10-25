@@ -3,7 +3,8 @@ import { createSerialRunner } from './serial-runner';
 export interface ChunkTranscriptionEvents {
   onReady: () => void;
   onRawTranscript: (text: string, chunkIndex: number) => void;
-  onTranslation: (original: string, translated: string, chunkIndex: number) => void;
+  /** `lowWords`: words Whisper was clearly unsure about in this chunk (MLX engine only). */
+  onTranslation: (original: string, translated: string, chunkIndex: number, lowWords?: string[]) => void;
   onError: (message: string) => void;
   onClose: () => void;
   onStreamReady?: (stream: MediaStream) => void;
@@ -12,6 +13,12 @@ export interface ChunkTranscriptionEvents {
   onAudioLevel?: (rms: number, peak?: number) => void;
   /** A non-fatal heads-up for the operator (e.g. the chosen microphone was missing and the default was used). */
   onNotice?: (message: string) => void;
+  /** A chunk was committed and sent to the server (pipeline health: the start of its delay). */
+  onChunkSent?: (chunkIndex: number) => void;
+  /** The server has handled every chunk below `done` — with or without text (pipeline health: the end of the delay). */
+  onChunkProgress?: (done: number) => void;
+  /** The connection dropped mid-recording and a reconnect was scheduled. */
+  onReconnecting?: () => void;
 }
 
 export type TranslationProvider = 'openai' | 'claude' | 'ollama' | 'none';
@@ -602,7 +609,11 @@ export class ChunkBasedTranscription {
             this.events.onRawTranscript(message.text, message.chunkIndex);
             break;
           case 'translation':
-            this.events.onTranslation(message.original, message.translated, message.chunkIndex);
+            this.events.onTranslation(message.original, message.translated, message.chunkIndex,
+              Array.isArray(message.lowWords) ? message.lowWords.filter((w: unknown): w is string => typeof w === 'string') : undefined);
+            break;
+          case 'chunk_progress':
+            if (typeof message.done === 'number') this.events.onChunkProgress?.(message.done);
             break;
           case 'chunk_error':
           case 'error':
@@ -634,6 +645,7 @@ export class ChunkBasedTranscription {
   }
 
   private scheduleReconnect(): void {
+    this.events.onReconnecting?.();
     const delay = Math.min(1000 * Math.pow(2, this.reconnectAttempts), 30_000);
     this.reconnectAttempts++;
     setTimeout(() => this.reconnectWs(), delay);
@@ -874,6 +886,7 @@ export class ChunkBasedTranscription {
     new Uint8Array(combined).set(new Uint8Array(wavBuf), 5);
 
     this.sendBinary(combined, currentIndex);
+    this.events.onChunkSent?.(currentIndex);
 
     this.events.onDebug?.(`Chunk ${currentIndex}: ${total.length} samples (${(total.length / TARGET_RATE).toFixed(1)}s)`);
   }
@@ -1003,6 +1016,12 @@ export class ChunkBasedTranscription {
         previousTranscript: text.slice(-300),
       }));
     }
+  }
+
+  /** Replaces the vocabulary for Whisper's prompt and the per-chunk correction, effective from the next chunk. */
+  setGlossary(glossary: string): void {
+    this.glossary = glossary;
+    if (this.ws?.readyState === WebSocket.OPEN) this.ws.send(JSON.stringify({ type: 'config', glossary }));
   }
 
   updateConfig(
