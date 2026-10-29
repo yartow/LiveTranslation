@@ -154,6 +154,15 @@ export default function SermonMode() {
     if (!isRecording) mic.clearActive();
   }, [isRecording, isPaused, levelStore, mic.clearActive]);
 
+  // The recording applies the gain it started with (useSermonIngest reads it once), so the level verdict
+  // and the gain chip follow that value and ignore edits made during the recording.
+  const [gainInUse, setGainInUse] = useState(settings.audioNormalizationGain);
+  useEffect(() => {
+    if (isRecording) return;
+    setGainInUse(settings.audioNormalizationGain);
+    levelStore.setGain(settings.audioNormalizationGain);
+  }, [isRecording, settings.audioNormalizationGain, levelStore]);
+
   // Session archive (server has ASR_DEBUG_DIR): a transcript snapshot every minute while recording.
   useTranscriptSnapshots(stateRef, isRecording, archive);
 
@@ -249,6 +258,7 @@ export default function SermonMode() {
         defaultLabel={mic.defaultLabel}
         hasLabels={mic.hasLabels}
         activeLabel={mic.activeLabel}
+        gain={gainInUse}
       />
       {restoreOffer && state.ids.length === 0 && (
         <RestoreBanner rows={restoreOffer.rows} savedAt={restoreOffer.savedAt} onRestore={handleRestore} onDiscard={handleDiscardRestore} />

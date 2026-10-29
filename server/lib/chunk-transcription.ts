@@ -14,6 +14,7 @@ import { existsSync, mkdirSync } from 'fs';
 import { randomUUID } from 'crypto';
 import ffmpeg from 'fluent-ffmpeg';
 import { Semaphore } from './semaphore';
+import { machineMonitor, type ChunkBacklog } from './machine-monitor';
 
 type TranslationProvider = 'openai' | 'claude' | 'ollama' | 'none';
 type TranscriptionEngine = 'openai' | 'mlx';
@@ -81,6 +82,17 @@ export interface ChunkSessionForTest {
 }
 
 const activeSessions = new Map<WsWebSocket, ChunkSession>();
+
+// When each chunk of a session was received and has not finished yet, for the machine monitor's backlog
+// figures. A WeakMap so ChunkSession (built by hand in tests) needs no extra field.
+const inFlightSince = new WeakMap<ChunkSession, Map<number, number>>();
+
+function backlogOf(session: ChunkSession, now = Date.now()): ChunkBacklog {
+  const since = inFlightSince.get(session);
+  let oldest: number | null = null;
+  since?.forEach((t) => { if (oldest === null || t < oldest) oldest = t; });
+  return { inFlight: session.pendingChunkPromises.size, waitingForEarlier: session.pendingResults.size, oldestMs: oldest === null ? null : now - oldest };
+}
 
 // Safety limit: reject chunk indexes that are unreasonably far ahead to
 // prevent unbounded memory growth in pendingResults.
@@ -343,13 +355,13 @@ async function transcribeChunk(
   if (session.engine === 'mlx') {
     sendDebug(session, `Chunk #${chunkIndex}: sending to local MLX Whisper (${session.sourceLanguage})…`);
     const initialPrompt = buildWhisperPrompt(effectiveGlossary(session.glossary) || undefined, session.sermonContext || undefined, session.previousTranscript || undefined, session.sourceLanguage);
-    const attempts: Array<{ usePrompt: boolean; diag: MlxDiag | null; uncertain?: UncertainWord[]; text?: string }> = [];
+    const attempts: Array<{ usePrompt: boolean; diag: MlxDiag | null; uncertain?: UncertainWord[]; text?: string; decodeSecs?: number }> = [];
     // The text that wins (first or retry attempt) decides which attempt's uncertain words apply.
     const uncertainByText = new Map<string, UncertainWord[] | undefined>();
     const guarded = await transcribeGuarded(
       async (usePrompt) => {
         const res = await transcribeWithMlxDetailed(audioPath, session.sourceLanguage, usePrompt ? initialPrompt : undefined, signal);
-        attempts.push({ usePrompt, diag: res.diag, uncertain: res.uncertain, text: res.text });
+        attempts.push({ usePrompt, diag: res.diag, uncertain: res.uncertain, text: res.text, decodeSecs: res.decodeSecs });
         uncertainByText.set(res.text, res.uncertain);
         return res.text;
       },
@@ -518,7 +530,16 @@ export async function processChunk(
   const archive = openChunkArchive(session, chunkIndex, audioBuffer, isWav);
 
   sendDebug(session, `Chunk #${chunkIndex}: received (${audioBuffer.length} bytes, ${isWav ? 'WAV' : 'webm'}) — waiting for slot`);
+  const receivedAt = Date.now();
+  let since = inFlightSince.get(session);
+  if (!since) inFlightSince.set(session, since = new Map());
+  since.set(chunkIndex, receivedAt);
   await semaphore.acquire();
+  // Time spent queued behind other chunks for the Whisper slot — the first thing to grow when the machine can't keep up.
+  archive.record.slotWaitMs = Date.now() - receivedAt;
+  // The session was aborted (drain timeout after 'stop', or the socket closed) before this chunk got an answer:
+  // the archive says so, otherwise it looks like a chunk Whisper heard nothing in.
+  const deliverAborted = (text = ''): void => { archive.record.aborted = true; deliverEmpty(session, chunkIndex, text); };
   try {
     if (isWav) {
       sendDebug(session, `Chunk #${chunkIndex}: writing WAV file…`);
@@ -529,11 +550,12 @@ export async function processChunk(
     }
     await simulateLatency();
 
-    if (signal.aborted) return deliverEmpty(session, chunkIndex);
+    if (signal.aborted) return deliverAborted();
 
     const { rawText: whisperText, uncertainWords } = await transcribeChunk(session, audioPath, audioBuffer, chunkIndex, isWav, archive, signal);
 
     if (!whisperText.trim()) {
+      if (signal.aborted) return deliverAborted(); // an aborted transcription comes back empty too
       sendDebug(session, `Chunk #${chunkIndex}: silent — no speech detected`);
       return deliverEmpty(session, chunkIndex);
     }
@@ -552,7 +574,7 @@ export async function processChunk(
       }));
     }
 
-    if (signal.aborted) return deliverEmpty(session, chunkIndex, rawText);
+    if (signal.aborted) return deliverAborted(rawText);
 
     let correctedText: string;
     let translatedText: string;
@@ -578,7 +600,7 @@ export async function processChunk(
     deliverInOrder(session);
 
   } catch (error) {
-    if (error instanceof Error && error.name === 'AbortError') return deliverEmpty(session, chunkIndex);
+    if (error instanceof Error && error.name === 'AbortError') return deliverAborted();
     const label = classifyError(error);
     console.error(`Chunk ${chunkIndex} error:`, error);
     sendDebug(session, `Chunk #${chunkIndex}: ✗ ${label}`);
@@ -592,6 +614,7 @@ export async function processChunk(
     deliverEmpty(session, chunkIndex);
   } finally {
     semaphore.release();
+    since.delete(chunkIndex);
     if (audioPath) await safeUnlink(audioPath);
     await archive.write();
   }
@@ -609,6 +632,7 @@ export function setupChunkTranscriptionWebSocket(wss: WebSocketServer): void {
           const message = JSON.parse(text);
 
           if (message.type === 'start') {
+            if (session) machineMonitor.unregister(session);
             session = {
               clientWs,
               targetLanguage: message.targetLanguage || 'nl',
@@ -634,6 +658,8 @@ export function setupChunkTranscriptionWebSocket(wss: WebSocketServer): void {
             };
             activeSessions.set(clientWs, session);
             if (session.archiveDir) {
+              const started = session;
+              machineMonitor.register(started, session.archiveDir, () => backlogOf(started));
               // API keys are never written to disk.
               const safe = { ...message, openaiApiKey: undefined, anthropicApiKey: undefined };
               appendFile(join(session.archiveDir, 'starts.jsonl'), JSON.stringify({ at: new Date().toISOString(), ...safe }) + '\n').catch(() => {});
@@ -671,6 +697,12 @@ export function setupChunkTranscriptionWebSocket(wss: WebSocketServer): void {
               appendFile(join(session.archiveDir, 'telemetry.jsonl'), message.rows.map((r: unknown) => JSON.stringify(r)).join('\n') + '\n').catch(() => {});
             }
 
+          } else if (message.type === 'perf') {
+            // The page's own load (long tasks, timer drift, heap), every few seconds — see client/src/lib/sermon/perf-monitor.ts.
+            if (session?.archiveDir && Array.isArray(message.rows) && message.rows.length) {
+              appendFile(join(session.archiveDir, 'browser.jsonl'), message.rows.map((r: unknown) => JSON.stringify(r)).join('\n') + '\n').catch(() => {});
+            }
+
           } else if (message.type === 'client_info') {
             if (session?.archiveDir) {
               writeFile(join(session.archiveDir, 'client.json'), JSON.stringify(message, null, 2)).catch(() => {});
@@ -698,6 +730,7 @@ export function setupChunkTranscriptionWebSocket(wss: WebSocketServer): void {
               const drainTimeout = setTimeout(() => stoppingSession.abortController.abort(), STOP_DRAIN_TIMEOUT_MS);
               Promise.allSettled(Array.from(stoppingSession.pendingChunkPromises)).then(() => {
                 clearTimeout(drainTimeout);
+                machineMonitor.unregister(stoppingSession); // after the drain, so the tail of the backlog is still logged
                 if (stoppingSession.clientWs.readyState === WsWebSocket.OPEN) {
                   stoppingSession.clientWs.send(JSON.stringify({ type: 'stop_complete' }));
                 }
@@ -777,7 +810,7 @@ export function setupChunkTranscriptionWebSocket(wss: WebSocketServer): void {
 
     clientWs.on('close', () => {
       console.log('Client disconnected');
-      if (session) session.abortController.abort();
+      if (session) { session.abortController.abort(); machineMonitor.unregister(session); }
       activeSessions.delete(clientWs);
       session = null;
     });

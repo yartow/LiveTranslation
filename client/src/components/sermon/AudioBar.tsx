@@ -3,7 +3,7 @@ import { Check, ChevronDown, Mic, Usb } from 'lucide-react';
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
 import { useMacInputVolume } from '@/hooks/useMacInputVolume';
 import { isBuiltInMic, type MicDevice } from '@/hooks/useMicDevices';
-import { dbToFraction, levelZone, type LevelStore, type LevelZone } from '@/lib/sermon/audio-level';
+import { dbToFraction, levelZone, type LevelStore, type LevelZone, type SpeechVerdict } from '@/lib/sermon/audio-level';
 import type { PipelineStats } from '@/lib/sermon/pipeline-stats';
 import PipelineHealth from './PipelineHealth';
 
@@ -42,6 +42,34 @@ function LevelMeter({ store }: { store: LevelStore }) {
 /** No sound at all for this long while recording (a receiver whose transmitter is off) reads as a dead microphone. */
 const NO_SOUND_MS = 20_000;
 
+// What to tell the operator about the level, in words (colour alone is not enough on a projector
+// or for colour-blind eyes). `title` says what it was measured on and what to do.
+const VERDICT_CHIP: Record<SpeechVerdict, { text: string; title: string; className: string }> = {
+  'no-speech': {
+    text: 'No speech heard — check the microphone',
+    title: 'Only background noise in the last 10 s. If someone is speaking: is the transmitter on, the right input selected, and the Input volume up?',
+    className: 'text-amber-600 dark:text-amber-400',
+  },
+  'too-quiet': {
+    text: 'Too quiet — raise the microphone level',
+    title: 'Speech peaks are below -20 dBFS after gain, which makes Whisper guess and invent text. Raise Input volume (or the transmitter/receiver gain).',
+    className: 'text-amber-600 dark:text-amber-400',
+  },
+  ok: {
+    text: 'Level good',
+    title: 'Speech peaks sit in the range Whisper handles best (-20 to -3 dBFS after gain).',
+    className: 'text-green-600 dark:text-green-400',
+  },
+  'too-loud': {
+    text: 'Too loud — lower the microphone level',
+    title: 'Speech peaks are above -3 dBFS after gain, or the input is clipping. Lower Input volume (or the transmitter/receiver gain).',
+    className: 'text-destructive font-semibold',
+  },
+};
+
+/** "0.5" not "0.50", "2" not "2.0". */
+const formatGain = (gain: number) => String(Math.round(gain * 100) / 100);
+
 interface AudioBarProps {
   levelStore: LevelStore;
   pipelineStats: PipelineStats;
@@ -57,13 +85,15 @@ interface AudioBarProps {
   hasLabels: boolean;
   /** Device the running recording really opened; null when not recording. */
   activeLabel: string | null;
+  /** Normalization gain the recording applies (settings.audioNormalizationGain at its start). */
+  gain: number;
 }
 
 // Second toolbar row for sermon mode: which microphone is in use (the thing that
 // went wrong on the day a service was recorded from the wrong input), how loud
 // the signal is, and the macOS input volume as a number.
 export default function AudioBar({
-  levelStore, pipelineStats, isRecording, isPaused, micDeviceId, onChangeMicDeviceId, devices, defaultLabel, hasLabels, activeLabel,
+  levelStore, pipelineStats, isRecording, isPaused, micDeviceId, onChangeMicDeviceId, devices, defaultLabel, hasLabels, activeLabel, gain,
 }: AudioBarProps) {
   const [open, setOpen] = useState(false);
   const { state: volume, setVolume } = useMacInputVolume();
@@ -77,6 +107,16 @@ export default function AudioBar({
     if (!listening) return;
     levelStore.restartSilenceClock(); // also restarts after a switch to another microphone (activeLabel)
     const timer = setInterval(() => setNoSound(levelStore.silentForMs() >= NO_SOUND_MS), 1000);
+    return () => clearInterval(timer);
+  }, [listening, activeLabel, levelStore]);
+
+  // Same cadence, same reason. Declared after the effect above: that one restarts the store's
+  // measuring window (also on a microphone switch), this one then starts from "still listening".
+  const [verdict, setVerdict] = useState<SpeechVerdict | null>(null);
+  useEffect(() => {
+    setVerdict(null);
+    if (!listening) return;
+    const timer = setInterval(() => setVerdict(levelStore.speechVerdict()), 1000);
     return () => clearInterval(timer);
   }, [listening, activeLabel, levelStore]);
 
@@ -146,6 +186,27 @@ export default function AudioBar({
       )}
 
       <LevelMeter store={levelStore} />
+
+      {/* "No sound at all" above is the more specific message, so it replaces the verdict. */}
+      {listening && verdict && !noSound && (
+        <span
+          className={`text-xs font-medium ${VERDICT_CHIP[verdict].className}`}
+          role="status"
+          title={VERDICT_CHIP[verdict].title}
+          data-testid="level-verdict"
+        >
+          {VERDICT_CHIP[verdict].text}
+        </span>
+      )}
+      {Math.abs(gain - 1) > 0.05 && (
+        <span
+          className={`text-xs ${gain < 1 ? 'font-medium text-amber-600 dark:text-amber-400' : 'text-muted-foreground'}`}
+          title={`Settings → Microphone → Normalization gain. ${gain < 1 ? 'Below 1× this makes the signal Whisper hears quieter than the meter shows.' : 'Amplifies the signal before Whisper.'} Applies from the next recording.`}
+          data-testid="gain-chip"
+        >
+          Gain {formatGain(gain)}×
+        </span>
+      )}
 
       <PipelineHealth stats={pipelineStats} />
 

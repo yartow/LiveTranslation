@@ -271,4 +271,45 @@ describe('processChunk: Whisper input', () => {
       rmSync(archiveDir, { recursive: true, force: true });
     }
   });
+
+  describe('archive: where the time went, and whether the chunk was cut off', () => {
+    const withArchive = async (run: (archiveDir: string) => Promise<void>) => {
+      const archiveDir = mkdtempSync(join(tmpdir(), 'chunk-archive-'));
+      try { await run(archiveDir); } finally { rmSync(archiveDir, { recursive: true, force: true }); }
+    };
+    const record = (archiveDir: string, idx = 0) => JSON.parse(readFileSync(join(archiveDir, `${idx}.json`), 'utf8'));
+
+    it('records how long the chunk waited for the Whisper slot and the worker\'s own decode time', () => withArchive(async (archiveDir) => {
+      m.transcribeWithMlxDetailed.mockResolvedValue({ text: 'Goedemorgen allemaal', diag: null, decodeSecs: 1.8 });
+      const { session } = makeSession({ engine: 'mlx', archiveDir });
+      await processChunk(session, WAV, 0, true);
+      const r = record(archiveDir);
+      expect(r.slotWaitMs).toBeGreaterThanOrEqual(0);
+      expect(r.slotWaitMs).toBeLessThan(2000);
+      expect(r.attempts[0].decodeSecs).toBe(1.8);
+      expect(r.aborted).toBeUndefined();
+    }));
+
+    it('marks a chunk the session gave up on as aborted, so it is not mistaken for silence', () => withArchive(async (archiveDir) => {
+      const { session } = makeSession({ engine: 'mlx', archiveDir });
+      session.abortController.abort();
+      await processChunk(session, WAV, 0, true);
+      expect(record(archiveDir)).toMatchObject({ aborted: true });
+      expect(m.transcribeWithMlxDetailed).not.toHaveBeenCalled();
+    }));
+
+    it('marks a chunk aborted while Whisper was running (an aborted transcription answers with empty text)', () => withArchive(async (archiveDir) => {
+      const { session } = makeSession({ engine: 'mlx', archiveDir });
+      m.transcribeWithMlxDetailed.mockImplementation(async () => { session.abortController.abort(); return { text: '', diag: null }; });
+      await processChunk(session, WAV, 0, true);
+      expect(record(archiveDir)).toMatchObject({ aborted: true, rawText: '' });
+    }));
+
+    it('does not mark a chunk Whisper genuinely heard nothing in', () => withArchive(async (archiveDir) => {
+      m.transcribeWithMlxDetailed.mockResolvedValue({ text: '', diag: null, decodeSecs: 0.4 });
+      const { session } = makeSession({ engine: 'mlx', archiveDir });
+      await processChunk(session, WAV, 0, true);
+      expect(record(archiveDir).aborted).toBeUndefined();
+    }));
+  });
 });

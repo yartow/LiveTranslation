@@ -5,6 +5,7 @@
 // stdin/stdout: one request in, one {id, text} or {id, error} response out,
 // correlated by id. See that file for the exact protocol.
 import { spawn, type ChildProcessWithoutNullStreams } from 'child_process';
+import { setPriority } from 'os';
 import { createInterface } from 'readline';
 import { join } from 'path';
 import { existsSync } from 'fs';
@@ -43,6 +44,16 @@ const STARTUP_TIMEOUT_MS = 10 * 60_000;
 const RESTART_BACKOFF_MS = 2_000;
 const MAX_RESTART_BACKOFF_MS = 60_000;
 const MAX_CONSECUTIVE_RESTART_FAILURES = 10;
+// The worker runs at a lower CPU priority than the browser, the window server and text expanders such as
+// Typinator, so a long decode cannot starve them (Whisper itself runs mostly on the GPU). MLX_NICE=0 turns it off.
+const DEFAULT_MLX_NICE = 10;
+
+/** MLX_NICE as a nice value 0-19; anything unreadable falls back to the default. 0 = leave the priority alone. */
+export function parseMlxNice(raw: string | undefined): number {
+  if (raw === undefined || raw.trim() === '') return DEFAULT_MLX_NICE;
+  const n = Number(raw);
+  return Number.isFinite(n) ? Math.max(0, Math.min(19, Math.round(n))) : DEFAULT_MLX_NICE;
+}
 
 export interface MlxSegmentDiag {
   start: number;
@@ -51,6 +62,8 @@ export interface MlxSegmentDiag {
   compression_ratio: number;
   avg_logprob: number;
   no_speech_prob: number;
+  /** Decoding temperature; above 0 means Whisper fell back and decoded this window again (slow). Absent from older workers. */
+  temperature?: number;
   /** Why our post-filter dropped it, or null when kept. */
   dropped: string | null;
 }
@@ -68,6 +81,20 @@ export interface MlxResult {
   diag: MlxDiag | null;
   /** Words Whisper was unsure about (probability < 0.6), most doubtful first — see low-confidence.ts. */
   uncertain?: UncertainWord[];
+  /** Wall time of the Whisper decode alone, in seconds (the worker's own clock, so no queueing in it). */
+  decodeSecs?: number;
+}
+
+/** What the monitor logs about the sidecar. */
+export interface MlxWorkerStats {
+  pid: number | null;
+  ready: boolean;
+  /** A request is with the worker right now (including one we already gave up on). */
+  busy: boolean;
+  /** Requests waiting for the worker. */
+  queued: number;
+  /** Times the process was started, so 2+ means it was restarted. */
+  spawns: number;
 }
 
 /** Decode overrides forwarded to the worker (see DEFAULT_OPTS in mlx_worker.py). null disables a check. */
@@ -116,6 +143,11 @@ class MlxWorkerManager {
   private lastSpawnError: string | null = null;
   private restarting = false;
   private consecutiveRestartFailures = 0;
+  private spawns = 0;
+
+  stats(): MlxWorkerStats {
+    return { pid: this.proc?.pid ?? null, ready: this.ready, busy: this.busyId !== null, queued: this.queue.length, spawns: this.spawns };
+  }
 
   private pythonBin(): string {
     return process.env.MLX_PYTHON || 'python3';
@@ -135,6 +167,8 @@ class MlxWorkerManager {
 
     this.proc = proc;
     this.ready = false;
+    this.spawns++;
+    this.lowerPriority(proc);
 
     const rl = createInterface({ input: proc.stdout });
     rl.on('line', (line) => this.handleLine(line));
@@ -159,6 +193,17 @@ class MlxWorkerManager {
       this.failAllPending(new Error('MLX worker exited unexpectedly'));
       if (!this.shuttingDown) this.scheduleRestart();
     });
+  }
+
+  private lowerPriority(proc: ChildProcessWithoutNullStreams): void {
+    const nice = parseMlxNice(process.env.MLX_NICE);
+    if (nice === 0 || proc.pid === undefined) return;
+    try {
+      setPriority(proc.pid, nice);
+    } catch (err) {
+      // Not worth failing a service over.
+      console.warn(`MLX worker: could not lower its priority to nice ${nice}:`, err instanceof Error ? err.message : err);
+    }
   }
 
   private scheduleRestart(): void {
@@ -205,7 +250,12 @@ class MlxWorkerManager {
       if (typeof msg.error === 'string') {
         pending.reject(new Error(msg.error));
       } else {
-        pending.resolve({ text: typeof msg.text === 'string' ? msg.text : '', diag: msg.diag ?? null, uncertain: parseUncertain(msg.uncertain) });
+        pending.resolve({
+          text: typeof msg.text === 'string' ? msg.text : '',
+          diag: msg.diag ?? null,
+          uncertain: parseUncertain(msg.uncertain),
+          decodeSecs: typeof msg.decode_secs === 'number' ? msg.decode_secs : undefined,
+        });
       }
     }
     this.releaseWorker(msg.id);
@@ -380,6 +430,11 @@ export async function transcribeWithMlxDetailed(
   opts?: MlxDecodeOpts,
 ): Promise<MlxResult> {
   return manager.transcribe(audioFilePath, language, initialPrompt, signal, opts);
+}
+
+/** Snapshot of the sidecar for the machine monitor (server/lib/machine-monitor.ts). */
+export function getMlxWorkerStats(): MlxWorkerStats {
+  return manager.stats();
 }
 
 /** Stops the worker without restarting it — tests only. */

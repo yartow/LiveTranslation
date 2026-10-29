@@ -1,4 +1,5 @@
 import { createSerialRunner } from './serial-runner';
+import { PerfMonitor } from './sermon/perf-monitor';
 import type { TranscriptionBackend } from './transcription-backend';
 
 export interface ChunkTranscriptionEvents {
@@ -535,6 +536,8 @@ export class ChunkBasedTranscription implements TranscriptionBackend {
   private samplesPushed = 0;
   private telemetryRows: Array<Record<string, number | boolean>> = [];
   private lastTelemetryFlushAt = 0;
+  // The page's own load (long tasks, timer lateness), sent as `perf` rows while the archive is on.
+  private perf: PerfMonitor | null = null;
 
   // Resolved when the server's 'stop_complete' message arrives — see stop().
   private stopCompleteResolve: (() => void) | null = null;
@@ -600,6 +603,8 @@ export class ChunkBasedTranscription implements TranscriptionBackend {
     this.audioQueue = [];
     this.previousTranscript = '';
     this.archive = false;
+    this.perf?.stop();
+    this.perf = null;
     this.archiveId = Date.now().toString(36);
     this.samplesPushed = 0;
     this.telemetryRows = [];
@@ -623,7 +628,10 @@ export class ChunkBasedTranscription implements TranscriptionBackend {
           if (message.type === 'ready') {
             this.events.onDebug?.('Server acknowledged — requesting microphone…');
             this.archive = !!message.archive;
-            if (this.archive) this.events.onDebug?.('Session archive ON (server has ASR_DEBUG_DIR) — recording all audio + level timeline');
+            if (this.archive) {
+              this.events.onDebug?.('Session archive ON (server has ASR_DEBUG_DIR) — recording all audio + level timeline');
+              this.startPerfMonitor();
+            }
             this.ws = ws;
             this.attachWsHandlers(ws);
             this.startAudioCapture()
@@ -1000,6 +1008,14 @@ export class ChunkBasedTranscription implements TranscriptionBackend {
     if (Date.now() - this.lastTelemetryFlushAt >= 2000) this.flushTelemetry();
   }
 
+  private startPerfMonitor(): void {
+    this.perf = new PerfMonitor((rows) => {
+      // Dropped while the socket is down, like telemetry: the audio frames are what must survive a reconnect.
+      if (this.ws?.readyState === WebSocket.OPEN) this.ws.send(JSON.stringify({ type: 'perf', rows }));
+    });
+    this.perf.start();
+  }
+
   private flushTelemetry(): void {
     this.lastTelemetryFlushAt = Date.now();
     if (!this.telemetryRows.length) return;
@@ -1209,6 +1225,8 @@ export class ChunkBasedTranscription implements TranscriptionBackend {
     // Flush remaining buffered audio as the final chunk
     if (this.assembler.sampleCount >= 100) this.commitChunk('stop');
     if (this.archive) this.flushTelemetry();
+    this.perf?.stop();
+    this.perf = null;
 
     this.processor?.disconnect();
     this.source?.disconnect();

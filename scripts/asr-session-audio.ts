@@ -11,6 +11,10 @@
 
 import { existsSync, readdirSync, readFileSync, writeFileSync } from 'fs';
 import { join } from 'path';
+import {
+  summarizeLoad, formatLoadTable, recordingStartWall,
+  type BrowserRow, type ChunkTiming, type MachineRow, type TelemetryRow,
+} from './lib/load-summary';
 
 const RATE = 16_000;
 
@@ -32,6 +36,34 @@ function readWavSamples(path: string): Int16Array {
 
 function readJson(path: string): Record<string, any> | null {
   try { return JSON.parse(readFileSync(path, 'utf8')); } catch { return null; }
+}
+
+/** One JSON object per line; a torn last line (the page was closed mid-write) is skipped, not fatal. */
+function readJsonl<T>(path: string): T[] {
+  if (!existsSync(path)) return [];
+  const rows: T[] = [];
+  for (const line of readFileSync(path, 'utf8').split('\n')) {
+    if (!line.trim()) continue;
+    try { rows.push(JSON.parse(line)); } catch { /* skip */ }
+  }
+  return rows;
+}
+
+/** Where the time went for one chunk, from its .json (fields added with the load logs; absent in older sessions). */
+function chunkTiming(p: Piece): ChunkTiming {
+  const info = p.info ?? {};
+  const attempts: any[] = info.attempts ?? [];
+  const decode = attempts.map(a => a.decodeSecs).filter((x: unknown): x is number => typeof x === 'number');
+  const received = Date.parse(info.receivedAt ?? '');
+  const done = Date.parse(info.deliveredAt ?? info.transcribedAt ?? '');
+  return {
+    startSecs: p.startSample / RATE,
+    decodeSecs: decode.length ? decode.reduce((a, b) => a + b, 0) : null,
+    slotWaitSecs: typeof info.slotWaitMs === 'number' ? info.slotWaitMs / 1000 : null,
+    lagSecs: Number.isFinite(received) && Number.isFinite(done) ? (done - received) / 1000 : null,
+    fallbackSegments: attempts.flatMap(a => a.diag?.segments ?? []).filter((x: any) => (x.temperature ?? 0) > 0).length,
+    aborted: info.aborted === true,
+  };
 }
 
 function wavBuffer(samples: Int16Array): Buffer {
@@ -96,11 +128,16 @@ function main() {
       const attempts: any[] = p.info?.attempts ?? [];
       const dropped = attempts.flatMap(a => a.diag?.segments ?? []).filter((x: any) => x.dropped);
       const uncovered = attempts.flatMap(a => a.diag?.uncovered ?? []);
+      const timing = chunkTiming(p);
       const flags = [
         p.info?.guardRetried ? 'guard-retried' : '',
         dropped.length ? `dropped-segments=${dropped.length}` : '',
         uncovered.length ? `uncovered=${uncovered.map((u: number[]) => `${u[0]}-${u[1]}s`).join(',')}` : '',
-        !text.trim() ? 'NO-TEXT' : '',
+        // Whisper heard nothing, or the server gave up on the chunk (stop with a backlog): not the same thing.
+        !text.trim() ? (p.info?.aborted ? 'ABORTED-NOT-TRANSCRIBED' : 'NO-TEXT') : '',
+        timing.lagSecs !== null && timing.lagSecs >= 10 ? `late=${Math.round(timing.lagSecs)}s` : '',
+        timing.decodeSecs !== null && timing.decodeSecs >= 8 ? `decode=${timing.decodeSecs.toFixed(1)}s` : '',
+        timing.slotWaitSecs !== null && timing.slotWaitSecs >= 10 ? `slot-wait=${Math.round(timing.slotWaitSecs)}s` : '',
       ].filter(Boolean).join(' ');
       lines.push(`${range} CHUNK ${p.label.padEnd(4)} ${secs}s  cut=${p.meta.cut ?? '?'} ${(words / (p.samples.length / RATE)).toFixed(1)}w/s ${flags}  "${text.slice(0, 70)}"`);
       for (const d of dropped) lines.push(`             └ dropped ${d.start}-${d.end}s (${d.dropped}): "${String(d.text).slice(0, 60)}"`);
@@ -113,7 +150,24 @@ function main() {
       `${pieces.filter(p => p.kind === 'discarded').length} discarded by the gate (${(discardedSamples / RATE).toFixed(1)}s), ${(gapSamples / RATE).toFixed(1)}s gaps`,
     '',
   ];
-  const out = [...summary, ...lines].join('\n');
+  // Was the machine (or the page) overloaded? Needs machine.jsonl / browser.jsonl, written by sessions recorded
+  // after the load logs were added.
+  const machine = readJsonl<MachineRow>(join(dir, 'machine.jsonl'));
+  const browser = readJsonl<BrowserRow>(join(dir, 'browser.jsonl'));
+  const telemetry = readJsonl<TelemetryRow>(join(dir, 'telemetry.jsonl'));
+  const startWall = recordingStartWall(telemetry, readJson(join(dir, 'client.json'))?.startedAt ?? null);
+  const load: string[] = [''];
+  if ((machine.length || browser.length) && startWall !== null) {
+    load.push('Load per minute (machine.jsonl = this Mac, browser.jsonl = the page; "late" = chunk received -> delivered):');
+    load.push(...formatLoadTable(summarizeLoad({
+      startWall, machine, browser, telemetry,
+      chunks: pieces.filter(p => p.kind === 'chunk').map(chunkTiming),
+    })));
+  } else {
+    load.push('(no machine.jsonl / browser.jsonl in this session: it was recorded before the load logs existed, so there is no CPU, memory or power data)');
+  }
+
+  const out = [...summary, ...lines, ...load].join('\n');
   writeFileSync(join(dir, 'timeline.txt'), out + '\n');
   writeFileSync(join(dir, 'full.wav'), wavBuffer(full));
   console.log(out);

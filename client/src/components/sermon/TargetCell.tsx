@@ -3,6 +3,7 @@ import { BookOpen, Lock } from 'lucide-react';
 import type { Segment } from '@/lib/sermon/segment-model';
 import type { SegmentAction } from '@/lib/sermon/segment-store';
 import { isNextRowChord } from '@/lib/sermon/hotkeys';
+import { shouldSyncCellDom } from '@/lib/sermon/cell-sync';
 import type { CellKind } from '@/lib/sermon/focus-cell';
 
 interface TargetCellProps {
@@ -33,6 +34,9 @@ export default function TargetCell({ segment, dispatch, activeSegmentIdRef, onEn
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   // Latest typed value not yet dispatched into the store.
   const pendingRef = useRef<string | null>(null);
+  // What this cell last dispatched. The store echoes it back; that echo must not be written over the
+  // textarea (see cell-sync.ts). Null once the store holds anything else.
+  const lastCommittedRef = useRef<string | null>(null);
   // Always the latest segment, so the commit callbacks stay stable (the unmount flush must not re-run per render).
   const segmentRef = useRef(segment);
   segmentRef.current = segment;
@@ -45,26 +49,41 @@ export default function TargetCell({ segment, dispatch, activeSegmentIdRef, onEn
   }, []);
 
   // Push store text into the DOM, unless the translator is mid-typing (their next
-  // commit replaces it anyway). Layout effect: the DOM must be current before the
+  // commit replaces it anyway) or the store text is just our own commit coming back
+  // (shouldSyncCellDom). Layout effect: the DOM must be current before the
   // browser delivers the next keystroke.
   useLayoutEffect(() => {
     const el = ref.current;
     if (!el) return;
-    if (el.value !== segment.translatedText && !(document.activeElement === el && pendingRef.current !== null)) {
+    const focused = document.activeElement === el;
+    if (shouldSyncCellDom({
+      domValue: el.value, storeValue: segment.translatedText, focused,
+      hasPending: pendingRef.current !== null, lastCommitted: lastCommittedRef.current,
+    })) {
       const { selectionStart, selectionEnd } = el;
       el.value = segment.translatedText;
-      if (document.activeElement === el) el.setSelectionRange(selectionStart, selectionEnd);
+      if (focused) el.setSelectionRange(selectionStart, selectionEnd);
     }
+    if (segment.translatedText !== lastCommittedRef.current) lastCommittedRef.current = null;
     autoGrow();
   }, [segment.translatedText, autoGrow]);
 
   const commitPending = useCallback(() => {
     if (debounceRef.current) { clearTimeout(debounceRef.current); debounceRef.current = null; }
-    const value = pendingRef.current;
+    const typed = pendingRef.current;
     pendingRef.current = null;
+    // Read the textarea, not just the last `input` value: a text expander (Typinator) can put its
+    // expansion in without an `input` event, and committing the stale value would then make the
+    // store's echo overwrite it. After unmount there is no element, so the typed value is all there is.
+    const el = ref.current;
+    const value = el ? el.value : typed;
     if (value === null) return;
+    if (typed !== null && value !== typed) {
+      console.warn(`[TargetCell] ${segmentRef.current.id}: textarea changed without an input event (typed ${JSON.stringify(typed.slice(-40))}, now ${JSON.stringify(value.slice(-40))}) — text expander?`);
+    }
     const seg = segmentRef.current;
     if (value === seg.translatedText) return;
+    lastCommittedRef.current = value;
     dispatch({ type: 'SET_TARGET_MANUAL', id: seg.id, translatedText: value, now: Date.now() });
   }, [dispatch]);
 
