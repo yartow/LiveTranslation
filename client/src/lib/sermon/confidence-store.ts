@@ -8,12 +8,11 @@
 // long service cannot make everything look doubtful. DOM-free; the React side reads it through
 // useSyncExternalStore (ConfidenceChips.tsx), so a new chunk never re-renders the page itself.
 
+import { norm, stripPunct, isWordChar } from './word-text';
+
 const MAX_WORDS = 150;
 const MAX_CHIPS_PER_CELL = 6;
 
-const norm = (w: string): string => w.normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase().replace(/[^a-z0-9]/g, '');
-const stripPunct = (w: string): string => w.replace(/^[^A-Za-z0-9À-ɏ]+|[^A-Za-z0-9À-ɏ]+$/g, '');
-const isWordChar = (ch: string | undefined): boolean => !!ch && /[A-Za-z0-9À-ɏ]/.test(ch);
 
 /** Index of `word` as a whole word in `text` (case-insensitive), or -1. */
 export function findWordIndex(text: string, word: string): number {

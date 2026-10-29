@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import {
   initState, segmentReducer, selectDirtyIds, selectTranslatable, selectOrdered, selectContext, canWriteLive, READING_GRACE_SEGMENTS,
-  selectPublishableLines, selectNextId, restoredState, selectCorrectionExamples,
+  selectPublishableLines, selectNextId, restoredState, mergeRestored, selectCorrectionExamples,
   type SegmentStoreState,
 } from '../../client/src/lib/sermon/segment-store.js';
 import { hashText } from '../../client/src/lib/sermon/segment-model.js';
@@ -828,5 +828,28 @@ describe('selectCorrectionExamples', () => {
     expect(long.source).toHaveLength(400);
     expect(long.machine).toHaveLength(400);
     expect(long.human).toHaveLength(400);
+  });
+});
+
+describe('mergeRestored (restore after recording already started)', () => {
+  it('puts the restored rows first, keeps the current rows and session, and renumbers', () => {
+    const restored = restoredState(seedTranslated(2), 'ignored')!;
+    let current = initState('now');
+    current = segmentReducer(current, { type: 'APPEND_SEGMENT', id: 'live-a', sourceText: 'Nieuw.', startTime: 0, endTime: 1, now: 5 });
+    const merged = mergeRestored(restored, current);
+    expect(merged.ids).toEqual([...restored.ids, 'live-a']);
+    expect(merged.ids.map(id => merged.byId[id].index)).toEqual([0, 1, 2]);
+    expect(merged.sessionId).toBe('now');
+    expect(merged.byId['live-a'].sourceText).toBe('Nieuw.');
+    expect(merged.nextSeq).toBeGreaterThanOrEqual(3);
+  });
+  it('keeps the current row when an id exists on both sides', () => {
+    const restored = restoredState(seedTranslated(1), 'x')!;
+    const id = restored.ids[0];
+    let current = initState('now');
+    current = segmentReducer(current, { type: 'APPEND_SEGMENT', id, sourceText: 'Huidig.', startTime: 0, endTime: 1, now: 5 });
+    const merged = mergeRestored(restored, current);
+    expect(merged.ids).toEqual([id]);
+    expect(merged.byId[id].sourceText).toBe('Huidig.');
   });
 });

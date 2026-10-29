@@ -16,8 +16,20 @@ const STORE = 'sessions';
 const AUTOSAVE_STORE = 'autosave';
 const MAX_AGE_MS = 30 * 24 * 60 * 60 * 1000;
 
+// One connection for the page: opening a new one for every 3 s autosave is wasteful, and a connection that is
+// never closed blocks a newer version of the page from upgrading the database (see onversionchange below).
+let dbPromise: Promise<IDBDatabase> | null = null;
+
 function openDB(): Promise<IDBDatabase> {
+  if (!dbPromise) {
+    dbPromise = openDBFresh().catch((err) => { dbPromise = null; throw err; });
+  }
+  return dbPromise;
+}
+
+function openDBFresh(): Promise<IDBDatabase> {
   return new Promise((resolve, reject) => {
+    let failed = false;
     const req = indexedDB.open(DB_NAME, DB_VERSION);
     req.onupgradeneeded = () => {
       const db = req.result;
@@ -30,7 +42,20 @@ function openDB(): Promise<IDBDatabase> {
         db.createObjectStore(AUTOSAVE_STORE, { keyPath: 'id' });
       }
     };
-    req.onsuccess = () => resolve(req.result);
+    // Another tab (an older build of the page) still holds the previous version open: the upgrade waits for it
+    // and would hang every caller. Fail instead, so autosave and history report the problem; close the late
+    // connection if the old tab lets go afterwards.
+    req.onblocked = () => {
+      failed = true;
+      reject(new Error('The session database is in use by another tab of this app — close the other tabs and reload.'));
+    };
+    req.onsuccess = () => {
+      const db = req.result;
+      if (failed) { db.close(); return; }
+      // A newer page wants to upgrade: step aside so it is not blocked by this one.
+      db.onversionchange = () => { db.close(); dbPromise = null; };
+      resolve(db);
+    };
     req.onerror = () => reject(req.error);
   });
 }

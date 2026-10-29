@@ -7,6 +7,8 @@
 //
 // Pure and DOM-free so it is unit-testable.
 
+import { norm, stripPunct } from './word-text';
+
 export interface SuggestionSegment {
   id: string;
   asrText: string;
@@ -36,9 +38,6 @@ const MAX_PHRASE_WORDS = 3;
 /** Longest diff table worth building: segments are a few sentences; a pasted wall of text is skipped. */
 const MAX_CELLS = 250_000;
 
-const norm = (w: string): string => w.normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase().replace(/[^a-z0-9]/g, '');
-// Latin letters (incl. accents, \u00C0-\u024F) and digits count as part of a word; everything else at its edges is punctuation.
-const stripPunct = (w: string): string => w.replace(/^[^A-Za-z0-9\u00C0-\u024F]+|[^A-Za-z0-9\u00C0-\u024F]+$/g, '');
 
 function words(text: string): Word[] {
   const out: Word[] = [];
@@ -120,6 +119,20 @@ export function segmentSubstitutions(asrText: string, sourceText: string): Subst
   return out;
 }
 
+// The page recomputes the suggestions on every store update (every live chunk and keystroke), but a row's diff
+// only changes when its asr/source text does — remember the answers (bounded, dropped wholesale when full).
+const SUBSTITUTION_CACHE_MAX = 2000;
+const substitutionCache = new Map<string, Substitution[]>();
+function cachedSubstitutions(asrText: string, sourceText: string): Substitution[] {
+  const key = `${asrText}\u0000${sourceText}`;
+  let hit = substitutionCache.get(key);
+  if (!hit) {
+    if (substitutionCache.size >= SUBSTITUTION_CACHE_MAX) substitutionCache.clear();
+    substitutionCache.set(key, hit = segmentSubstitutions(asrText, sourceText));
+  }
+  return hit;
+}
+
 /**
  * Suggestions across all rows the operator touched, most frequent first. A suggestion needs two sightings,
  * or one that looks like a name. `dismissed` keys are left out.
@@ -129,7 +142,7 @@ export function editSuggestions(segments: SuggestionSegment[], dismissed: Readon
   for (const seg of segments) {
     if (seg.asrText === seg.sourceText) continue;
     const seenHere = new Set<string>();
-    for (const sub of segmentSubstitutions(seg.asrText, seg.sourceText)) {
+    for (const sub of cachedSubstitutions(seg.asrText, seg.sourceText)) {
       if (dismissed.has(sub.key) || seenHere.has(sub.key)) continue; // one sighting per row, however often repeated inside it
       seenHere.add(sub.key);
       const e = byKey.get(sub.key);

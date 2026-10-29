@@ -13,7 +13,7 @@ import { useSettings } from '@/hooks/useSettings';
 import { useDevKeyAutofill } from '@/hooks/useDevKeyAutofill';
 import { nextSegmentId, selectDirtyIds } from '@/lib/sermon/segment-store';
 import { focusSegmentCell, type CellKind } from '@/lib/sermon/focus-cell';
-import { glossaryWithService } from '@/lib/sermon/service-context';
+import { glossaryWithServiceParts } from '@/lib/sermon/service-context';
 import type { EditSuggestion } from '@/lib/sermon/edit-suggestions';
 import { RecordingStoppedError } from '@/lib/chunk-based-transcription';
 import { useTranslationQueue } from '@/hooks/useTranslationQueue';
@@ -98,6 +98,10 @@ export default function SermonMode() {
     ingestRef,
   });
 
+  const serviceGlossary = useMemo(
+    () => glossaryWithServiceParts(settings.theologicalGlossary, settings.sermonServiceContext),
+    [settings.theologicalGlossary, settings.sermonServiceContext],
+  );
   const { isRecording, isProcessing, isPaused, start, stop, pause, resume, switchMic } = useSermonIngest({
     dispatch: applyAction,
     stateRef,
@@ -111,7 +115,8 @@ export default function SermonMode() {
     anthropicApiKey: settings.anthropicApiKey,
     ollamaBaseUrl: settings.ollamaBaseUrl,
     ollamaModel: settings.ollamaModel,
-    glossary: glossaryWithService(settings.theologicalGlossary, settings.sermonServiceContext),
+    glossary: serviceGlossary.glossary,
+    glossaryPriorityLines: serviceGlossary.priorityLines,
     debugMode: settings.debugMode,
     normalizationGain: settings.audioNormalizationGain,
     rawAudioCapture: settings.rawAudioCapture,
@@ -173,9 +178,10 @@ export default function SermonMode() {
   const { suggestions, dismissSuggestion } = useEditSuggestions(state);
   const [suggestionBeingAdded, setSuggestionBeingAdded] = useState<EditSuggestion | null>(null);
   // The dialog takes a row selection; a suggestion has no row, so it gets an empty segmentId.
-  const suggestionSelection: SourceSelection | null = suggestionBeingAdded
+  // Memoized: the dialog resets its form whenever this object changes, and the page re-renders on every store update.
+  const suggestionSelection = useMemo<SourceSelection | null>(() => (suggestionBeingAdded
     ? { segmentId: '', start: 0, end: 0, text: suggestionBeingAdded.heard, x: 0, y: 0 }
-    : null;
+    : null), [suggestionBeingAdded]);
 
   const handleGlossarySaved = useCallback((r: GlossarySaved) => {
     setGlossarySelection(null);
@@ -257,8 +263,8 @@ export default function SermonMode() {
         activeLabel={mic.activeLabel}
         gain={gainInUse}
       />
-      {restoreOffer && state.ids.length === 0 && (
-        <RestoreBanner rows={restoreOffer.rows} savedAt={restoreOffer.savedAt} onRestore={handleRestore} onDiscard={handleDiscardRestore} />
+      {restoreOffer && (
+        <RestoreBanner rows={restoreOffer.rows} savedAt={restoreOffer.savedAt} hasCurrentRows={state.ids.length > 0} onRestore={handleRestore} onDiscard={handleDiscardRestore} />
       )}
       {micAlert && (
         <MicAlertBanner

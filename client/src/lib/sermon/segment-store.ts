@@ -126,6 +126,24 @@ export function restoredState(saved: unknown, sessionId: string): SegmentStoreSt
   return { ids, byId, nextSeq: Math.max(typeof s.nextSeq === 'number' ? s.nextSeq : 0, ids.length), sessionId, activeReading: null };
 }
 
+/**
+ * Restore on top of a grid that already has rows (recording started before the offer was answered): the
+ * restored rows go first, the page's own rows after them, so neither session is lost. The current page's
+ * session id, open reading and row ids are kept (live rows may still be bound to them).
+ */
+export function mergeRestored(restored: SegmentStoreState, current: SegmentStoreState): SegmentStoreState {
+  const ids: string[] = [];
+  const byId: Record<string, Segment> = {};
+  for (const id of [...restored.ids, ...current.ids]) {
+    if (byId[id]) continue; // an id present in both: the current row wins below
+    ids.push(id);
+    byId[id] = restored.byId[id] ?? current.byId[id];
+  }
+  for (const id of current.ids) byId[id] = current.byId[id];
+  ids.forEach((id, i) => { byId[id] = { ...byId[id], index: i }; });
+  return { ...current, ids, byId, nextSeq: Math.max(restored.nextSeq, current.nextSeq, ids.length) };
+}
+
 function replace(state: SegmentStoreState, id: string, segment: Segment): SegmentStoreState {
   return { ...state, byId: { ...state.byId, [id]: segment } };
 }

@@ -111,6 +111,14 @@ export function claudeMaxTokens(userMessageLength: number): number {
 // timeout once it's actually running.
 const BATCH_TIMEOUT_MS = 90_000;
 
+/**
+ * The back-translation check is advisory and costs a second sequential call per item. It runs after the item has
+ * released its translation slot (so it never makes queued translations wait) and is skipped once the batch has
+ * been running this long — the client gives up on a request after 30 s (translate-client.ts) and would then
+ * discard every finished translation, so a late check must not be what tips it over.
+ */
+const ADVISORY_BUDGET_MS = 15_000;
+
 /** One line of a session's translations.jsonl: what was asked, what came back, how long it took. */
 export interface TranslationLogEntry {
   at: string;
@@ -142,6 +150,8 @@ export interface TranslateDeps {
 
 /** What translateOne learned beyond the result itself, for the log. */
 interface ItemMeta {
+  /** The optional back-translation check, run after the item has left the translation slot (see translateSegments). */
+  backCheck?: () => Promise<void>;
   retried?: boolean;
   fidelity?: number;
   back?: string;
@@ -190,6 +200,7 @@ export async function translateSegments(
   // Batch-wide deadline — combined into every item's own signal below so a
   // queued (not-yet-started) item can never outlive it even though its own
   // ITEM_TIMEOUT_MS timer hasn't started counting yet.
+  const batchStartedAt = Date.now();
   const batchTimeout = AbortSignal.timeout(BATCH_TIMEOUT_MS);
   const batchSignal = opts.signal ? AbortSignal.any([batchTimeout, opts.signal]) : batchTimeout;
 
@@ -286,18 +297,21 @@ export async function translateSegments(
       if (scriptureInfo) result.scripture = scriptureInfo;
       if (warnings.length > 0) result.warnings = warnings;
 
-      // Optional: translate it back to Dutch and see how far that is from what was said.
+      // Optional: translate it back to Dutch and see how far that is from what was said (run by the caller, outside the slot).
       if (opts.backTranslationCheck && item.text.trim().split(/\s+/).length >= BACK_TRANSLATION_MIN_WORDS) {
-        try {
-          const back = await callModel(BACK_TRANSLATION_SYSTEM, `<TEKST>\n${translation.replace(/<\/?TEKST>/gi, '')}\n</TEKST>`, opts, combinedSignal);
-          if (typeof back === 'string' && back.trim()) {
-            const fidelity = Math.round(similarity(item.text, back) * 100) / 100;
-            meta.fidelity = fidelity;
-            meta.back = back;
-            result.fidelity = fidelity;
-            if (fidelity < (opts.backTranslationThreshold ?? BACK_TRANSLATION_THRESHOLD)) result.lowFidelity = true;
-          }
-        } catch { /* the check is advisory: no score, the translation stands */ }
+        const final = translation;
+        meta.backCheck = async () => {
+          try {
+            const back = await callModel(BACK_TRANSLATION_SYSTEM, `<TEKST>\n${final.replace(/<\/?TEKST>/gi, '')}\n</TEKST>`, opts, combinedSignal);
+            if (typeof back === 'string' && back.trim()) {
+              const fidelity = Math.round(similarity(item.text, back) * 100) / 100;
+              meta.fidelity = fidelity;
+              meta.back = back;
+              result.fidelity = fidelity;
+              if (fidelity < (opts.backTranslationThreshold ?? BACK_TRANSLATION_THRESHOLD)) result.lowFidelity = true;
+            }
+          } catch { /* the check is advisory: no score, the translation stands */ }
+        };
       }
       return result;
   };
@@ -315,6 +329,7 @@ export async function translateSegments(
     } finally {
       semaphore.release();
     }
+    if (meta.backCheck && outcome.status === 'ok' && Date.now() - batchStartedAt < ADVISORY_BUDGET_MS) await meta.backCheck();
     if (deps.log) {
       try {
         deps.log({

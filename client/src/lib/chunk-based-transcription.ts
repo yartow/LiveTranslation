@@ -42,6 +42,8 @@ export interface ChunkStartOptions {
   openaiApiKey?: string;
   anthropicApiKey?: string;
   glossary?: string;
+  /** Leading glossary lines (today's service) that must stay first in Whisper's prompt — see glossaryWithServiceParts. */
+  glossaryPriorityLines?: number;
   sermonContext?: string;
   debugMode?: boolean;
   normalizationGain?: number;
@@ -475,6 +477,7 @@ export class ChunkBasedTranscription implements TranscriptionBackend {
   private ollamaModel: string;
   private anthropicApiKey: string;
   private glossary: string;
+  private glossaryPriority = 0;
   private sermonContext: string;
   private debugMode: boolean;
   private previousTranscript: string = '';
@@ -569,6 +572,7 @@ export class ChunkBasedTranscription implements TranscriptionBackend {
     openaiApiKey = '',
     anthropicApiKey = '',
     glossary = '',
+    glossaryPriorityLines = 0,
     sermonContext = '',
     debugMode = false,
     normalizationGain = 1.0,
@@ -590,6 +594,7 @@ export class ChunkBasedTranscription implements TranscriptionBackend {
     if (ollamaBaseUrl !== undefined) this.ollamaBaseUrl = ollamaBaseUrl;
     if (ollamaModel !== undefined) this.ollamaModel = ollamaModel;
     this.glossary = glossary;
+    this.glossaryPriority = glossaryPriorityLines;
     this.sermonContext = sermonContext;
     this.debugMode = debugMode;
     this.normalizationGain = normalizationGain;
@@ -670,6 +675,7 @@ export class ChunkBasedTranscription implements TranscriptionBackend {
       ollamaBaseUrl: this.ollamaBaseUrl,
       ollamaModel: this.ollamaModel,
       glossary: this.glossary,
+      glossaryPriority: this.glossaryPriority,
       sermonContext: this.sermonContext,
       debugMode: this.debugMode,
       outputMode: this.outputMode,
@@ -1094,9 +1100,10 @@ export class ChunkBasedTranscription implements TranscriptionBackend {
   }
 
   /** Replaces the vocabulary for Whisper's prompt and the per-chunk correction, effective from the next chunk. */
-  setGlossary(glossary: string): void {
+  setGlossary(glossary: string, priorityLines = 0): void {
     this.glossary = glossary;
-    if (this.ws?.readyState === WebSocket.OPEN) this.ws.send(JSON.stringify({ type: 'config', glossary }));
+    this.glossaryPriority = priorityLines;
+    if (this.ws?.readyState === WebSocket.OPEN) this.ws.send(JSON.stringify({ type: 'config', glossary, glossaryPriority: priorityLines }));
   }
 
   updateConfig(

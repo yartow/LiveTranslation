@@ -67,6 +67,14 @@ export function parseServiceTerms(terms: string): ServiceTerm[] {
  * the server uses the part before `=` as the term.
  */
 export function glossaryWithService(baseGlossary: string, c: ServiceContext): string {
+  return glossaryWithServiceParts(baseGlossary, c).glossary;
+}
+
+/**
+ * Same text, plus how many leading lines are today's service (title, correct spellings): the server keeps those
+ * ahead of the learned corrections, whose number grows over time and would otherwise fill Whisper's prompt.
+ */
+export function glossaryWithServiceParts(baseGlossary: string, c: ServiceContext): { glossary: string; priorityLines: number } {
   const seen = new Set<string>();
   const lines: string[] = [];
   for (const t of parseServiceTerms(c.terms)) {
@@ -76,8 +84,8 @@ export function glossaryWithService(baseGlossary: string, c: ServiceContext): st
     lines.push(t.correct);
   }
   if (c.title.trim()) lines.unshift(c.title.trim().slice(0, MAX_TERM_CHARS));
-  if (!lines.length) return baseGlossary;
-  return base(baseGlossary) ? `${lines.join('\n')}\n${baseGlossary}` : lines.join('\n');
+  if (!lines.length) return { glossary: baseGlossary, priorityLines: 0 };
+  return { glossary: base(baseGlossary) ? `${lines.join('\n')}\n${baseGlossary}` : lines.join('\n'), priorityLines: lines.length };
 }
 const base = (g: string) => g.trim();
 
@@ -100,14 +108,43 @@ export function plannedPassages(c: ServiceContext): ReadingCandidate[] {
   return out;
 }
 
-/** The text sent to the translator (server/lib/sermon-prompt.ts sanitizes and fences it). Empty when there is nothing to say. */
-export function serviceContextForPrompt(c: ServiceContext): string {
+/** What the translator's prompt has room for. Mirrors SERVICE_CONTEXT_MAX_CHARS in server/lib/sermon-prompt.ts. */
+export const SERVICE_CONTEXT_PROMPT_CHARS = 2000;
+
+/** Every line of the context, most important first (title, passages, terms, notes), each with its label. */
+function serviceContextLines(c: ServiceContext): string[] {
   const lines: string[] = [];
   if (c.title.trim()) lines.push(`Title: ${c.title.trim()}`);
   for (const p of parsePassages(c.passages)) lines.push(`Passage: ${p.ref ? p.ref.canonicalEn : p.line}`);
   for (const t of parseServiceTerms(c.terms)) lines.push(t.heard ? `Name/term: ${t.correct} (may be heard as "${t.heard}")` : `Name/term: ${t.correct}`);
   for (const n of c.notes.split('\n').map(l => l.trim()).filter(Boolean)) lines.push(`Note: ${n}`);
-  return lines.join('\n');
+  return lines;
+}
+
+/** How many lines fit in `maxChars` (joined by newlines); the rest are the least important ones, dropped whole. */
+function linesThatFit(lines: string[], maxChars: number): number {
+  let used = 0;
+  for (let i = 0; i < lines.length; i++) {
+    used += lines[i].length + (i ? 1 : 0);
+    if (used > maxChars) return i;
+  }
+  return lines.length;
+}
+
+/**
+ * The text sent to the translator (server/lib/sermon-prompt.ts sanitizes and fences it). Empty when there is nothing to say.
+ * Limited to what the prompt has room for: whole lines are dropped from the end (notes first, then the last terms),
+ * rather than the server cutting the text off mid-line — or discarding all of it when it is too long.
+ */
+export function serviceContextForPrompt(c: ServiceContext): string {
+  const lines = serviceContextLines(c);
+  return lines.slice(0, linesThatFit(lines, SERVICE_CONTEXT_PROMPT_CHARS)).join('\n');
+}
+
+/** How many lines of the context do not fit in the translator's prompt (the popover says so). */
+export function serviceContextOverflow(c: ServiceContext): number {
+  const lines = serviceContextLines(c);
+  return lines.length - linesThatFit(lines, SERVICE_CONTEXT_PROMPT_CHARS);
 }
 
 /** Stable key for a planned passage — remembers which readings have already been caught. */

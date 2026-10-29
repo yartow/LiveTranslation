@@ -1,3 +1,4 @@
+import { useEffect, useState } from 'react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
@@ -14,6 +15,40 @@ import CopyableUrlList from '@/components/CopyableUrlList';
 import { useLanAddress } from '@/hooks/useLanAddress';
 import { Note, PageHeader, SettingItem, Warning } from '../primitives';
 import type { SettingsPageProps } from './types';
+
+/**
+ * A decimal number box that lets you type: the value is held as text while editing and only clamped to
+ * [min, max] when you leave the box (a value already in range applies at once). Clamping on every keystroke
+ * turned the first "0" of "0.3" into the minimum and made the rest impossible to type.
+ */
+function DecimalInput({ id, value, min, max, step, onCommit }: {
+  id: string; value: number; min: number; max: number; step: number; onCommit: (v: number) => void;
+}) {
+  const [draft, setDraft] = useState(String(value));
+  useEffect(() => { setDraft(String(value)); }, [value]);
+  return (
+    <Input
+      id={id}
+      type="number"
+      min={min}
+      max={max}
+      step={step}
+      value={draft}
+      onChange={(e) => {
+        setDraft(e.target.value);
+        const v = parseFloat(e.target.value);
+        if (!Number.isNaN(v) && v >= min && v <= max) onCommit(v);
+      }}
+      onBlur={() => {
+        const v = parseFloat(draft);
+        const next = Number.isNaN(v) ? value : Math.max(min, Math.min(max, v));
+        setDraft(String(next));
+        if (next !== value) onCommit(next);
+      }}
+      className="w-24 text-xs text-center"
+    />
+  );
+}
 
 function ProviderSelect({
   value,
@@ -122,18 +157,13 @@ export function SermonTranslationPage({ settings, onUpdate }: SettingsPageProps)
 
       {settings.sermonBackTranslationCheck && (
         <SettingItem id="sermon-back-translation-threshold" htmlFor="sermon-back-translation-threshold-input">
-          <Input
+          <DecimalInput
             id="sermon-back-translation-threshold-input"
-            type="number"
             min={0.05}
             max={0.6}
             step={0.05}
             value={settings.sermonBackTranslationThreshold}
-            onChange={(e) => {
-              const v = parseFloat(e.target.value);
-              if (!Number.isNaN(v)) onUpdate({ sermonBackTranslationThreshold: clamp(v, 0.05, 0.6) });
-            }}
-            className="w-24 text-xs text-center"
+            onCommit={(v) => onUpdate({ sermonBackTranslationThreshold: v })}
           />
         </SettingItem>
       )}

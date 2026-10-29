@@ -133,7 +133,7 @@ export function getFileGlossaryContext(opts: GlossaryContextOptions): GlossaryCo
 const PROMPT_CACHE_MAX = 16;
 const promptCache = new Map<string, string>();
 
-/** Longest service context (after the client's own caps) that goes into the prompt. */
+/** Longest service context that goes into the prompt. The client trims to the same size by whole lines (serviceContextForPrompt). */
 export const SERVICE_CONTEXT_MAX_CHARS = 2000;
 
 /**

@@ -5,7 +5,7 @@ import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
 import { Textarea } from '@/components/ui/textarea';
-import { isEmptyServiceContext, parsePassages, type ServiceContext } from '@/lib/sermon/service-context';
+import { isEmptyServiceContext, parsePassages, serviceContextOverflow, SERVICE_CONTEXT_PROMPT_CHARS, type ServiceContext } from '@/lib/sermon/service-context';
 
 interface ServiceContextPopoverProps {
   value: ServiceContext;
@@ -20,6 +20,7 @@ export default function ServiceContextPopover({ value, onChange }: ServiceContex
   const passages = useMemo(() => parsePassages(value.passages), [value.passages]);
   const unreadable = passages.filter(p => !p.ref);
   const noVerse = passages.filter(p => p.ref && p.ref.verseStart === null);
+  const overflow = serviceContextOverflow(value);
   const set = (patch: Partial<ServiceContext>) => onChange({ ...value, ...patch });
 
   return (
@@ -62,6 +63,12 @@ export default function ServiceContextPopover({ value, onChange }: ServiceContex
           <Label htmlFor="service-notes" className="text-xs">Notes for the translation</Label>
           <Textarea id="service-notes" rows={2} value={value.notes} onChange={e => set({ notes: e.target.value })} placeholder="Theme, congregation, anything that helps" maxLength={2000} />
         </div>
+
+        {overflow > 0 && (
+          <p className="text-xs text-amber-700 dark:text-amber-400" data-testid="service-context-overflow">
+            Too long for the translator: the last {overflow} {overflow === 1 ? 'line' : 'lines'} (notes first, then terms) will not be sent. It has room for about {SERVICE_CONTEXT_PROMPT_CHARS} characters. The names and terms still help the speech recognition.
+          </p>
+        )}
 
         <div className="flex items-center justify-between gap-2">
           <p className="text-[11px] text-muted-foreground">Kept for this browser tab only.</p>

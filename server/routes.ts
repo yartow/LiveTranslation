@@ -345,7 +345,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
         ollamaBaseUrl: ollamaBaseUrl || undefined,
         ollamaModel: ollamaModel || undefined,
         glossaryOverride: glossary || undefined,
-        serviceContext: typeof serviceContext === 'string' && serviceContext.length <= 8000 ? serviceContext : undefined,
+        serviceContext: typeof serviceContext === 'string' ? serviceContext.slice(0, 8000) : undefined, // buildServiceContextBlock applies the real cap
         examples: parseCorrectionExamples(examples),
         backTranslationCheck: backTranslationCheck === true,
         backTranslationThreshold: typeof backTranslationThreshold === 'number' && backTranslationThreshold > 0 && backTranslationThreshold < 1 ? backTranslationThreshold : undefined,

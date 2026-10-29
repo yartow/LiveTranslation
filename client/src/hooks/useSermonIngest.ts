@@ -25,6 +25,8 @@ export interface SermonIngestArgs {
   ollamaBaseUrl: string;
   ollamaModel: string;
   glossary: string;
+  /** Leading lines of `glossary` that are today's service (kept first in Whisper's prompt). */
+  glossaryPriorityLines?: number;
   debugMode: boolean;
   chunkDurationSecs?: number;
   /** User's configured mic gain (settings.audioNormalizationGain). Sermon
@@ -286,6 +288,7 @@ export function useSermonIngest(args: SermonIngestArgs) {
         openaiApiKey: a.openaiApiKey,
         anthropicApiKey: a.anthropicApiKey,
         glossary: a.glossary,
+        glossaryPriorityLines: a.glossaryPriorityLines ?? 0,
         sermonContext: '', // sermon mode carries context per-sentence at translate time, not per-chunk
         debugMode: a.debugMode,
         normalizationGain: a.normalizationGain ?? 1.0,
@@ -345,7 +348,8 @@ export function useSermonIngest(args: SermonIngestArgs) {
   // The vocabulary (standing glossary + today's names and terms) can change during a recording:
   // the server takes it from the next chunk on.
   const glossaryArg = args.glossary;
-  useEffect(() => { backendRef.current?.setGlossary(glossaryArg); }, [glossaryArg]);
+  const glossaryPriorityArg = args.glossaryPriorityLines ?? 0;
+  useEffect(() => { backendRef.current?.setGlossary(glossaryArg, glossaryPriorityArg); }, [glossaryArg, glossaryPriorityArg]);
 
   // Moves the running recording to another microphone ('' = system default); see
   // ChunkBasedTranscription.switchInputDevice. Rejects when not recording or when the

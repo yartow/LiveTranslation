@@ -168,7 +168,8 @@ export function useTranslationQueue({ stateRef, dispatch, configRef, autoTransla
           });
           // A verbatim hit on a planned passage starts the reading (a paraphrase or a miss against one does not).
           if (item.planned && item.readingCandidate) plannedUsedRef.current.add(passageKey(item.readingCandidate));
-          if ((isThisStillTheActiveReading || item.planned) && item.readingCandidate && typeof result.scripture.verseEnd === 'number') {
+          // A planned passage only starts a reading when none has been announced since this item was sent.
+          if ((isThisStillTheActiveReading || (item.planned && !current)) && item.readingCandidate && typeof result.scripture.verseEnd === 'number') {
             dispatch({
               type: 'SET_ACTIVE_READING', bookNumber: item.readingCandidate.bookNumber,
               chapter: item.readingCandidate.chapter, verse: result.scripture.verseEnd + 1, matched: true,
