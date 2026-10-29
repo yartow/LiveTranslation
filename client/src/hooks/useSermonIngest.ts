@@ -46,7 +46,8 @@ export interface SermonIngestArgs {
   pipelineStats?: PipelineStats;
   /** Collects the words Whisper was unsure about (MLX engine) for the "check" chips. */
   confidenceStore?: ConfidenceStore;
-  onError: (message: string) => void;
+  /** `stillRecording`: the capture is alive (e.g. one chunk failed, or the socket is reconnecting). */
+  onError: (message: string, stillRecording: boolean) => void;
 }
 
 const CAP_TICK_MS = 250;
@@ -214,12 +215,23 @@ export function useSermonIngest(args: SermonIngestArgs) {
     // may still have an open row — finalize it before the state is reset and
     // its token is forgotten.
     finalizeIngest();
+    // Never leave a previous backend running unreferenced: Stop/Pause only reach backendRef, so an
+    // orphan would keep capturing and writing rows (it did, after an error reset the toolbar).
+    const previous = backendRef.current;
+    backendRef.current = null;
+    if (previous) previous.stop().catch(() => {});
     ingestStateRef.current = initIngestState();
     tokenToIdRef.current.clear();
     liveSeqRef.current = 0;
     liveSessionRef.current += 1;
     lastChunkIndexRef.current = 0;
     recentTextRef.current = '';
+
+    // Events of an older backend (still draining after stop()) are ignored once a newer start() ran.
+    // Not `backendRef.current !== backend`: stop() clears the ref before the drain, whose last words must land.
+    const session = liveSessionRef.current;
+    const isCurrent = () => liveSessionRef.current === session;
+    let backend: ChunkBasedTranscription | null = null;
 
     const events: ChunkTranscriptionEvents = {
       onReady: () => {},
@@ -228,16 +240,26 @@ export function useSermonIngest(args: SermonIngestArgs) {
       // is the only thing that becomes a segment.
       onRawTranscript: () => {},
       onTranslation: (original, _translated, chunkIndex, lowWords) => {
+        if (!isCurrent()) return;
         argsRef.current.confidenceStore?.add(lowWords);
         handleCorrected(original, chunkIndex);
       },
       onError: (message) => {
-        argsRef.current.onError(message);
+        if (!isCurrent()) return;
+        // A failed chunk or a dropped socket doesn't end the capture (it reconnects): the toolbar
+        // must keep showing Stop, or the next Record would start a second recording.
+        const stillRecording = !!backend?.active && backendRef.current === backend;
+        argsRef.current.onError(message, stillRecording);
+        if (stillRecording) return;
         setIsRecording(false);
         setIsPaused(false);
         setIsProcessing(false);
       },
-      onClose: () => { setIsRecording(false); setIsPaused(false); },
+      onClose: () => {
+        if (!isCurrent()) return;
+        setIsRecording(false);
+        setIsPaused(false);
+      },
       onAudioLevel: (rms, peak) => argsRef.current.onAudioLevel?.(rms, peak),
       onStreamReady: (stream) => argsRef.current.onStreamReady?.(stream),
       onNotice: (message) => argsRef.current.onNotice?.(message),
@@ -247,15 +269,16 @@ export function useSermonIngest(args: SermonIngestArgs) {
       onDebug: (message) => { if (argsRef.current.debugMode) console.debug('[sermon-ingest]', message); },
     };
 
-    const backend = new ChunkBasedTranscription(events, (a.chunkDurationSecs ?? 5) * 1000);
-    backend.setOutputMode('correct-only');
-    backend.setChunkLimits(SERMON_MIN_CHUNK_MS, SERMON_MAX_CHUNK_MS);
-    backend.setRawAudioCapture(a.rawAudioCapture ?? true);
-    backend.setInputDeviceId(a.micDeviceId ?? '');
-    backendRef.current = backend;
+    const created = new ChunkBasedTranscription(events, (a.chunkDurationSecs ?? 5) * 1000);
+    backend = created;
+    created.setOutputMode('correct-only');
+    created.setChunkLimits(SERMON_MIN_CHUNK_MS, SERMON_MAX_CHUNK_MS);
+    created.setRawAudioCapture(a.rawAudioCapture ?? true);
+    created.setInputDeviceId(a.micDeviceId ?? '');
+    backendRef.current = created;
 
     try {
-      await backend.start({
+      await created.start({
         sourceLanguage: a.sourceLanguage,
         targetLanguage: a.targetLanguage,
         detectSpeakers: false, // not meaningful for a single-speaker sermon
@@ -277,8 +300,8 @@ export function useSermonIngest(args: SermonIngestArgs) {
       });
       setIsRecording(true);
     } catch (err) {
-      argsRef.current.onError(err instanceof Error ? err.message : 'Could not start recording');
-      backendRef.current = null;
+      argsRef.current.onError(err instanceof Error ? err.message : 'Could not start recording', false);
+      if (backendRef.current === created) backendRef.current = null;
     } finally {
       setIsProcessing(false);
     }

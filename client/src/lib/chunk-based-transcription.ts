@@ -1216,6 +1216,11 @@ export class ChunkBasedTranscription implements TranscriptionBackend {
     this.events.onDebug?.('Resumed');
   }
 
+  /** True while a recording is live, including during a reconnect; false once stop() has run. */
+  get active(): boolean {
+    return this.isRecording;
+  }
+
   async stop(): Promise<void> {
     this.intentionalClose = true;
     this.reconnecting = false;

@@ -121,7 +121,11 @@ export default function SermonMode() {
     confidenceStore,
     onStreamReady,
     onNotice: (message) => toast({ title: 'Microphone', description: message }),
-    onError: (message) => toast({ title: 'Recording error', description: message, variant: 'destructive' }),
+    onError: (message, stillRecording) => toast({
+      title: stillRecording ? 'Transcription problem, still recording' : 'Recording error',
+      description: message,
+      variant: 'destructive',
+    }),
   });
   useLayoutEffect(() => { ingestRef.current = { isRecording, switchMic }; });
 
@@ -140,13 +144,6 @@ export default function SermonMode() {
     pendingFocusRef.current = { id, cell };
     applyAction({ type: 'APPEND_SEGMENT', id, sourceText: '', startTime: t, endTime: t, approximateTiming: true, now: Date.now() });
   }, [applyAction, stateRef]);
-
-  // Return in the last row. While recording the live text keeps arriving below, so a row added
-  // here would end up stranded mid-transcript — Return then only saves; the Add row button still adds.
-  const handleEnterLastRow = useCallback((cell: CellKind) => {
-    if (ingestRef.current.isRecording) return;
-    handleAddRow(cell);
-  }, [handleAddRow]);
 
   // No signal while stopped or paused: clear the meter and the "recording from" label.
   useEffect(() => {
@@ -278,7 +275,7 @@ export default function SermonMode() {
         onRefreshOne={refreshOne}
         flushersRef={flushersRef}
         onSelectText={handleSelectText}
-        onAddRow={handleEnterLastRow}
+        onAddRow={handleAddRow}
         pendingFocusRef={pendingFocusRef}
         confidenceStore={confidenceStore}
       />
