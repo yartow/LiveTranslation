@@ -13,6 +13,8 @@ export class BrowserSpeechTranscription implements TranscriptionBackend {
   private anthropicApiKey = '';
   private glossary = '';
   private sermonContext = '';
+  private ollamaBaseUrl = '';
+  private ollamaModel = '';
   private chunkIndex = 0;
   private intentionalStop = false;
 
@@ -29,6 +31,8 @@ export class BrowserSpeechTranscription implements TranscriptionBackend {
     anthropicApiKey = '',
     glossary = '',
     sermonContext = '',
+    ollamaBaseUrl = '',
+    ollamaModel = '',
   ): Promise<void> {
     this.sourceLanguage = sourceLanguage;
     this.targetLanguage = targetLanguage;
@@ -38,6 +42,8 @@ export class BrowserSpeechTranscription implements TranscriptionBackend {
     this.anthropicApiKey = anthropicApiKey;
     this.glossary = glossary;
     this.sermonContext = sermonContext;
+    this.ollamaBaseUrl = ollamaBaseUrl;
+    this.ollamaModel = ollamaModel;
     this.chunkIndex = 0;
     this.intentionalStop = false;
 
@@ -126,6 +132,8 @@ export class BrowserSpeechTranscription implements TranscriptionBackend {
       anthropicApiKey: this.anthropicApiKey,
       glossary: this.glossary,
       sermonContext: this.sermonContext,
+      ollamaBaseUrl: this.ollamaBaseUrl,
+      ollamaModel: this.ollamaModel,
     }, this.events);
   }
 
@@ -138,6 +146,8 @@ export class BrowserSpeechTranscription implements TranscriptionBackend {
     anthropicApiKey?: string,
     glossary?: string,
     sermonContext?: string,
+    ollamaBaseUrl?: string,
+    ollamaModel?: string,
   ): void {
     this.sourceLanguage = sourceLanguage;
     this.targetLanguage = targetLanguage;
@@ -147,6 +157,8 @@ export class BrowserSpeechTranscription implements TranscriptionBackend {
     if (anthropicApiKey !== undefined) this.anthropicApiKey = anthropicApiKey;
     if (glossary !== undefined) this.glossary = glossary;
     if (sermonContext !== undefined) this.sermonContext = sermonContext;
+    if (ollamaBaseUrl !== undefined) this.ollamaBaseUrl = ollamaBaseUrl;
+    if (ollamaModel !== undefined) this.ollamaModel = ollamaModel;
 
     if (this.recognition) {
       this.recognition.lang = sourceLanguage;

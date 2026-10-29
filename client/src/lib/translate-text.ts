@@ -8,6 +8,8 @@ export interface TranslateTextConfig {
   anthropicApiKey: string;
   glossary: string;
   sermonContext: string;
+  ollamaBaseUrl?: string;
+  ollamaModel?: string;
 }
 
 /**
@@ -40,6 +42,8 @@ export async function translateRecognizedText(
         anthropicApiKey: config.anthropicApiKey,
         glossary: config.glossary || undefined,
         sermonContext: config.sermonContext || undefined,
+        ollamaBaseUrl: config.ollamaBaseUrl || undefined,
+        ollamaModel: config.ollamaModel || undefined,
       }),
     });
 

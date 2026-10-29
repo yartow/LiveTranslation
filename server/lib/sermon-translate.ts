@@ -6,7 +6,7 @@
 
 import { client as openaiClient } from './openai';
 import { makeClient as ollamaClient, OLLAMA_NO_THINKING, DEFAULT_OLLAMA_BASE_URL, DEFAULT_OLLAMA_MODEL } from './ollama';
-import { postAnthropicMessage } from './anthropic';
+import { postAnthropicMessage, ANTHROPIC_MODEL } from './anthropic';
 import { buildSystemPrompt, buildUserMessage, buildServiceContextBlock, getFileGlossaryContext, type CorrectionExample } from './sermon-prompt';
 import { similarity } from './text-similarity';
 import { getGlossaryBundle } from './glossary-store';
@@ -155,7 +155,7 @@ const BACK_TRANSLATION_SYSTEM = 'Translate the English text between <TEKST> tags
 
 const DEFAULT_MODELS: Record<SermonTranslationProvider, string> = {
   openai: 'gpt-4o-mini',
-  claude: 'claude-haiku-4-5-20251001',
+  claude: ANTHROPIC_MODEL,
   ollama: DEFAULT_OLLAMA_MODEL,
 };
 

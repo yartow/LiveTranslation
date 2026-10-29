@@ -986,6 +986,9 @@ export class ChunkBasedTranscription implements TranscriptionBackend {
     this.sendOrQueue(frame);
   }
 
+  // Set by resume(): the next telemetry row follows a pause, so the wall-clock jump before it is not a stall.
+  private resumedSinceLastRow = false;
+
   /** One row per audio frame (~85-256 ms): level, noise floor, VAD/gate state. Batched ~every 2 s. */
   private recordTelemetry(rms: number, peak: number, meanAbs: number, silent: boolean, frame: Float32Array): void {
     // Zero-crossing rate: a cheap pitch/noisiness proxy (speech vowels low, hiss/fricatives high).
@@ -1004,7 +1007,9 @@ export class ChunkBasedTranscription implements TranscriptionBackend {
       gateRunMs: Math.round(this.gate.longestRunMs),
       chunkSecs: round(this.assembler.sampleCount / TARGET_RATE, 2),
       zcr: round(crossings / frame.length, 3),
+      ...(this.resumedSinceLastRow ? { resumed: true } : {}),
     });
+    this.resumedSinceLastRow = false;
     if (Date.now() - this.lastTelemetryFlushAt >= 2000) this.flushTelemetry();
   }
 
@@ -1213,6 +1218,7 @@ export class ChunkBasedTranscription implements TranscriptionBackend {
     if (!this.isRecording || !this.paused) return;
     this.paused = false;
     this.vadSilenceMs = 0;
+    this.resumedSinceLastRow = true;
     this.events.onDebug?.('Resumed');
   }
 

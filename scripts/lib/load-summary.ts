@@ -5,7 +5,7 @@
 export interface MachineRow {
   w: number;
   sys?: { cpuPct: number | null; load1: number; memFreePct: number | null };
-  mlx?: { cpuPct: number | null; busy: boolean; queued: number; ready?: boolean };
+  mlx?: { cpuPct: number | null; busy: boolean; queued: number; ready?: boolean; pid?: number | null };
   top?: Array<{ name: string; cpuPct: number }> | null;
   power?: { source: string | null; cpuSpeedLimit: number | null; lowPowerMode: boolean | null } | null;
   chunks?: { inFlight: number; oldestMs: number | null } | null;
@@ -13,7 +13,8 @@ export interface MachineRow {
 
 export interface BrowserRow { w: number; visible: boolean; longTaskMs: number; maxDriftMs: number }
 
-export interface TelemetryRow { t: number; w: number }
+/** `resumed`: the first row after a Pause/Resume — the wall-clock gap before it is the pause, not a stall. */
+export interface TelemetryRow { t: number; w: number; resumed?: boolean }
 
 export interface ChunkTiming {
   /** Where the chunk starts in the recording, in seconds. */
@@ -89,7 +90,10 @@ export function summarizeLoad({ startWall, machine, browser, telemetry, chunks }
   for (const r of browser) if (minuteOfWall(r.w) >= 0) bucket(minuteOfWall(r.w)).browser.push(r);
   for (const c of chunks) bucket(Math.floor(c.startSecs / 60)).chunks.push(c);
   // Audio callbacks arrive every ~256 ms; a long gap between two is the page (or the machine) stalling.
-  for (let i = 1; i < telemetry.length; i++) bucket(Math.floor(telemetry[i].t / 60)).frameGaps.push(telemetry[i].w - telemetry[i - 1].w);
+  for (let i = 1; i < telemetry.length; i++) {
+    if (telemetry[i].resumed) continue; // no audio frames arrive while paused
+    bucket(Math.floor(telemetry[i].t / 60)).frameGaps.push(telemetry[i].w - telemetry[i - 1].w);
+  }
 
   return Array.from(buckets.keys()).sort((a, b) => a - b).map((minute) => {
     const b = buckets.get(minute)!;
@@ -112,7 +116,7 @@ export function summarizeLoad({ startWall, machine, browser, telemetry, chunks }
       load1Max: max(nums(b.machine.map(r => r.sys?.load1))),
       memFreeMin: min(nums(b.machine.map(r => r.sys?.memFreePct))),
       mlxCpuMax: max(nums(b.machine.map(r => r.mlx?.cpuPct))),
-      workerLoading: b.machine.some(r => r.mlx?.ready === false && (r.chunks?.inFlight ?? 0) > 0),
+      workerLoading: b.machine.some(r => r.mlx?.ready === false && r.mlx.pid != null && (r.chunks?.inFlight ?? 0) > 0),
       mlxBusyPct: mlxSamples.length ? Math.round((100 * mlxSamples.filter(r => r.mlx!.busy).length) / mlxSamples.length) : null,
       topName: busiest,
       topCpu: busiestStat?.cpu ?? null,

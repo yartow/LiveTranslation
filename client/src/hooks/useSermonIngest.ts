@@ -302,6 +302,8 @@ export function useSermonIngest(args: SermonIngestArgs) {
     } catch (err) {
       argsRef.current.onError(err instanceof Error ? err.message : 'Could not start recording', false);
       if (backendRef.current === created) backendRef.current = null;
+      // The socket (and, with the archive on, the perf monitor) may already be open: close them.
+      created.stop().catch(() => {});
     } finally {
       setIsProcessing(false);
     }
@@ -312,10 +314,17 @@ export function useSermonIngest(args: SermonIngestArgs) {
     backendRef.current = null;
     setIsRecording(false);
     setIsPaused(false);
-    // backend.stop() drains in-flight chunks, so their text is in the buffer
-    // by the time it resolves — only then finalize the last block.
-    if (backend) await backend.stop();
-    finalizeIngest();
+    // backend.stop() drains in-flight chunks (up to 20 s), so their text is in the buffer by the time
+    // it resolves — only then finalize the last block. Record stays disabled meanwhile (the toolbar
+    // disables it while isProcessing): a start() during the drain would bump the session counter and
+    // drop those last sentences.
+    setIsProcessing(true);
+    try {
+      if (backend) await backend.stop();
+      finalizeIngest();
+    } finally {
+      setIsProcessing(false);
+    }
   }, [finalizeIngest]);
 
   // Pause keeps the session (mic, socket, open block) alive: the last words are

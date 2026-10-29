@@ -470,6 +470,8 @@ export default function Home() {
           settings.localWhisperModel,
           settings.theologicalGlossary,
           sermonContextRef.current,
+          settings.ollamaBaseUrl,
+          settings.ollamaModel,
         );
       } else if (settings.transcriptionProvider === 'browser') {
         const browserBackend = new BrowserSpeechTranscription(events);
@@ -484,6 +486,8 @@ export default function Home() {
           settings.anthropicApiKey,
           settings.theologicalGlossary,
           sermonContextRef.current,
+          settings.ollamaBaseUrl,
+          settings.ollamaModel,
         );
       } else if (settings.transcriptionProvider === 'whisper' || settings.transcriptionProvider === 'mlx') {
         const chunkBackend = new ChunkBasedTranscription(events, chunkDurationSecs * 1000);

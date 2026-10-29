@@ -27,6 +27,8 @@ export class LocalWhisperTranscription implements TranscriptionBackend {
   private anthropicApiKey = '';
   private glossary = '';
   private sermonContext = '';
+  private ollamaBaseUrl = '';
+  private ollamaModel = '';
   private lastChunkSentResolve: (() => void) | null = null;
 
   constructor(events: LocalWhisperEvents, chunkDurationMs = 5000) {
@@ -44,6 +46,8 @@ export class LocalWhisperTranscription implements TranscriptionBackend {
     modelSize: LocalWhisperModel = 'tiny',
     glossary = '',
     sermonContext = '',
+    ollamaBaseUrl = '',
+    ollamaModel = '',
   ): Promise<void> {
     this.sourceLanguage = sourceLanguage;
     this.targetLanguage = targetLanguage;
@@ -54,6 +58,8 @@ export class LocalWhisperTranscription implements TranscriptionBackend {
     this.modelSize = modelSize;
     this.glossary = glossary;
     this.sermonContext = sermonContext;
+    this.ollamaBaseUrl = ollamaBaseUrl;
+    this.ollamaModel = ollamaModel;
     this.chunkIndex = 0;
 
     await this.loadWorker(modelSize);
@@ -208,6 +214,8 @@ export class LocalWhisperTranscription implements TranscriptionBackend {
       anthropicApiKey: this.anthropicApiKey,
       glossary: this.glossary,
       sermonContext: this.sermonContext,
+      ollamaBaseUrl: this.ollamaBaseUrl,
+      ollamaModel: this.ollamaModel,
     }, this.events);
   }
 
@@ -220,6 +228,8 @@ export class LocalWhisperTranscription implements TranscriptionBackend {
     anthropicApiKey?: string,
     glossary?: string,
     sermonContext?: string,
+    ollamaBaseUrl?: string,
+    ollamaModel?: string,
   ): void {
     this.sourceLanguage = sourceLanguage;
     this.targetLanguage = targetLanguage;
@@ -229,6 +239,8 @@ export class LocalWhisperTranscription implements TranscriptionBackend {
     if (anthropicApiKey !== undefined) this.anthropicApiKey = anthropicApiKey;
     if (glossary !== undefined) this.glossary = glossary;
     if (sermonContext !== undefined) this.sermonContext = sermonContext;
+    if (ollamaBaseUrl !== undefined) this.ollamaBaseUrl = ollamaBaseUrl;
+    if (ollamaModel !== undefined) this.ollamaModel = ollamaModel;
   }
 
   async stop(): Promise<void> {

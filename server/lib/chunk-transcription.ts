@@ -600,7 +600,8 @@ export async function processChunk(
     deliverInOrder(session);
 
   } catch (error) {
-    if (error instanceof Error && error.name === 'AbortError') return deliverAborted();
+    // The session's own signal too: the OpenAI SDK rejects an aborted request with APIUserAbortError, not AbortError.
+    if (session.abortController.signal.aborted || (error instanceof Error && error.name === 'AbortError')) return deliverAborted();
     const label = classifyError(error);
     console.error(`Chunk ${chunkIndex} error:`, error);
     sendDebug(session, `Chunk #${chunkIndex}: ✗ ${label}`);
