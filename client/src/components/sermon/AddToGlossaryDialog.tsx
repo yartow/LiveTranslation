@@ -9,7 +9,10 @@ import type { SourceSelection } from './AddToGlossaryBubble';
 
 // Categories a term can be filed under (server/lib/glossary-parse.ts KNOWN_CATEGORIES).
 // Contextafhankelijk and Bijbelboek are left out: they need a disambiguation rule or a book number, not just a pair.
-const CATEGORIES = ['Theologisch', 'Eigennaam', 'Plaatsnaam', 'Eschatologisch/Leerstellig', 'Archaïsch'];
+const CATEGORIES = [
+  'Theologisch', 'Eigennaam', 'Plaatsnaam', 'Eschatologisch/Leerstellig', 'Archaïsch',
+  'Algemeen', 'Gezegde', 'Spreekwoord', 'Beeldspraak', 'Afkorting',
+];
 
 export interface GlossarySaved {
   selection: SourceSelection;

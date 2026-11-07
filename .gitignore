@@ -8,3 +8,4 @@ vite.config.ts.*
 data/*
 *.xlsx
 /tests
+attached_assets/Logo.png
