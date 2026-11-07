@@ -10,6 +10,7 @@
 
 import { useEffect, useRef, useState } from 'react';
 import { selectPublishableLines, type SegmentStoreState } from '@/lib/sermon/segment-store';
+import { sameWords } from '@/lib/sermon/markdown';
 
 export interface PublishedEntry {
   text: string;
@@ -51,9 +52,13 @@ export function computeBatch(
       // Typing a translation from scratch sends a stream of changing texts; only a
       // revision of something already shown as finished (machine text, or a line
       // that was already complete) reads as "edited" (italic) on the phone.
+      // Adding markdown (`> ` before a quote, `**bold**`) changes how the line looks, not what it says:
+      // not italic, and the line keeps counting as what it was (a finished machine line stays one, so a
+      // later change of words to it is still a revision).
+      const formattingOnly = sameWords(prev.text, line.text);
       const stillDrafting = prev.manual && line.manual;
-      const edited = prev.edited || !stillDrafting;
-      published.set(line.id, { text: line.text, manual: line.manual, edited });
+      const edited = prev.edited || (!stillDrafting && !formattingOnly);
+      published.set(line.id, { text: line.text, manual: formattingOnly ? prev.manual : line.manual, edited });
       batch.push({ id: line.id, index: line.index, text: line.text, edited });
     } else if (force) {
       batch.push({ id: line.id, index: line.index, text: line.text, edited: prev.edited });

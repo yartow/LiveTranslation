@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { Languages, Loader2, Mic, Pause, Play, Plus, RefreshCw, Send, Settings, Square, Users } from 'lucide-react';
+import { Download, Languages, Loader2, Mic, Pause, Play, Plus, RefreshCw, Send, Settings, Square, Users } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Label } from '@/components/ui/label';
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
@@ -20,6 +20,8 @@ interface SermonToolbarProps {
   onRefreshAll: () => void;
   /** Adds an empty row to type into by hand (no microphone needed). */
   onAddRow: () => void;
+  /** Saves the English as markdown (data/transcripts/) and downloads it — see useTranscriptSave.ts. */
+  onSaveMarkdown: () => void;
   autoTranslate: boolean;
   onToggleAutoTranslate: (value: boolean) => void;
   maxLatencySecs: number;
@@ -64,7 +66,7 @@ function ToggleChip({ on, onClick, icon, label, title, testId }: {
 }
 
 export default function SermonToolbar({
-  isRecording, isProcessing, isPaused, onTogglePause, onToggleRecording, dirtyCount, onRefreshAll, onAddRow,
+  isRecording, isProcessing, isPaused, onTogglePause, onToggleRecording, dirtyCount, onRefreshAll, onAddRow, onSaveMarkdown,
   autoTranslate, onToggleAutoTranslate, maxLatencySecs, onChangeMaxLatencySecs,
   listenerCount, listenersEnabled, onToggleListeners, onOpenSettings, serviceContext, onChangeServiceContext, suggestions, onAddSuggestion, onDismissSuggestion, isMac,
 }: SermonToolbarProps) {
@@ -178,6 +180,17 @@ export default function SermonToolbar({
       <SuggestionsPopover suggestions={suggestions} onAdd={onAddSuggestion} onDismiss={onDismissSuggestion} />
 
       <ServiceContextPopover value={serviceContext} onChange={onChangeServiceContext} />
+
+      <Button
+        variant="outline"
+        size="sm"
+        onClick={onSaveMarkdown}
+        data-testid="button-save-markdown"
+        title="Save the English as a markdown file (also saved automatically when you stop recording)"
+      >
+        <Download className="w-3.5 h-3.5" />
+        Save .md
+      </Button>
 
       <Popover open={isListenerPopoverOpen} onOpenChange={setIsListenerPopoverOpen}>
         <PopoverTrigger asChild>

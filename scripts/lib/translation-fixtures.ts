@@ -2,7 +2,10 @@
 // translation test items: the Dutch the operator left on screen, its neighbours as context (as the app
 // sends them), and the English the operator wrote or corrected by hand as the reference. Only rows the
 // operator wrote or changed (`manualOverride`) count: an untouched machine translation is not a gold
-// reference, it is the thing being measured. Pure, so it is unit-tested.
+// reference, it is the thing being measured. Markdown typed for the listener phones (`> quote`) is stripped
+// from the reference, and a row whose only change was formatting is no reference either. Pure, so it is unit-tested.
+
+import { stripMarkdown } from '../../client/src/lib/sermon/markdown';
 
 export interface SnapshotSegment {
   index: number;
@@ -38,8 +41,9 @@ export function buildTranslationFixtures(segments: SnapshotSegment[], opts: Fixt
   const rows = [...segments].sort((a, b) => a.index - b.index);
   const items: TranslationFixtureItem[] = [];
   rows.forEach((seg, i) => {
-    const source = (seg.sourceText ?? '').trim(), reference = (seg.translatedText ?? '').trim();
+    const source = (seg.sourceText ?? '').trim(), reference = stripMarkdown(seg.translatedText ?? '');
     if (!seg.manualOverride || !source || !reference || words(source) < minWords) return;
+    if (seg.machineText && stripMarkdown(seg.machineText) === reference) return;
     items.push({
       id: `seg-${seg.index}`,
       source, reference,

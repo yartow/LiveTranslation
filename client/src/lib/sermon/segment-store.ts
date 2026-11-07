@@ -10,6 +10,7 @@
 // the plan doc for the full rationale.
 
 import { type Segment, type SegmentStatus, type GlossaryWarning, type ScriptureInfo, hashText, isDirty, createSegment } from './segment-model';
+import { stripMarkdown } from './markdown';
 
 /**
  * Tracks an in-progress Bible reading across segments (spec "Bijbelcitaten"
@@ -540,15 +541,17 @@ const EXAMPLE_FIELD_MAX = 400;
  * The operator's most recent hand-typed translations, oldest first, for the translator to learn their
  * style and terminology from: a row they wrote or changed (manualOverride) with its Dutch, and the machine
  * version they changed it from when there was one (machineText; absent = typed from scratch). A row whose
- * text equals the machine text taught nothing and is skipped. Fields are capped to keep the prompt small.
+ * text equals the machine text taught nothing and is skipped. Markdown the operator typed for the phones
+ * (`> quote`, `**bold**` — see markdown.ts) is stripped first: a formatting-only edit is not a correction, and
+ * the translator must not learn to emit markdown. Fields are capped to keep the prompt small.
  */
 export function selectCorrectionExamples(state: SegmentStoreState, max = 5): CorrectionExample[] {
   const picked: CorrectionExample[] = [];
   for (let i = state.ids.length - 1; i >= 0 && picked.length < max; i--) {
     const seg = state.byId[state.ids[i]];
     if (!seg.manualOverride) continue;
-    const human = seg.translatedText.trim(), source = seg.sourceText.trim(), machine = seg.machineText?.trim();
-    if (!human || !source || human === machine) continue;
+    const human = stripMarkdown(seg.translatedText), source = seg.sourceText.trim(), machine = seg.machineText?.trim();
+    if (!human || !source || (machine !== undefined && human === stripMarkdown(machine))) continue;
     picked.push({
       source: source.slice(0, EXAMPLE_FIELD_MAX),
       ...(machine ? { machine: machine.slice(0, EXAMPLE_FIELD_MAX) } : {}),

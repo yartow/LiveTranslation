@@ -820,6 +820,14 @@ describe('selectCorrectionExamples', () => {
     expect(selectCorrectionExamples(s)).toEqual([]);
   });
 
+  it('strips markdown typed for the phones, and skips a formatting-only edit', () => {
+    const s = build([
+      { id: 'a', src: 'Een.', machine: 'Psalm 23:1. The Lord is my shepherd.', human: 'Psalm 23:1.\n> The Lord is my shepherd.' },
+      { id: 'b', src: 'Twee.', machine: 'Two.', human: '**Second.**' },
+    ]);
+    expect(selectCorrectionExamples(s)).toEqual([{ source: 'Twee.', machine: 'Two.', human: 'Second.' }]);
+  });
+
   it('keeps only the most recent ones, and caps long text', () => {
     const rows = Array.from({ length: 8 }, (_, i) => ({ id: `r${i}`, src: `Bron ${i}.`, machine: `M${i}`, human: `H${i}` }));
     const picked = selectCorrectionExamples(build(rows), 3);

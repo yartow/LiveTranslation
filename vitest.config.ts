@@ -12,6 +12,9 @@ export default defineConfig({
       ASSEMBLYAI_API_KEY: 'test-key-stub',
     },
   },
+  // tsconfig's `jsx: preserve` is for Vite's React plugin; tests that render a component
+  // (react-dom/server, no DOM needed) need the JSX compiled.
+  oxc: { jsx: { runtime: 'automatic' } },
   resolve: {
     alias: {
       '@': path.resolve(__dirname, 'client/src'),

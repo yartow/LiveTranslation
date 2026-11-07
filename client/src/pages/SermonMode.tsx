@@ -27,6 +27,7 @@ import { useMicFailover, type IngestControls } from '@/hooks/useMicFailover';
 import { useAutosaveRestore } from '@/hooks/useAutosaveRestore';
 import { useRefreshHotkeys } from '@/hooks/useRefreshHotkeys';
 import { useEditSuggestions } from '@/hooks/useEditSuggestions';
+import { useTranscriptSave } from '@/hooks/useTranscriptSave';
 import { LevelStore } from '@/lib/sermon/audio-level';
 import { PipelineStats } from '@/lib/sermon/pipeline-stats';
 import { ConfidenceStore } from '@/lib/sermon/confidence-store';
@@ -167,6 +168,10 @@ export default function SermonMode() {
 
   // Session archive (server has ASR_DEBUG_DIR): a transcript snapshot every minute while recording.
   useTranscriptSnapshots(stateRef, isRecording, archive);
+  // The English as markdown on this machine (data/transcripts/), saved on Stop — see useTranscriptSave.ts.
+  const { saveNow: saveTranscriptMarkdown } = useTranscriptSave({
+    state, stateRef, isRecording, serviceContext: settings.sermonServiceContext, toast,
+  });
 
   // "Add to glossary": highlighted words in a source cell -> floating bubble -> dialog.
   const [selection, setSelection] = useState<SourceSelection | null>(null);
@@ -235,6 +240,7 @@ export default function SermonMode() {
         dirtyCount={dirtyCount}
         onRefreshAll={refreshAll}
         onAddRow={() => handleAddRow('target')}
+        onSaveMarkdown={saveTranscriptMarkdown}
         autoTranslate={settings.sermonAutoTranslate}
         onToggleAutoTranslate={(v) => updateSettings({ sermonAutoTranslate: v })}
         maxLatencySecs={settings.sermonMaxLatencySecs}

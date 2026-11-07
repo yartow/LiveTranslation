@@ -17,6 +17,7 @@ import { translateSegments, type TranslateItemResult, type SermonTranslationProv
 import { parseSermonItems } from './lib/sermon-items';
 import { parseCorrectionExamples } from './lib/sermon-prompt';
 import { addToGlossary } from './lib/glossary-add';
+import { saveTranscript, isValidSessionId } from './lib/transcript-file';
 import { applyLearnedCorrections } from './lib/asr-corrections';
 import { getInputVolume, setInputVolume, isValidInputVolume } from './lib/mac-input-volume';
 import { isOperatorRequest, isLoopbackAddress } from './lib/loopback';
@@ -419,6 +420,25 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
     reloadGlossary({ csv: parsedCsv });
     res.json({ ok: true, glossaryRowAdded: result.glossaryRowAdded, correctionAdded: result.correctionAdded });
+  });
+
+  // Operator-only: the English of the service as markdown (server/lib/transcript-file.ts), written each
+  // time recording stops and on later edits (client/src/hooks/useTranscriptSave.ts). text/plain because
+  // the body is the markdown itself; the client names only its session id, never a path.
+  app.post('/api/sermon/transcript-md', express.text({ type: '*/*', limit: '5mb' }), async (req, res) => {
+    if (!isOperatorRequest(req.socket.remoteAddress)) {
+      return res.status(403).json({ error: 'Only available from the operator machine' });
+    }
+    const session = req.query.session;
+    if (!isValidSessionId(session)) return res.status(400).json({ error: 'invalid session' });
+    if (typeof req.body !== 'string' || !req.body.trim()) return res.status(400).json({ error: 'empty body' });
+    try {
+      const file = await saveTranscript(session, req.body);
+      res.json({ ok: true, file });
+    } catch (err) {
+      console.error('[transcript-md] save failed:', err);
+      res.status(500).json({ error: 'write failed' });
+    }
   });
 
   // macOS system input volume (see server/lib/mac-input-volume.ts). Operator
