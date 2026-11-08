@@ -28,6 +28,7 @@ import { useAutosaveRestore } from '@/hooks/useAutosaveRestore';
 import { useRefreshHotkeys } from '@/hooks/useRefreshHotkeys';
 import { useEditSuggestions } from '@/hooks/useEditSuggestions';
 import { useTranscriptSave } from '@/hooks/useTranscriptSave';
+import { useLyricsInsert } from '@/hooks/useLyricsInsert';
 import { LevelStore } from '@/lib/sermon/audio-level';
 import { PipelineStats } from '@/lib/sermon/pipeline-stats';
 import { ConfidenceStore } from '@/lib/sermon/confidence-store';
@@ -141,7 +142,7 @@ export default function SermonMode() {
   const handleAddRow = useCallback((cell: CellKind = 'target') => {
     const s = stateRef.current;
     const last = s.ids.length ? s.byId[s.ids[s.ids.length - 1]] : undefined;
-    if (last && !last.sourceText.trim() && !last.translatedText.trim()) {
+    if (last && !last.lyrics && !last.sourceText.trim() && !last.translatedText.trim()) {
       focusSegmentCell(last.id, cell);
       return;
     }
@@ -172,6 +173,8 @@ export default function SermonMode() {
   const { saveNow: saveTranscriptMarkdown } = useTranscriptSave({
     state, stateRef, isRecording, serviceContext: settings.sermonServiceContext, toast,
   });
+  // "Add lyrics": a song from AllSongs pasted into a row — see useLyricsInsert.ts.
+  const { addLyricsRow, onLyricsLink } = useLyricsInsert({ stateRef, dispatch: applyAction, pendingFocusRef, toast });
 
   // "Add to glossary": highlighted words in a source cell -> floating bubble -> dialog.
   const [selection, setSelection] = useState<SourceSelection | null>(null);
@@ -241,6 +244,7 @@ export default function SermonMode() {
         onRefreshAll={refreshAll}
         onAddRow={() => handleAddRow('target')}
         onSaveMarkdown={saveTranscriptMarkdown}
+        onAddLyrics={addLyricsRow}
         autoTranslate={settings.sermonAutoTranslate}
         onToggleAutoTranslate={(v) => updateSettings({ sermonAutoTranslate: v })}
         maxLatencySecs={settings.sermonMaxLatencySecs}
@@ -290,6 +294,7 @@ export default function SermonMode() {
         onAddRow={handleAddRow}
         pendingFocusRef={pendingFocusRef}
         confidenceStore={confidenceStore}
+        onLyricsLink={onLyricsLink}
       />
       {selection && !glossarySelection && (
         <AddToGlossaryBubble

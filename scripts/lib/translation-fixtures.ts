@@ -14,6 +14,8 @@ export interface SnapshotSegment {
   manualOverride?: boolean;
   /** The machine translation the operator replaced (kept in transcript.json since segments carry machineText). */
   machineText?: string;
+  /** Song lyrics ("Add lyrics"): AllSongs' English or a song translation, not a reference for sermon translation. */
+  lyrics?: unknown;
 }
 
 export interface TranslationFixtureItem {
@@ -42,7 +44,7 @@ export function buildTranslationFixtures(segments: SnapshotSegment[], opts: Fixt
   const items: TranslationFixtureItem[] = [];
   rows.forEach((seg, i) => {
     const source = (seg.sourceText ?? '').trim(), reference = stripMarkdown(seg.translatedText ?? '');
-    if (!seg.manualOverride || !source || !reference || words(source) < minWords) return;
+    if (!seg.manualOverride || seg.lyrics || !source || !reference || words(source) < minWords) return;
     if (seg.machineText && stripMarkdown(seg.machineText) === reference) return;
     items.push({
       id: `seg-${seg.index}`,

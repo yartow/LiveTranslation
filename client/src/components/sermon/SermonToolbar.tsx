@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { Download, Languages, Loader2, Mic, Pause, Play, Plus, RefreshCw, Send, Settings, Square, Users } from 'lucide-react';
+import { Download, Languages, Loader2, Mic, Music, Pause, Play, Plus, RefreshCw, Send, Settings, Square, Users } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Label } from '@/components/ui/label';
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
@@ -22,6 +22,8 @@ interface SermonToolbarProps {
   onAddRow: () => void;
   /** Saves the English as markdown (data/transcripts/) and downloads it — see useTranscriptSave.ts. */
   onSaveMarkdown: () => void;
+  /** Adds a row to paste an AllSongs song link into — see useLyricsInsert.ts. */
+  onAddLyrics: () => void;
   autoTranslate: boolean;
   onToggleAutoTranslate: (value: boolean) => void;
   maxLatencySecs: number;
@@ -66,7 +68,7 @@ function ToggleChip({ on, onClick, icon, label, title, testId }: {
 }
 
 export default function SermonToolbar({
-  isRecording, isProcessing, isPaused, onTogglePause, onToggleRecording, dirtyCount, onRefreshAll, onAddRow, onSaveMarkdown,
+  isRecording, isProcessing, isPaused, onTogglePause, onToggleRecording, dirtyCount, onRefreshAll, onAddRow, onSaveMarkdown, onAddLyrics,
   autoTranslate, onToggleAutoTranslate, maxLatencySecs, onChangeMaxLatencySecs,
   listenerCount, listenersEnabled, onToggleListeners, onOpenSettings, serviceContext, onChangeServiceContext, suggestions, onAddSuggestion, onDismissSuggestion, isMac,
 }: SermonToolbarProps) {
@@ -128,6 +130,17 @@ export default function SermonToolbar({
       >
         <Plus className="w-3.5 h-3.5" />
         Add row
+      </Button>
+
+      <Button
+        variant="outline"
+        size="sm"
+        onClick={onAddLyrics}
+        data-testid="button-add-lyrics"
+        title="Add a song: paste an AllSongs link into the new row (right = English song, left = Dutch song)"
+      >
+        <Music className="w-3.5 h-3.5" />
+        Add lyrics
       </Button>
 
       {/* Three independent switches: recording (round button + Pause above), translation, listeners.

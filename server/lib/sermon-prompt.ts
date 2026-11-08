@@ -218,6 +218,8 @@ export interface UserMessageInput {
   scriptureGuidance?: string;
   /** How to render a spoken Bible-reference announcement in English (e.g. "John 3:16") — a rendering hint for the announcement sentence itself, not an instruction about surrounding content. */
   referenceHint?: string;
+  /** The text is a verse of a sung song ("Add lyrics", client/src/lib/sermon/lyrics.ts): translate it line by line. */
+  lyrics?: boolean;
 }
 
 // ASR text is spoken content, not attacker-controlled input, but a preacher
@@ -231,7 +233,7 @@ function neutralizeTags(text: string): string {
   return text.replace(/<\/?(TE_VERTALEN|CONTEXT_VOOR|CONTEXT_NA|VERSTEKST_ESV|REFERENTIE_HINT|VOORBEELDEN_CORRECTIES|TERMINOLOGIE_CORRECTIE)>/gi, '');
 }
 
-export function buildUserMessage({ before, target, after, scriptureGuidance, referenceHint, examples, terminologyFix }: UserMessageInput): string {
+export function buildUserMessage({ before, target, after, scriptureGuidance, referenceHint, examples, terminologyFix, lyrics }: UserMessageInput): string {
   const parts: string[] = [];
   if (examples && examples.length > 0) {
     const lines = examples.map((e, i) => [
@@ -255,6 +257,15 @@ export function buildUserMessage({ before, target, after, scriptureGuidance, ref
       'A previous attempt left out required glossary terms. In this translation you must use: ' +
       `${terminologyFix.map(t => `"${neutralizeTags(t.expected)}" for "${neutralizeTags(t.term)}"`).join('; ')}.\n` +
       '</TERMINOLOGIE_CORRECTIE>',
+    );
+  }
+  if (lyrics) {
+    parts.push(
+      '<LIEDTEKST>\n' +
+      'The text to translate is part of a song sung in the service (a hymn or worship song), not spoken sermon text. ' +
+      'Translate it line by line: exactly one English line for each Dutch line, keeping the line breaks. ' +
+      'Write natural, reverent English; do not force rhyme or metre, and add nothing (no titles, labels or notes).\n' +
+      '</LIEDTEKST>',
     );
   }
   parts.push(`<TE_VERTALEN>\n${neutralizeTags(target)}\n</TE_VERTALEN>`);

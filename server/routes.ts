@@ -18,6 +18,7 @@ import { parseSermonItems } from './lib/sermon-items';
 import { parseCorrectionExamples } from './lib/sermon-prompt';
 import { addToGlossary } from './lib/glossary-add';
 import { saveTranscript, isValidSessionId } from './lib/transcript-file';
+import { fetchSongLyrics, AllSongsError } from './lib/allsongs';
 import { applyLearnedCorrections } from './lib/asr-corrections';
 import { getInputVolume, setInputVolume, isValidInputVolume } from './lib/mac-input-volume';
 import { isOperatorRequest, isLoopbackAddress } from './lib/loopback';
@@ -420,6 +421,22 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
     reloadGlossary({ csv: parsedCsv });
     res.json({ ok: true, glossaryRowAdded: result.glossaryRowAdded, correctionAdded: result.correctionAdded });
+  });
+
+  // Operator-only: one song's lyrics from AllSongs (server/lib/allsongs.ts) for sermon mode's
+  // "Add lyrics". Only the song id is taken from the pasted link; the host is ALLSONGS_URL.
+  app.get('/api/lyrics', rateLimiter, async (req, res) => {
+    if (!isOperatorRequest(req.socket.remoteAddress)) {
+      return res.status(403).json({ error: 'Only available from the operator machine' });
+    }
+    const url = typeof req.query.url === 'string' ? req.query.url : '';
+    try {
+      res.json(await fetchSongLyrics(url));
+    } catch (err) {
+      if (err instanceof AllSongsError) return res.status(err.status).json({ error: err.message });
+      console.error('[lyrics] failed:', err);
+      res.status(500).json({ error: 'Could not load the song' });
+    }
   });
 
   // Operator-only: the English of the service as markdown (server/lib/transcript-file.ts), written each

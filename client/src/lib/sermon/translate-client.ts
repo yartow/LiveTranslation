@@ -19,6 +19,8 @@ export interface TranslateItem {
   readingCandidate?: ReadingCandidate;
   /** How to render a spoken reference announcement in English (e.g. "John 3:16"). */
   referenceHint?: string;
+  /** A verse of a sung song ("Add lyrics") — translated line by line. */
+  lyrics?: boolean;
 }
 
 /** Mirrors server/lib/sermon-translate.ts's ScriptureResultInfo. */
@@ -130,6 +132,7 @@ export async function translateItems(items: TranslateItem[], opts: TranslateRequ
       items: items.map(i => ({
         id: i.id, text: i.text, before: i.before, after: i.after,
         readingCandidate: i.readingCandidate, referenceHint: i.referenceHint,
+        ...(i.lyrics ? { lyrics: true } : {}),
       })),
     }),
     signal: timeoutSignal(opts.signal),

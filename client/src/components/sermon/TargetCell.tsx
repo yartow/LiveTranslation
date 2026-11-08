@@ -5,6 +5,7 @@ import type { SegmentAction } from '@/lib/sermon/segment-store';
 import { isNextRowChord } from '@/lib/sermon/hotkeys';
 import { shouldSyncCellDom } from '@/lib/sermon/cell-sync';
 import type { CellKind } from '@/lib/sermon/focus-cell';
+import { looksLikeSongLink } from '@/lib/sermon/lyrics';
 
 interface TargetCellProps {
   segment: Segment;
@@ -12,6 +13,8 @@ interface TargetCellProps {
   activeSegmentIdRef: React.MutableRefObject<string | null>;
   /** Return in this cell: the grid moves to the same cell of the next row (or adds a row after the last). Must be stable. */
   onEnterNext?: (id: string, cell: CellKind) => void;
+  /** A song link pasted into an "Add lyrics" row (segment.lyrics.part === 'pending'). Must be stable. */
+  onLyricsLink?: (id: string, cell: CellKind, link: string) => void;
 }
 
 const EDIT_DEBOUNCE_MS = 120;
@@ -29,7 +32,7 @@ const EDIT_DEBOUNCE_MS = 120;
 // Uncontrolled, same as SourceCell: React never writes `value` back on a normal
 // render, so a re-render can't move the caret. Machine text (a finished
 // translation, a scripture substitution) is pushed into the DOM imperatively.
-export default function TargetCell({ segment, dispatch, activeSegmentIdRef, onEnterNext }: TargetCellProps) {
+export default function TargetCell({ segment, dispatch, activeSegmentIdRef, onEnterNext, onLyricsLink }: TargetCellProps) {
   const ref = useRef<HTMLTextAreaElement>(null);
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   // Latest typed value not yet dispatched into the store.
@@ -117,6 +120,7 @@ export default function TargetCell({ segment, dispatch, activeSegmentIdRef, onEn
   }, [commitPending, onEnterNext]);
 
   const isScripture = segment.status === 'SCRIPTURE';
+  const isPendingLyrics = segment.lyrics?.part === 'pending';
   // A SCRIPTURE segment is exact quoted verse text, not a model translation —
   // it should never read as "stale" the way a not-yet-(re)translated row does.
   const isStale = segment.status !== 'TRANSLATED' && !isScripture && !segment.manualOverride;
@@ -133,7 +137,7 @@ export default function TargetCell({ segment, dispatch, activeSegmentIdRef, onEn
           {segment.scripture.reference} · {segment.scripture.version}
         </div>
       )}
-      {segment.manualOverride && (
+      {segment.manualOverride && !segment.lyrics && (
         <Lock className="absolute top-2.5 right-2 w-3 h-3 text-blue-500 pointer-events-none" aria-label="Manually edited" />
       )}
       <textarea
@@ -147,12 +151,18 @@ export default function TargetCell({ segment, dispatch, activeSegmentIdRef, onEn
         data-cell="target"
         data-testid={`target-edit-${segment.id}`}
         aria-label="Translation"
-        placeholder={segment.status === 'TRANSLATING' ? '…' : 'Type translation…'}
+        onPaste={isPendingLyrics && onLyricsLink ? (e) => {
+          const text = e.clipboardData.getData('text');
+          if (!looksLikeSongLink(text)) return;
+          e.preventDefault();
+          onLyricsLink(segment.id, 'target', text.trim());
+        } : undefined}
+        placeholder={isPendingLyrics ? 'Paste an AllSongs link here for an English song' : segment.status === 'TRANSLATING' ? '…' : 'Type translation…'}
         rows={1}
         className={
           'w-full resize-none overflow-hidden bg-transparent px-3 py-2 pr-7 text-sm leading-relaxed rounded-md border-l-2 min-h-[2.25rem] ' +
           'placeholder:italic placeholder:text-muted-foreground/60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring ' +
-          (segment.manualOverride ? 'border-blue-400' : isScripture ? 'border-indigo-400' : 'border-transparent') +
+          (segment.lyrics ? 'border-violet-400' : segment.manualOverride ? 'border-blue-400' : isScripture ? 'border-indigo-400' : 'border-transparent') +
           (isStale ? ' opacity-60 focus:opacity-100' : '')
         }
       />

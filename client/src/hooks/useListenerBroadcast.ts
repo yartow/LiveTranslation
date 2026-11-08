@@ -14,6 +14,8 @@ import { sameWords } from '@/lib/sermon/markdown';
 
 export interface PublishedEntry {
   text: string;
+  /** Position last sent: a song inserted above (REPLACE_WITH_LYRICS) moves the rows after it. */
+  index?: number;
   /** The last published version was the operator's own typing. */
   manual: boolean;
   /** Sticky once true — a line that has ever changed stays "edited" (renders italic on the phone) even across a reconnect. */
@@ -46,7 +48,7 @@ export function computeBatch(
   for (const line of selectPublishableLines(state)) {
     const prev = published.get(line.id);
     if (!prev) {
-      published.set(line.id, { text: line.text, manual: line.manual, edited: false });
+      published.set(line.id, { text: line.text, index: line.index, manual: line.manual, edited: false });
       batch.push({ id: line.id, index: line.index, text: line.text, edited: false });
     } else if (prev.text !== line.text) {
       // Typing a translation from scratch sends a stream of changing texts; only a
@@ -58,9 +60,10 @@ export function computeBatch(
       const formattingOnly = sameWords(prev.text, line.text);
       const stillDrafting = prev.manual && line.manual;
       const edited = prev.edited || (!stillDrafting && !formattingOnly);
-      published.set(line.id, { text: line.text, manual: formattingOnly ? prev.manual : line.manual, edited });
+      published.set(line.id, { text: line.text, index: line.index, manual: formattingOnly ? prev.manual : line.manual, edited });
       batch.push({ id: line.id, index: line.index, text: line.text, edited });
-    } else if (force) {
+    } else if (force || prev.index !== line.index) {
+      published.set(line.id, { ...prev, index: line.index });
       batch.push({ id: line.id, index: line.index, text: line.text, edited: prev.edited });
     }
   }

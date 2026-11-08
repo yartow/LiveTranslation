@@ -9,7 +9,7 @@
 // UI has to be careful about. See segment-model.ts for hashText/isDirty and
 // the plan doc for the full rationale.
 
-import { type Segment, type SegmentStatus, type GlossaryWarning, type ScriptureInfo, hashText, isDirty, createSegment } from './segment-model';
+import { type Segment, type SegmentStatus, type GlossaryWarning, type ScriptureInfo, type LyricsInfo, hashText, isDirty, createSegment } from './segment-model';
 import { stripMarkdown } from './markdown';
 
 /**
@@ -77,7 +77,9 @@ export type SegmentAction =
   // COMPLETE_PROVISIONAL) without racing React's batched state updates —
   // peeking nextSegmentId(state) from a ref between two dispatches in the
   // same tick is not safe, since the ref may not have caught up yet.
-  | { type: 'APPEND_SEGMENT'; id?: string; sourceText: string; startTime: number; endTime: number; approximateTiming?: boolean; status?: SegmentStatus; now: number }
+  | { type: 'APPEND_SEGMENT'; id?: string; sourceText: string; startTime: number; endTime: number; approximateTiming?: boolean; status?: SegmentStatus; lyrics?: LyricsInfo; now: number }
+  // "Add lyrics": the pending row `id` is replaced, in place, by the song's rows (lib/sermon/lyrics.ts).
+  | { type: 'REPLACE_WITH_LYRICS'; id: string; rows: LyricsRow[]; now: number }
   | { type: 'UPDATE_PROVISIONAL'; id: string; sourceText: string; endTime: number; now: number }
   | { type: 'COMPLETE_PROVISIONAL'; id: string; sourceText: string; endTime: number; now: number }
   | { type: 'EDIT_SOURCE'; id: string; sourceText: string; now: number }
@@ -188,12 +190,47 @@ export function segmentReducer(state: SegmentStoreState, action: SegmentAction):
         status: action.status,
         now: action.now,
       });
+      if (action.lyrics) segment.lyrics = action.lyrics;
       return {
         ...state,
         ids: [...state.ids, id],
         byId: { ...state.byId, [id]: segment },
         nextSeq: state.nextSeq + 1,
       };
+    }
+
+    // The song goes exactly where its pending row is, even when live rows were added after it meanwhile;
+    // every row from there on is renumbered (useListenerBroadcast resends lines whose index changed).
+    // A row that comes with English is the operator's text, like a hand-typed one: manualOverride, never
+    // re-translated. asrText = sourceText, so the Dutch counts as "nothing corrected" (edit suggestions).
+    case 'REPLACE_WITH_LYRICS': {
+      const at = state.ids.indexOf(action.id);
+      const pending = state.byId[action.id];
+      if (at === -1 || pending?.lyrics?.part !== 'pending' || !action.rows.length) return state;
+      const byId = { ...state.byId };
+      delete byId[action.id];
+      const newIds: string[] = [];
+      let seq = state.nextSeq;
+      for (const row of action.rows) {
+        const id = `seg_${state.sessionId}_${seq++}`;
+        const seg = createSegment({
+          id, index: 0, sourceText: row.sourceText, startTime: pending.startTime, endTime: pending.endTime,
+          approximateTiming: pending.approximateTiming, now: action.now,
+        });
+        seg.lyrics = row.lyrics;
+        if (row.translatedText) {
+          seg.translatedText = row.translatedText;
+          seg.manualOverride = true;
+          seg.status = 'TRANSLATED';
+        }
+        byId[id] = seg;
+        newIds.push(id);
+      }
+      const ids = [...state.ids.slice(0, at), ...newIds, ...state.ids.slice(at + 1)];
+      for (let i = at; i < ids.length; i++) {
+        if (byId[ids[i]].index !== i) byId[ids[i]] = { ...byId[ids[i]], index: i };
+      }
+      return { ...state, ids, byId, nextSeq: seq };
     }
 
     // A live-arriving update to a PROVISIONAL segment's text, or a boundary
@@ -428,7 +465,8 @@ export function selectOrdered(state: SegmentStoreState): Segment[] {
  * Rows with nothing to translate: one added by hand (SermonMode's "Add row") whose Dutch is
  * still blank. It is "dirty" by hash (no translation yet) but there is no text to send.
  */
-export const hasNoSource = (seg: Segment): boolean => !seg.sourceText.trim();
+/** Nothing to translate: no Dutch yet, or an "Add lyrics" row still waiting for its song link. */
+export const hasNoSource = (seg: Segment): boolean => !seg.sourceText.trim() || seg.lyrics?.part === 'pending';
 
 export function selectDirtyIds(state: SegmentStoreState): string[] {
   return state.ids.filter(id => !hasNoSource(state.byId[id]) && isDirty(state.byId[id]));
@@ -498,6 +536,14 @@ export function selectContext(state: SegmentStoreState, id: string, before: numb
   };
 }
 
+/** One row of a song for REPLACE_WITH_LYRICS — built by lib/sermon/lyrics.ts's lyricsRows. */
+export interface LyricsRow {
+  sourceText: string;
+  /** Set when AllSongs has the English: shown as is, never translated. */
+  translatedText?: string;
+  lyrics: LyricsInfo;
+}
+
 /** English-only line handed to useListenerBroadcast.ts — deliberately has no sourceText field, see listener-hub.ts's header comment for why that matters. */
 export interface PublishableLine {
   id: string;
@@ -521,9 +567,13 @@ export function selectPublishableLines(state: SegmentStoreState): PublishableLin
   const lines: PublishableLine[] = [];
   for (const id of state.ids) {
     const seg = state.byId[id];
-    if (!seg.translatedText.trim()) continue;
+    if (!seg.translatedText.trim() || seg.lyrics?.part === 'pending') continue;
     if (seg.status !== 'TRANSLATED' && seg.status !== 'SCRIPTURE' && !seg.manualOverride) continue;
-    lines.push({ id: seg.id, index: seg.index, text: seg.translatedText, manual: seg.manualOverride });
+    // A song's title row is a heading on the phones and in the saved transcript.
+    const text = seg.lyrics?.part === 'title' && !seg.translatedText.trimStart().startsWith('#')
+      ? `### ${seg.translatedText.trim()}`
+      : seg.translatedText;
+    lines.push({ id: seg.id, index: seg.index, text, manual: seg.manualOverride });
   }
   return lines;
 }
@@ -549,7 +599,7 @@ export function selectCorrectionExamples(state: SegmentStoreState, max = 5): Cor
   const picked: CorrectionExample[] = [];
   for (let i = state.ids.length - 1; i >= 0 && picked.length < max; i--) {
     const seg = state.byId[state.ids[i]];
-    if (!seg.manualOverride) continue;
+    if (!seg.manualOverride || seg.lyrics) continue;
     const human = stripMarkdown(seg.translatedText), source = seg.sourceText.trim(), machine = seg.machineText?.trim();
     if (!human || !source || (machine !== undefined && human === stripMarkdown(machine))) continue;
     picked.push({

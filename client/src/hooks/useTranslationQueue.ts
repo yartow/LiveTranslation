@@ -95,7 +95,8 @@ export function useTranslationQueue({ stateRef, dispatch, configRef, autoTransla
 
         const { readingCandidate, referenceHint, ownRef, planned } = pickReadingCandidate({
           text: seg.sourceText,
-          scriptureOverride: seg.scriptureOverride,
+          // Song lyrics are never a Bible reading (a song called "Psalm 23" must not start one).
+          scriptureOverride: seg.scriptureOverride || !!seg.lyrics,
           activeReading: snapshot.activeReading,
           plannedPassages: cfg.plannedPassages,
           usedPlanned: plannedUsedRef.current,
@@ -104,6 +105,7 @@ export function useTranslationQueue({ stateRef, dispatch, configRef, autoTransla
         return {
           id, text: seg.sourceText, before: ctx.before, after: ctx.after,
           requestHash: hashText(seg.sourceText), readingCandidate, referenceHint, ownRef, planned,
+          lyrics: !!seg.lyrics,
         };
       });
     if (items.length === 0) return;
@@ -129,7 +131,7 @@ export function useTranslationQueue({ stateRef, dispatch, configRef, autoTransla
     const callStartedAt = Date.now();
     try {
       const results = await translateItems(
-        items.map(({ id, text, before, after, readingCandidate, referenceHint }) => ({ id, text, before, after, readingCandidate, referenceHint })),
+        items.map(({ id, text, before, after, readingCandidate, referenceHint, lyrics }) => ({ id, text, before, after, readingCandidate, referenceHint, ...(lyrics ? { lyrics } : {}) })),
         cfg,
       );
       if (stats) {

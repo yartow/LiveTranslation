@@ -166,10 +166,10 @@ export function originalWords(chunks: Chunk[]): RawWord[] {
   return words;
 }
 
-/** The edited side: the on-screen segments' `sourceText`, in order. */
-export function editedWords(segments: Array<{ index: number; sourceText: string }>): RawWord[] {
+/** The edited side: the on-screen segments' `sourceText`, in order. Song lyrics rows ("Add lyrics") were never spoken into the recognizer and are left out. */
+export function editedWords(segments: Array<{ index: number; sourceText: string; lyrics?: unknown }>): RawWord[] {
   const words: RawWord[] = [];
-  for (const s of [...segments].sort((a, b) => a.index - b.index)) {
+  for (const s of [...segments].filter(s => !s.lyrics).sort((a, b) => a.index - b.index)) {
     for (const w of String(s.sourceText ?? '').split(/\s+/).filter(Boolean)) words.push({ raw: w, time: 0, segment: s.index });
   }
   return words;

@@ -25,6 +25,8 @@ export interface TranslateItemInput {
   readingCandidate?: ReadingCandidate;
   /** How to render a spoken reference announcement in English (e.g. "John 3:16") — passed through to the prompt as a rendering hint only, see sermon-prompt.ts. */
   referenceHint?: string;
+  /** A verse of a sung song ("Add lyrics"): translated line by line, see sermon-prompt.ts's <LIEDTEKST>. */
+  lyrics?: boolean;
 }
 
 /** Mirrors the outcome of server/lib/scripture.ts's adjudicateScripture for one item — see that module for the full verbatim/paraphrase/ended semantics. */
@@ -268,6 +270,7 @@ export async function translateSegments(
       const messageInput = {
         before: item.before, target: item.text, after: item.after,
         scriptureGuidance, referenceHint: item.referenceHint, examples: opts.examples,
+        ...(item.lyrics ? { lyrics: true } : {}),
       };
       const userMessage = buildUserMessage(messageInput);
 

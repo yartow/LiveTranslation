@@ -66,6 +66,7 @@ export function useTranscriptSnapshots(
         sourceText: g.sourceText, translatedText: g.translatedText,
         asrText: g.asrText, machineText: g.machineText,
         manualOverride: g.manualOverride, lastSourceChangeAt: g.lastSourceChangeAt, error: g.error,
+        ...(g.lyrics ? { lyrics: g.lyrics } : {}),
       };
     });
     fetch('/api/asr-debug/transcript', {

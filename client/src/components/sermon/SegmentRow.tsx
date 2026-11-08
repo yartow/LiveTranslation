@@ -1,5 +1,5 @@
 import { memo } from 'react';
-import { AlertCircle, AlertTriangle, BookOpen, Clock, Loader2, RefreshCw, Scale } from 'lucide-react';
+import { AlertCircle, AlertTriangle, BookOpen, Clock, Loader2, Music, RefreshCw, Scale } from 'lucide-react';
 import type { Segment } from '@/lib/sermon/segment-model';
 import type { SegmentAction } from '@/lib/sermon/segment-store';
 import { isMacPlatform } from '@/lib/platform';
@@ -20,6 +20,7 @@ interface SegmentRowProps {
   onSelectText: (selection: SourceSelection | null) => void;
   onEnterNext: (id: string, cell: CellKind) => void;
   confidenceStore: ConfidenceStore;
+  onLyricsLink: (id: string, cell: CellKind, link: string) => void;
 }
 
 // Single scroll-container row: source and target are two flex children of
@@ -32,17 +33,26 @@ interface SegmentRowProps {
 // translating a different one re-renders zero unrelated rows — that's the
 // primary mechanism (ahead of the uncontrolled-input trick in SourceCell)
 // behind "editing survives new segments streaming in".
-function SegmentRowImpl({ segment, dispatch, activeSegmentIdRef, onRefreshOne, flushersRef, onSelectText, onEnterNext, confidenceStore }: SegmentRowProps) {
+function SegmentRowImpl({ segment, dispatch, activeSegmentIdRef, onRefreshOne, flushersRef, onSelectText, onEnterNext, confidenceStore, onLyricsLink }: SegmentRowProps) {
   return (
     <div
       className="flex items-stretch flex-col md:flex-row border-b border-border/60 last:border-b-0"
       data-testid={`row-${segment.id}`}
     >
       <div className="flex-1 min-w-0 md:border-r border-border/60">
-        <SourceCell segment={segment} dispatch={dispatch} activeSegmentIdRef={activeSegmentIdRef} flushersRef={flushersRef} onSelectText={onSelectText} onEnterNext={onEnterNext} confidenceStore={confidenceStore} />
+        <SourceCell segment={segment} dispatch={dispatch} activeSegmentIdRef={activeSegmentIdRef} flushersRef={flushersRef} onSelectText={onSelectText} onEnterNext={onEnterNext} confidenceStore={confidenceStore} onLyricsLink={onLyricsLink} />
       </div>
 
       <div className="flex md:flex-col items-center justify-center md:w-7 shrink-0 py-1 md:py-2.5">
+        {segment.lyrics && (
+          <span
+            role="img"
+            aria-label={segment.lyrics.title ? `Song: ${segment.lyrics.title}` : 'Song lyrics'}
+            title={segment.lyrics.part === 'pending' ? 'Paste an AllSongs song link into this row' : `Song lyrics${segment.lyrics.title ? ` — ${segment.lyrics.title}` : ''} (from AllSongs)`}
+          >
+            <Music className="w-3.5 h-3.5 text-violet-500/80" data-testid={`lyrics-badge-${segment.id}`} />
+          </span>
+        )}
         {segment.status === 'TRANSLATING' && (
           <button
             type="button"
@@ -127,7 +137,7 @@ function SegmentRowImpl({ segment, dispatch, activeSegmentIdRef, onRefreshOne, f
       </div>
 
       <div className="flex-1 min-w-0">
-        <TargetCell segment={segment} dispatch={dispatch} activeSegmentIdRef={activeSegmentIdRef} onEnterNext={onEnterNext} />
+        <TargetCell segment={segment} dispatch={dispatch} activeSegmentIdRef={activeSegmentIdRef} onEnterNext={onEnterNext} onLyricsLink={onLyricsLink} />
       </div>
     </div>
   );
@@ -137,5 +147,5 @@ export default memo(SegmentRowImpl, (prev, next) =>
   prev.segment === next.segment && prev.dispatch === next.dispatch &&
   prev.onRefreshOne === next.onRefreshOne && prev.flushersRef === next.flushersRef &&
   prev.onSelectText === next.onSelectText && prev.onEnterNext === next.onEnterNext &&
-  prev.confidenceStore === next.confidenceStore,
+  prev.confidenceStore === next.confidenceStore && prev.onLyricsLink === next.onLyricsLink,
 );

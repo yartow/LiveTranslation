@@ -1,4 +1,5 @@
 import { useRef, useEffect, useLayoutEffect, useCallback } from 'react';
+import { looksLikeSongLink } from '@/lib/sermon/lyrics';
 import type { Segment } from '@/lib/sermon/segment-model';
 import type { SegmentAction } from '@/lib/sermon/segment-store';
 import { isNextRowChord } from '@/lib/sermon/hotkeys';
@@ -22,6 +23,8 @@ interface SourceCellProps {
   onEnterNext?: (id: string, cell: CellKind) => void;
   /** Words Whisper was unsure about — shown as "check" chips under the text. Must be a stable object. */
   confidenceStore?: ConfidenceStore;
+  /** A song link pasted into an "Add lyrics" row (segment.lyrics.part === 'pending'). Must be stable. */
+  onLyricsLink?: (id: string, cell: CellKind, link: string) => void;
 }
 
 const EDIT_DEBOUNCE_MS = 150;
@@ -34,7 +37,7 @@ const MAX_SELECTION_CHARS = 80;
 // caret. Text only gets pushed into the DOM element imperatively, and only
 // when sourceRevision changes (a non-user write — see segment-store.ts) AND
 // the field isn't the one currently focused.
-export default function SourceCell({ segment, dispatch, activeSegmentIdRef, flushersRef, onSelectText, onEnterNext, confidenceStore }: SourceCellProps) {
+export default function SourceCell({ segment, dispatch, activeSegmentIdRef, flushersRef, onSelectText, onEnterNext, confidenceStore, onLyricsLink }: SourceCellProps) {
   const ref = useRef<HTMLTextAreaElement>(null);
   const revisionRef = useRef(segment.sourceRevision);
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -192,6 +195,13 @@ export default function SourceCell({ segment, dispatch, activeSegmentIdRef, flus
         data-segment-id={segment.id}
         data-cell="source"
         data-testid={`source-${segment.id}`}
+        onPaste={segment.lyrics?.part === 'pending' && onLyricsLink ? (e) => {
+          const text = e.clipboardData.getData('text');
+          if (!looksLikeSongLink(text)) return;
+          e.preventDefault();
+          onLyricsLink(segment.id, 'source', text.trim());
+        } : undefined}
+        placeholder={segment.lyrics?.part === 'pending' ? 'Paste an AllSongs link here for a Dutch song' : undefined}
         rows={1}
         className={
           'w-full resize-none overflow-hidden bg-transparent px-3 py-2 pr-16 text-sm leading-relaxed rounded-md ' +

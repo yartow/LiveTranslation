@@ -73,6 +73,19 @@ export interface Segment {
   scripture?: ScriptureInfo;
   /** True once the human has told this row "not scripture" (CLEAR_SCRIPTURE) — future refreshes translate it normally even if a Bible reference is still detected in its text. Reset to false on the next edit, so correcting the reference re-enables detection. */
   scriptureOverride?: boolean;
+  /**
+   * Set on rows of a song from AllSongs ("Add lyrics", lib/sermon/lyrics.ts). `pending` = the row the operator
+   * pastes a song link into; it becomes a `title` row plus one `verse` row per sung section (REPLACE_WITH_LYRICS).
+   * Lyrics rows are kept out of everything that learns from the operator's edits and out of Bible-reading detection.
+   */
+  lyrics?: LyricsInfo;
+}
+
+export interface LyricsInfo {
+  part: 'pending' | 'title' | 'verse';
+  /** AllSongs record id of the song. */
+  songId?: string;
+  title?: string;
 }
 
 /**

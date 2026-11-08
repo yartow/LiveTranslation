@@ -162,6 +162,12 @@ describe('getFileGlossaryContext', () => {
 });
 
 describe('buildUserMessage', () => {
+  it('asks for a line-by-line translation of song lyrics, only when the item is lyrics', () => {
+    const msg = buildUserMessage({ before: [], target: 'O hoofd, bedekt met wonden,\nbelaan met smart en hoon', after: [], lyrics: true });
+    expect(msg).toMatch(/<LIEDTEKST>[\s\S]*one English line for each Dutch line[\s\S]*<\/LIEDTEKST>\n<TE_VERTALEN>/);
+    expect(buildUserMessage({ before: [], target: 'Zin.', after: [] })).not.toContain('LIEDTEKST');
+  });
+
   it('wraps the target sentence in <TE_VERTALEN> tags', () => {
     const msg = buildUserMessage({ before: [], target: 'Dit is de zin.', after: [] });
     expect(msg).toContain('<TE_VERTALEN>\nDit is de zin.\n</TE_VERTALEN>');

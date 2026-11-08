@@ -18,6 +18,8 @@ interface SegmentGridProps {
   /** A row SermonMode just added, to focus once it has rendered — see the ids.length effect below. */
   pendingFocusRef: React.MutableRefObject<{ id: string; cell: CellKind } | null>;
   confidenceStore: ConfidenceStore;
+  /** A song link pasted into an "Add lyrics" row — see useLyricsInsert.ts. Must be stable. */
+  onLyricsLink: (id: string, cell: CellKind, link: string) => void;
 }
 
 const NEAR_BOTTOM_PX = 80;
@@ -26,7 +28,7 @@ const NEAR_BOTTOM_PX = 80;
 // is already near it AND nothing inside the grid is focused. Otherwise a
 // "N nieuwe segmenten" pill appears instead of yanking the view out from
 // under someone mid-edit or mid-read.
-export default function SegmentGrid({ state, dispatch, activeSegmentIdRef, onRefreshOne, flushersRef, onSelectText, onAddRow, pendingFocusRef, confidenceStore }: SegmentGridProps) {
+export default function SegmentGrid({ state, dispatch, activeSegmentIdRef, onRefreshOne, flushersRef, onSelectText, onAddRow, pendingFocusRef, confidenceStore, onLyricsLink }: SegmentGridProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const [pendingNew, setPendingNew] = useState(0);
   const prevCountRef = useRef(state.ids.length);
@@ -102,6 +104,7 @@ export default function SegmentGrid({ state, dispatch, activeSegmentIdRef, onRef
             onSelectText={onSelectText}
             onEnterNext={handleEnterNext}
             confidenceStore={confidenceStore}
+            onLyricsLink={onLyricsLink}
           />
         ))}
       </div>

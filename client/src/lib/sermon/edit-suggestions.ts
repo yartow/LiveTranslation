@@ -13,6 +13,8 @@ export interface SuggestionSegment {
   id: string;
   asrText: string;
   sourceText: string;
+  /** Song lyrics ("Add lyrics") never came from the recognizer: their edits are not ASR corrections. */
+  lyrics?: unknown;
 }
 
 export interface EditSuggestion {
@@ -140,7 +142,7 @@ function cachedSubstitutions(asrText: string, sourceText: string): Substitution[
 export function editSuggestions(segments: SuggestionSegment[], dismissed: ReadonlySet<string> = new Set()): EditSuggestion[] {
   const byKey = new Map<string, EditSuggestion>();
   for (const seg of segments) {
-    if (seg.asrText === seg.sourceText) continue;
+    if (seg.asrText === seg.sourceText || seg.lyrics) continue;
     const seenHere = new Set<string>();
     for (const sub of cachedSubstitutions(seg.asrText, seg.sourceText)) {
       if (dismissed.has(sub.key) || seenHere.has(sub.key)) continue; // one sighting per row, however often repeated inside it
