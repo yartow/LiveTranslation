@@ -5,6 +5,13 @@ Pronounced *"stay"*.
 
 A mobile-first web application for real-time audio transcription and multi-language translation. Designed for one-handed use — start it, put your phone down, read the live translation.
 
+> **New here and not a programmer?** Read the step-by-step user manual: [English](docs/manual.md) · [Nederlands](docs/handleiding.md). It covers what you need (Mac with Apple chip, or any computer with an OpenAI API key), installation, a first service, listeners' phones and troubleshooting. To make a PDF with a clickable table of contents and bookmarks:
+>
+> ```bash
+> pandoc -d docs/pandoc.yaml docs/manual.md -o manual.pdf
+> pandoc -d docs/pandoc.yaml docs/handleiding.md -o handleiding.pdf
+> ```
+
 ---
 
 ## Quick Start
@@ -146,7 +153,7 @@ Any model available in Ollama that supports the chat/JSON completion API works �
 
 ## Running Locally — npm
 
-Requirements: Node 20+, ffmpeg (`brew install ffmpeg` on Mac).
+Requirements: Node 20+, ffmpeg (`brew install ffmpeg` on Mac). Runs on macOS and Windows (the npm scripts set environment variables through `cross-env`, so they work in the Windows command prompt too); only the local `mlx` engine is limited to Apple Silicon. Python is needed only for that engine.
 
 ```bash
 # 1. Copy the env template and fill in your keys
@@ -205,7 +212,7 @@ Every correction you make in sermon mode tells you where the transcription goes 
 npm run dev:record
 ```
 
-This is `npm run dev` plus `ASR_DEBUG_DIR=data/asr-debug`: each recording is written to `data/asr-debug/<timestamp>-<id>/` (gitignored). Open `http://localhost:PORT/`, record, and correct the Dutch text as you go, as usual.
+This is `npm run dev` plus `ASR_DEBUG_DIR=data/asr-debug`: each recording is written to `data/asr-debug/<timestamp>-<id>/` (gitignored). Open `http://localhost:PORT/`, record, and correct the Dutch text as you go, as usual. To listen back to a recorded service, see [docs/session-audio.md](docs/session-audio.md).
 
 **2. Stop the recording, wait ~5 seconds, and keep the page open.** The page saves what is on screen to the archive every minute and once more after you stop. Edits made after the last save are not included, so don't close the tab straight after your last edit.
 
@@ -223,7 +230,7 @@ Options: `--stage raw|stripped|corrected` (default `corrected`, the text as it r
 
 - **A correction you make again and again** (it appears under "Recurring substitutions") is a glossary candidate. Add the right word as a row in your glossary CSV (`data/*.csv`, Settings → General → Glossary → reload) or, for the free-text list, to Settings → General → *Vocabulary hints*. That list is what Whisper hears as context, so a name or term it keeps mishearing gets recognised.
 - **Mishearings of a Bible reference** (a book or number) show up in `edits.md` too; if a book-name spelling is the problem, add it as a `Bijbelboek` row in the CSV.
-- **Not sure whether Whisper or you was right?** Run `npx tsx scripts/asr-session-audio.ts <session-folder>` and listen to `full.wav` at the timestamp from `edits.md`.
+- **Not sure whether Whisper or you was right?** Run `npx tsx scripts/asr-session-audio.ts <session-folder>` and listen to `full.wav` at the timestamp from `edits.md`. Step-by-step instructions (joining the pieces, converting to `.m4a`, reading `timeline.txt`, cutting out one fragment) are in [docs/session-audio.md](docs/session-audio.md).
 - **Want to know if a change helped?** Turn the service you just corrected into test clips with `npx tsx scripts/build-asr-fixtures.ts <session-folder>` (audio slices plus your corrected text as the reference), then score with `npm run eval:asr` — see `CLAUDE.md`'s "Evaluating ASR changes". The same works for translation: `npx tsx scripts/build-translation-fixtures.ts <session-folder>` collects the English you wrote or corrected, and `npm run eval:translate -- --run openai --run claude` compares models against it (see "Evaluating translation changes").
 - **Which doubtful words were really wrong?** With the local MLX engine, `npx tsx scripts/asr-confidence-check.ts <session-folder>` shows how often the words Whisper was unsure about were the ones you corrected, to pick the threshold for the "check" chips.
 

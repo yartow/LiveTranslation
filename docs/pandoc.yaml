@@ -1,0 +1,23 @@
+# Pandoc settings for turning the user manuals into PDF:
+#
+#   pandoc -d docs/pandoc.yaml docs/handleiding.md -o handleiding.pdf
+#   pandoc -d docs/pandoc.yaml docs/manual.md      -o manual.pdf
+#
+# Needs pandoc and a LaTeX distribution with xelatex (MacTeX / MiKTeX).
+# The title and language come from the front matter at the top of each manual.
+
+pdf-engine: xelatex
+table-of-contents: true   # clickable table of contents
+toc-depth: 2
+number-sections: true
+include-in-header:
+  - ${.}/pandoc-header.tex  # bookmarks panel open, contents on its own page
+variables:
+  documentclass: article
+  papersize: a4
+  fontsize: 11pt
+  geometry: margin=2.5cm
+  colorlinks: true
+  linkcolor: blue
+  urlcolor: blue
+  toccolor: black

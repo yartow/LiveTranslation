@@ -1,0 +1,6 @@
+% Included by docs/pandoc.yaml.
+% Open the PDF with the bookmarks panel showing, numbered like the chapters.
+\AtBeginDocument{\hypersetup{bookmarksopen=true,bookmarksnumbered=true,pdfpagemode=UseOutlines}}
+% Put the table of contents on its own page.
+\let\cttOldToc\tableofcontents
+\renewcommand{\tableofcontents}{\cttOldToc\clearpage}
