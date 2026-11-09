@@ -6,7 +6,10 @@ Protocol: JSON-lines over stdin/stdout.
 
   in  (per request): {"id": <int>, "path": "<wav path>", "language": "en"|null, "initial_prompt": "..."|null,
                       "opts": {...}|null}   # opts: optional decode overrides, see DEFAULT_OPTS
-  out (per request):  {"id": <int>, "text": "...", "diag": {...}}   # diag: per-segment kept/dropped + uncovered spans
+  out (per request):  {"id": <int>, "text": "...", "diag": {...}, "uncertain": [{"word": "...", "p": 0.31}, ...],
+                       "decode_secs": <float>}   # wall time of the Whisper decode alone
+                      # diag: per-segment kept/dropped + uncovered spans (+ the decoding temperature of each)
+                      # uncertain: words of the kept segments Whisper was unsure about (probability < UNCERTAIN_BELOW)
                     or {"id": <int>, "error": "..."}
   out (once, after the model is warmed): {"type": "ready"}
 
@@ -18,6 +21,7 @@ Node side. See server/lib/mlx-whisper.ts for the caller.
 import sys
 import os
 import json
+import time
 import traceback
 import wave
 
@@ -47,6 +51,26 @@ MODEL_REPO = os.environ.get("MLX_MODEL") or "mlx-community/whisper-large-v3-mlx"
 MAX_COMPRESSION_RATIO = 2.4
 NO_SPEECH_PROB_DROP = 0.6
 AVG_LOGPROB_DROP = -1.0
+
+
+# Words Whisper itself was unsure about, reported per chunk (needs word timestamps, which are on by
+# default via hallucination_silence_threshold). The server decides which of them are worth showing
+# the operator (server/lib/low-confidence.ts); this only reports the candidates, up to a cap.
+UNCERTAIN_BELOW = 0.6
+MAX_UNCERTAIN = 40
+
+
+def uncertain_words(segments: list) -> list:
+    out = []
+    for seg in segments:
+        for w in seg.get("words") or []:
+            prob = w.get("probability")
+            word = "".join(ch for ch in str(w.get("word", "")) if ch.isalnum() or ch in "'-’").strip("'-’")
+            if prob is None or prob >= UNCERTAIN_BELOW or len(word) < 3:
+                continue
+            out.append({"word": word, "p": round(float(prob), 2)})
+    out.sort(key=lambda x: x["p"])
+    return out[:MAX_UNCERTAIN]
 
 
 # Decode settings a request may override (the eval script A/B-tests these; the
@@ -118,6 +142,8 @@ def build_diag(path: str, segments: list, kept_ids: set) -> dict:
                 "compression_ratio": round(s.get("compression_ratio", 0.0), 2),
                 "avg_logprob": round(s.get("avg_logprob", 0.0), 2),
                 "no_speech_prob": round(s.get("no_speech_prob", 0.0), 3),
+                # > 0 = Whisper's temperature fallback: the window was decoded again, which is what makes a chunk slow.
+                "temperature": round(s.get("temperature", 0.0), 1),
                 "dropped": None if id(s) in kept_ids else drop_reason(s),
             }
             for s in segments
@@ -181,6 +207,7 @@ def main() -> None:
             if not path or not os.path.exists(path):
                 raise FileNotFoundError(f"Audio file not found: {path}")
 
+            decode_started = time.monotonic()
             result = mlx_whisper.transcribe(
                 path,
                 path_or_hf_repo=MODEL_REPO,
@@ -201,6 +228,7 @@ def main() -> None:
                 compression_ratio_threshold=MAX_COMPRESSION_RATIO,
                 no_speech_threshold=opts["no_speech_threshold"],
             )
+            decode_secs = round(time.monotonic() - decode_started, 2)
             segments = result.get("segments") or []
             diag = None
             if segments:
@@ -210,9 +238,11 @@ def main() -> None:
                     log(f"Request {req_id}: dropped {dropped}/{len(segments)} low-confidence segment(s)")
                 text = " ".join(seg.get("text", "").strip() for seg in kept).strip()
                 diag = build_diag(path, segments, {id(s) for s in kept})
+                uncertain = uncertain_words(kept)
             else:
                 text = result.get("text", "").strip()
-            emit({"id": req_id, "text": text, "diag": diag})
+                uncertain = []
+            emit({"id": req_id, "text": text, "diag": diag, "uncertain": uncertain, "decode_secs": decode_secs})
         except Exception as e:
             log(f"Request {req_id} failed: {traceback.format_exc()}")
             emit({"id": req_id, "error": str(e)})

@@ -10,9 +10,12 @@
 
 import { useEffect, useRef, useState } from 'react';
 import { selectPublishableLines, type SegmentStoreState } from '@/lib/sermon/segment-store';
+import { sameWords } from '@/lib/sermon/markdown';
 
 export interface PublishedEntry {
   text: string;
+  /** Position last sent: a song inserted above (REPLACE_WITH_LYRICS) moves the rows after it. */
+  index?: number;
   /** The last published version was the operator's own typing. */
   manual: boolean;
   /** Sticky once true — a line that has ever changed stays "edited" (renders italic on the phone) even across a reconnect. */
@@ -45,17 +48,22 @@ export function computeBatch(
   for (const line of selectPublishableLines(state)) {
     const prev = published.get(line.id);
     if (!prev) {
-      published.set(line.id, { text: line.text, manual: line.manual, edited: false });
+      published.set(line.id, { text: line.text, index: line.index, manual: line.manual, edited: false });
       batch.push({ id: line.id, index: line.index, text: line.text, edited: false });
     } else if (prev.text !== line.text) {
       // Typing a translation from scratch sends a stream of changing texts; only a
       // revision of something already shown as finished (machine text, or a line
       // that was already complete) reads as "edited" (italic) on the phone.
+      // Adding markdown (`> ` before a quote, `**bold**`) changes how the line looks, not what it says:
+      // not italic, and the line keeps counting as what it was (a finished machine line stays one, so a
+      // later change of words to it is still a revision).
+      const formattingOnly = sameWords(prev.text, line.text);
       const stillDrafting = prev.manual && line.manual;
-      const edited = prev.edited || !stillDrafting;
-      published.set(line.id, { text: line.text, manual: line.manual, edited });
+      const edited = prev.edited || (!stillDrafting && !formattingOnly);
+      published.set(line.id, { text: line.text, index: line.index, manual: formattingOnly ? prev.manual : line.manual, edited });
       batch.push({ id: line.id, index: line.index, text: line.text, edited });
-    } else if (force) {
+    } else if (force || prev.index !== line.index) {
+      published.set(line.id, { ...prev, index: line.index });
       batch.push({ id: line.id, index: line.index, text: line.text, edited: prev.edited });
     }
   }

@@ -10,6 +10,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { ArrowDown, RefreshCw, Wifi, WifiOff } from 'lucide-react';
+import ListenerMarkdown from '@/components/listener/ListenerMarkdown';
 
 /** Mirrors server/lib/listener-hub.ts's ListenerLine — client/server share no code, see sermon-prompt.ts's header comment for the established pattern of documenting these mirrors explicitly. */
 interface ListenerLine {
@@ -238,15 +239,14 @@ export default function ListenerMode() {
             </p>
           ) : (
             orderedLines.map(line => (
-              <p
+              <ListenerMarkdown
                 key={line.id}
+                text={line.text}
                 className={
                   'text-xl leading-relaxed sm:text-2xl sm:leading-relaxed ' +
                   (line.edited ? 'italic text-foreground/90' : 'text-foreground')
                 }
-              >
-                {line.text}
-              </p>
+              />
             ))
           )}
         </div>

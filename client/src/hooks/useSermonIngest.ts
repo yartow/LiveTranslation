@@ -1,5 +1,7 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
-import { ChunkBasedTranscription, type ChunkTranscriptionEvents, type TranscriptionEngine } from '@/lib/chunk-based-transcription';
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
+import type { PipelineStats } from '@/lib/sermon/pipeline-stats';
+import type { ConfidenceStore } from '@/lib/sermon/confidence-store';
+import { ChunkBasedTranscription, RecordingStoppedError, type ChunkTranscriptionEvents, type TranscriptionEngine } from '@/lib/chunk-based-transcription';
 import { initIngestState, appendChunk, finalizeBuffer, releaseProvisional, tick as ingestTick, type IngestConfig, type IngestEffect } from '@/lib/sermon/ingest-buffer';
 import { canWriteLive, type SegmentAction, type SegmentStoreState } from '@/lib/sermon/segment-store';
 import { SERMON_VAD_SILENCE_MS, SERMON_MIN_CHUNK_MS, SERMON_MAX_CHUNK_MS } from '@/lib/sermon/chunk-limits';
@@ -23,6 +25,8 @@ export interface SermonIngestArgs {
   ollamaBaseUrl: string;
   ollamaModel: string;
   glossary: string;
+  /** Leading lines of `glossary` that are today's service (kept first in Whisper's prompt). */
+  glossaryPriorityLines?: number;
   debugMode: boolean;
   chunkDurationSecs?: number;
   /** User's configured mic gain (settings.audioNormalizationGain). Sermon
@@ -40,13 +44,23 @@ export interface SermonIngestArgs {
   onStreamReady?: (stream: MediaStream) => void;
   /** Non-fatal heads-up (e.g. the chosen mic was missing and the default was used). */
   onNotice?: (message: string) => void;
-  onError: (message: string) => void;
+  /** Feeds the audio bar's pipeline-health popover (lib/sermon/pipeline-stats.ts). */
+  pipelineStats?: PipelineStats;
+  /** Collects the words Whisper was unsure about (MLX engine) for the "check" chips. */
+  confidenceStore?: ConfidenceStore;
+  /** `stillRecording`: the capture is alive (e.g. one chunk failed, or the socket is reconnecting). */
+  onError: (message: string, stillRecording: boolean) => void;
 }
 
 const CAP_TICK_MS = 250;
 // How much of the already-transcribed text is fed back to Whisper as its
 // prompt for the next chunk (server trims further, see buildWhisperPrompt).
 const WHISPER_CONTEXT_CHARS = 300;
+
+// Folded into every live row id. Rows can outlive a page load (the autosave restores them), and
+// the session/sequence counters below restart at 0 on every load — without this a restored
+// `live-1-0` would collide with the next recording's first row and APPEND_SEGMENT would refuse it.
+const PAGE_NONCE = Date.now().toString(36);
 
 /**
  * Wires ChunkBasedTranscription (outputMode:'correct-only', VAD chunking,
@@ -61,8 +75,10 @@ const WHISPER_CONTEXT_CHARS = 300;
  * counter between two dispatches in one tick unsafe.
  */
 export function useSermonIngest(args: SermonIngestArgs) {
+  // Layout effect, not a passive one: a callback that fires between the commit and the passive
+  // effects (an audio frame, a socket message) must already see this render's args.
   const argsRef = useRef(args);
-  useEffect(() => { argsRef.current = args; });
+  useLayoutEffect(() => { argsRef.current = args; });
 
   const [isRecording, setIsRecording] = useState(false);
   const [isProcessing, setIsProcessing] = useState(false);
@@ -87,7 +103,7 @@ export function useSermonIngest(args: SermonIngestArgs) {
     return { startTime: Math.max(0, end - durationMs), endTime: end };
   }, []);
 
-  const nextLiveId = useCallback(() => `live-${liveSessionRef.current}-${liveSeqRef.current++}`, []);
+  const nextLiveId = useCallback(() => `live-${PAGE_NONCE}-${liveSessionRef.current}-${liveSeqRef.current++}`, []);
 
   // If the human has taken over the open provisional row (edited it), hand it
   // over in the ingest buffer too, so the text that row already shows isn't
@@ -194,12 +210,18 @@ export function useSermonIngest(args: SermonIngestArgs) {
 
   const start = useCallback(async () => {
     const a = argsRef.current;
+    a.pipelineStats?.resetPending();
     setIsProcessing(true);
     setIsPaused(false);
     // A previous session that ended without stop() (e.g. a transport error)
     // may still have an open row — finalize it before the state is reset and
     // its token is forgotten.
     finalizeIngest();
+    // Never leave a previous backend running unreferenced: Stop/Pause only reach backendRef, so an
+    // orphan would keep capturing and writing rows (it did, after an error reset the toolbar).
+    const previous = backendRef.current;
+    backendRef.current = null;
+    if (previous) previous.stop().catch(() => {});
     ingestStateRef.current = initIngestState();
     tokenToIdRef.current.clear();
     liveSeqRef.current = 0;
@@ -207,57 +229,84 @@ export function useSermonIngest(args: SermonIngestArgs) {
     lastChunkIndexRef.current = 0;
     recentTextRef.current = '';
 
+    // Events of an older backend (still draining after stop()) are ignored once a newer start() ran.
+    // Not `backendRef.current !== backend`: stop() clears the ref before the drain, whose last words must land.
+    const session = liveSessionRef.current;
+    const isCurrent = () => liveSessionRef.current === session;
+    let backend: ChunkBasedTranscription | null = null;
+
     const events: ChunkTranscriptionEvents = {
       onReady: () => {},
       // Sermon mode doesn't surface the pre-correction partial as its own UI
       // element — the corrected text (onTranslation, outputMode:'correct-only')
       // is the only thing that becomes a segment.
       onRawTranscript: () => {},
-      onTranslation: (original, _translated, chunkIndex) => handleCorrected(original, chunkIndex),
+      onTranslation: (original, _translated, chunkIndex, lowWords) => {
+        if (!isCurrent()) return;
+        argsRef.current.confidenceStore?.add(lowWords);
+        handleCorrected(original, chunkIndex);
+      },
       onError: (message) => {
-        argsRef.current.onError(message);
+        if (!isCurrent()) return;
+        // A failed chunk or a dropped socket doesn't end the capture (it reconnects): the toolbar
+        // must keep showing Stop, or the next Record would start a second recording.
+        const stillRecording = !!backend?.active && backendRef.current === backend;
+        argsRef.current.onError(message, stillRecording);
+        if (stillRecording) return;
         setIsRecording(false);
         setIsPaused(false);
         setIsProcessing(false);
       },
-      onClose: () => { setIsRecording(false); setIsPaused(false); },
+      onClose: () => {
+        if (!isCurrent()) return;
+        setIsRecording(false);
+        setIsPaused(false);
+      },
       onAudioLevel: (rms, peak) => argsRef.current.onAudioLevel?.(rms, peak),
       onStreamReady: (stream) => argsRef.current.onStreamReady?.(stream),
       onNotice: (message) => argsRef.current.onNotice?.(message),
+      onChunkSent: (chunkIndex) => argsRef.current.pipelineStats?.chunkSent(chunkIndex, Date.now()),
+      onChunkProgress: (done) => argsRef.current.pipelineStats?.chunkProgress(done, Date.now()),
+      onReconnecting: () => argsRef.current.pipelineStats?.reconnecting(),
       onDebug: (message) => { if (argsRef.current.debugMode) console.debug('[sermon-ingest]', message); },
     };
 
-    const backend = new ChunkBasedTranscription(events, (a.chunkDurationSecs ?? 5) * 1000);
-    backend.setOutputMode('correct-only');
-    backend.setChunkLimits(SERMON_MIN_CHUNK_MS, SERMON_MAX_CHUNK_MS);
-    backend.setRawAudioCapture(a.rawAudioCapture ?? true);
-    backend.setInputDeviceId(a.micDeviceId ?? '');
-    backendRef.current = backend;
+    const created = new ChunkBasedTranscription(events, (a.chunkDurationSecs ?? 5) * 1000);
+    backend = created;
+    created.setOutputMode('correct-only');
+    created.setChunkLimits(SERMON_MIN_CHUNK_MS, SERMON_MAX_CHUNK_MS);
+    created.setRawAudioCapture(a.rawAudioCapture ?? true);
+    created.setInputDeviceId(a.micDeviceId ?? '');
+    backendRef.current = created;
 
     try {
-      await backend.start(
-        a.sourceLanguage,
-        a.targetLanguage,
-        false, // detectSpeakers — not meaningful for a single-speaker sermon
-        a.asrCorrection === false ? 'none' : a.correctionProvider,
-        a.openaiApiKey,
-        a.anthropicApiKey,
-        a.glossary,
-        '', // sermonContext — sermon mode carries context per-sentence at translate time, not per-chunk
-        a.debugMode,
-        a.normalizationGain ?? 1.0,
-        0,   // chunkOverlapMs forced to 0 — VAD cuts land between words, and
-             // overlap-dedupe.ts is the belt-and-braces cleanup (plan §3)
-        true, // useVADChunking forced on
-        SERMON_VAD_SILENCE_MS,
-        a.engine,
-        a.ollamaBaseUrl,
-        a.ollamaModel,
-      );
+      await created.start({
+        sourceLanguage: a.sourceLanguage,
+        targetLanguage: a.targetLanguage,
+        detectSpeakers: false, // not meaningful for a single-speaker sermon
+        translationProvider: a.asrCorrection === false ? 'none' : a.correctionProvider,
+        openaiApiKey: a.openaiApiKey,
+        anthropicApiKey: a.anthropicApiKey,
+        glossary: a.glossary,
+        glossaryPriorityLines: a.glossaryPriorityLines ?? 0,
+        sermonContext: '', // sermon mode carries context per-sentence at translate time, not per-chunk
+        debugMode: a.debugMode,
+        normalizationGain: a.normalizationGain ?? 1.0,
+        // Forced to 0: VAD cuts land between words, and overlap-dedupe.ts is the
+        // belt-and-braces cleanup (plan §3).
+        chunkOverlapMs: 0,
+        useVADChunking: true,
+        vadSilenceThresholdMs: SERMON_VAD_SILENCE_MS,
+        engine: a.engine,
+        ollamaBaseUrl: a.ollamaBaseUrl,
+        ollamaModel: a.ollamaModel,
+      });
       setIsRecording(true);
     } catch (err) {
-      argsRef.current.onError(err instanceof Error ? err.message : 'Could not start recording');
-      backendRef.current = null;
+      argsRef.current.onError(err instanceof Error ? err.message : 'Could not start recording', false);
+      if (backendRef.current === created) backendRef.current = null;
+      // The socket (and, with the archive on, the perf monitor) may already be open: close them.
+      created.stop().catch(() => {});
     } finally {
       setIsProcessing(false);
     }
@@ -268,10 +317,17 @@ export function useSermonIngest(args: SermonIngestArgs) {
     backendRef.current = null;
     setIsRecording(false);
     setIsPaused(false);
-    // backend.stop() drains in-flight chunks, so their text is in the buffer
-    // by the time it resolves — only then finalize the last block.
-    if (backend) await backend.stop();
-    finalizeIngest();
+    // backend.stop() drains in-flight chunks (up to 20 s), so their text is in the buffer by the time
+    // it resolves — only then finalize the last block. Record stays disabled meanwhile (the toolbar
+    // disables it while isProcessing): a start() during the drain would bump the session counter and
+    // drop those last sentences.
+    setIsProcessing(true);
+    try {
+      if (backend) await backend.stop();
+      finalizeIngest();
+    } finally {
+      setIsProcessing(false);
+    }
   }, [finalizeIngest]);
 
   // Pause keeps the session (mic, socket, open block) alive: the last words are
@@ -289,6 +345,21 @@ export function useSermonIngest(args: SermonIngestArgs) {
     setIsPaused(false);
   }, []);
 
+  // The vocabulary (standing glossary + today's names and terms) can change during a recording:
+  // the server takes it from the next chunk on.
+  const glossaryArg = args.glossary;
+  const glossaryPriorityArg = args.glossaryPriorityLines ?? 0;
+  useEffect(() => { backendRef.current?.setGlossary(glossaryArg, glossaryPriorityArg); }, [glossaryArg, glossaryPriorityArg]);
+
+  // Moves the running recording to another microphone ('' = system default); see
+  // ChunkBasedTranscription.switchInputDevice. Rejects when not recording or when the
+  // device can't be opened — the previous microphone then keeps recording.
+  const switchMic = useCallback(async (deviceId: string) => {
+    const backend = backendRef.current;
+    if (!backend) throw new RecordingStoppedError('Not recording');
+    return backend.switchInputDevice(deviceId);
+  }, []);
+
   // Stop any active mic/WebSocket session on unmount (e.g. navigating away
   // from SermonMode mid-recording) — otherwise the backend keeps running
   // with nothing left to dispatch its results into.
@@ -296,5 +367,5 @@ export function useSermonIngest(args: SermonIngestArgs) {
     return () => { backendRef.current?.stop(); };
   }, []);
 
-  return { isRecording, isProcessing, isPaused, start, stop, pause, resume };
+  return { isRecording, isProcessing, isPaused, start, stop, pause, resume, switchMic };
 }

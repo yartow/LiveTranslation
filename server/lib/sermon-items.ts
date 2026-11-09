@@ -46,7 +46,7 @@ export function parseSermonItems(value: unknown): ParsedSermonItems | null {
   const seenIds = new Set<string>();
   for (const raw of value) {
     if (!raw || typeof raw !== 'object') return null;
-    const { id, text, before, after, readingCandidate, referenceHint } = raw as Record<string, unknown>;
+    const { id, text, before, after, readingCandidate, referenceHint, lyrics } = raw as Record<string, unknown>;
 
     if (typeof id !== 'string' || !id) return null;
     if (seenIds.has(id)) return null;
@@ -64,12 +64,14 @@ export function parseSermonItems(value: unknown): ParsedSermonItems | null {
     if (parsedCandidate === 'invalid') return null;
 
     if (referenceHint !== undefined && (typeof referenceHint !== 'string' || referenceHint.length > SERMON_MAX_REFERENCE_HINT_LEN)) return null;
+    if (lyrics !== undefined && typeof lyrics !== 'boolean') return null;
 
     if (!text.trim()) { blankIds.push(id); continue; }
     items.push({
       id, text, before: beforeArr as string[], after: afterArr as string[],
       readingCandidate: parsedCandidate ?? undefined,
       referenceHint: referenceHint || undefined,
+      ...(lyrics ? { lyrics: true } : {}),
     });
   }
   return { items, blankIds };

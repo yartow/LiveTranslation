@@ -1,5 +1,7 @@
 import type { ChunkTranscriptionEvents, TranslationProvider } from './chunk-based-transcription';
 import type { LocalWhisperModel } from '@/hooks/useSettings';
+import type { TranscriptionBackend } from './transcription-backend';
+import { translateRecognizedText } from './translate-text';
 
 export type { LocalWhisperModel };
 
@@ -7,7 +9,7 @@ export interface LocalWhisperEvents extends ChunkTranscriptionEvents {
   onModelProgress?: (loaded: number, total: number, name: string) => void;
 }
 
-export class LocalWhisperTranscription {
+export class LocalWhisperTranscription implements TranscriptionBackend {
   private worker: Worker | null = null;
   private mediaStream: MediaStream | null = null;
   private mediaRecorder: MediaRecorder | null = null;
@@ -23,6 +25,10 @@ export class LocalWhisperTranscription {
   private translationProvider: TranslationProvider = 'none';
   private openaiApiKey = '';
   private anthropicApiKey = '';
+  private glossary = '';
+  private sermonContext = '';
+  private ollamaBaseUrl = '';
+  private ollamaModel = '';
   private lastChunkSentResolve: (() => void) | null = null;
 
   constructor(events: LocalWhisperEvents, chunkDurationMs = 5000) {
@@ -38,6 +44,10 @@ export class LocalWhisperTranscription {
     openaiApiKey = '',
     anthropicApiKey = '',
     modelSize: LocalWhisperModel = 'tiny',
+    glossary = '',
+    sermonContext = '',
+    ollamaBaseUrl = '',
+    ollamaModel = '',
   ): Promise<void> {
     this.sourceLanguage = sourceLanguage;
     this.targetLanguage = targetLanguage;
@@ -46,6 +56,10 @@ export class LocalWhisperTranscription {
     this.openaiApiKey = openaiApiKey;
     this.anthropicApiKey = anthropicApiKey;
     this.modelSize = modelSize;
+    this.glossary = glossary;
+    this.sermonContext = sermonContext;
+    this.ollamaBaseUrl = ollamaBaseUrl;
+    this.ollamaModel = ollamaModel;
     this.chunkIndex = 0;
 
     await this.loadWorker(modelSize);
@@ -192,37 +206,17 @@ export class LocalWhisperTranscription {
   }
 
   private async translateText(text: string, chunkIndex: number): Promise<void> {
-    if (this.translationProvider === 'none') {
-      this.events.onTranslation(text, '', chunkIndex);
-      return;
-    }
-
-    try {
-      const response = await fetch('/api/translate', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          text,
-          targetLanguage: this.targetLanguage,
-          detectSpeakers: this.detectSpeakers,
-          translationProvider: this.translationProvider,
-          openaiApiKey: this.openaiApiKey,
-          anthropicApiKey: this.anthropicApiKey,
-        }),
-      });
-
-      if (!response.ok) {
-        this.events.onError('Translation request failed');
-        this.events.onTranslation(text, '', chunkIndex);
-        return;
-      }
-
-      const data = await response.json();
-      this.events.onTranslation(data.correctedText || text, data.translatedText || '', chunkIndex);
-    } catch {
-      this.events.onError('Translation failed — check your API key in Settings.');
-      this.events.onTranslation(text, '', chunkIndex);
-    }
+    await translateRecognizedText(text, chunkIndex, {
+      targetLanguage: this.targetLanguage,
+      detectSpeakers: this.detectSpeakers,
+      translationProvider: this.translationProvider,
+      openaiApiKey: this.openaiApiKey,
+      anthropicApiKey: this.anthropicApiKey,
+      glossary: this.glossary,
+      sermonContext: this.sermonContext,
+      ollamaBaseUrl: this.ollamaBaseUrl,
+      ollamaModel: this.ollamaModel,
+    }, this.events);
   }
 
   updateConfig(
@@ -232,6 +226,10 @@ export class LocalWhisperTranscription {
     translationProvider?: TranslationProvider,
     openaiApiKey?: string,
     anthropicApiKey?: string,
+    glossary?: string,
+    sermonContext?: string,
+    ollamaBaseUrl?: string,
+    ollamaModel?: string,
   ): void {
     this.sourceLanguage = sourceLanguage;
     this.targetLanguage = targetLanguage;
@@ -239,6 +237,10 @@ export class LocalWhisperTranscription {
     if (translationProvider) this.translationProvider = translationProvider;
     if (openaiApiKey !== undefined) this.openaiApiKey = openaiApiKey;
     if (anthropicApiKey !== undefined) this.anthropicApiKey = anthropicApiKey;
+    if (glossary !== undefined) this.glossary = glossary;
+    if (sermonContext !== undefined) this.sermonContext = sermonContext;
+    if (ollamaBaseUrl !== undefined) this.ollamaBaseUrl = ollamaBaseUrl;
+    if (ollamaModel !== undefined) this.ollamaModel = ollamaModel;
   }
 
   async stop(): Promise<void> {

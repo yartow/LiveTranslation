@@ -5,6 +5,13 @@ Pronounced *"stay"*.
 
 A mobile-first web application for real-time audio transcription and multi-language translation. Designed for one-handed use — start it, put your phone down, read the live translation.
 
+> **New here and not a programmer?** Read the step-by-step user manual: [English](docs/manual.md) · [Nederlands](docs/handleiding.md). It covers what you need (Mac with Apple chip, or any computer with an OpenAI API key), installation, a first service, listeners' phones and troubleshooting. To make a PDF with a clickable table of contents and bookmarks:
+>
+> ```bash
+> pandoc -d docs/pandoc.yaml docs/manual.md -o manual.pdf
+> pandoc -d docs/pandoc.yaml docs/handleiding.md -o handleiding.pdf
+> ```
+
 ---
 
 ## Quick Start
@@ -65,7 +72,7 @@ The browser will request microphone permission the first time you press Record. 
 
 ### Bluetooth Microphones
 
-Bluetooth mics work automatically at the OS level. The app requests the system default audio input; if you have a Bluetooth headset connected and selected as the default mic, the browser will use it. No app changes are needed.
+Bluetooth mics work automatically at the OS level. By default the app records from the system default audio input; if you have a Bluetooth headset connected and selected as the default mic, the browser will use it. In sermon mode you can also pick a specific microphone in the audio bar (below the toolbar), and the choice applies immediately, even while recording — see "Microphone failover" under Sermon Mode.
 
 > **Note:** When a Bluetooth headset is active on iOS or macOS, the system switches to HFP (Hands-Free Profile) mode, reducing audio quality to ~8 kHz mono. Whisper handles this cleanly, but if audio quality matters, a wired or USB microphone is better.
 
@@ -81,12 +88,21 @@ English · Spanish · French · German · Dutch · Portuguese · Italian · Chin
 
 The app's default view — a UI purpose-built for translating a live sermon block-by-block with human review, distinct from the streaming-subtitle view (now at `/live`).
 
-- **Segment-based review** — incoming transcript is grouped into ~5–20 second blocks (configurable, "Max. vertraging" in Settings), each cut on a sentence boundary so a block is never split mid-sentence; each segment is independently editable and re-translatable without disturbing the others.
+- **Segment-based review** — incoming transcript is grouped into ~5–20 second blocks (configurable as "Block length" in the toolbar or under Settings → Sermon mode → Timing), each cut on a sentence boundary so a block is never split mid-sentence; each segment is independently editable and re-translatable without disturbing the others.
 - **Dual-pane layout** — editable source on one side, translation on the other, row-aligned.
 - **Pause / resume** — the Pause button next to Stop stops listening without ending the session (the last words are still transcribed). Press it again to continue; no new microphone prompt. Audio spoken while paused is dropped, not queued.
-- **Keyboard-driven workflow** — hotkeys for re-translating one segment or all pending segments (e.g. Cmd/Ctrl+Shift+Enter).
-- **File-based theological glossary (optional)** — a CSV of fixed Dutch→English terms plus a markdown doc of context-dependent disambiguation rules, loaded from files in `data/` (directory configurable via `GLOSSARY_DIR` in `.env`). Configure and reload it from Settings → "Preekmodus — woordenlijst". Segments whose translation appears to be missing an expected glossary term show a non-blocking warning icon — it's a hint for the human reviewer, not a blocker.
-- **Scripture quoting (optional)** — detects a spoken Bible reference ("Johannes 3:16") and substitutes the exact English verse text (ESV via API, falling back to the bundled KJV) instead of a model translation when the preacher reads verbatim; a paraphrase is still translated in his own words. Requires a one-time data build — see `scripts/build-bible-data.ts` and `CLAUDE.md`'s "Scripture pipeline". Configure from Settings → "Preekmodus — Schriftcitaten".
+- **Keyboard-driven workflow** — Return in a Dutch or English box saves it and jumps to the same box in the next row (in the last row it creates a new one when you are not recording; while recording it only saves, because the live text keeps arriving below — use "Add row"); Shift+Return adds a new line; hotkeys re-translate one segment or all pending segments (Cmd/Ctrl+Enter, Cmd/Ctrl+Shift+Enter).
+- **Add row** — the toolbar's "Add row" button creates an empty row to type into by hand, for when the microphone gives no input. A row with no Dutch text is never sent to the translator; English typed into it goes to the listeners like any hand-typed line.
+- **Switch microphone while recording** — pick another input in the audio bar (or in Settings → Microphone) and the recording moves to it at once, with no gap in the transcript. The audio bar also shows the input level, the macOS input volume, and "No sound from this microphone" after 20 s of silence.
+- **Today's service** — the toolbar's "Service" button takes the sermon title, the planned Bible passages, names and terms, and notes. Names and terms sharpen the speech recognition from the next sentence on, all of it goes to the translator, and a planned passage is recognised even when the preacher never announces it. Kept for this browser tab only, so it never leaks into next week's service.
+- **Glossary suggestions** — words you correct by hand more than once appear under "Suggestions"; one click adds them to the glossary so they are fixed automatically from then on.
+- **"check" chips (local MLX engine)** — words Whisper itself was unsure about are shown as small chips under the Dutch text, so you can review the doubtful words first. They disappear when you correct the word.
+- **Learns from your corrections** — the translator is shown your most recent hand-corrected lines as examples, so your preferred wording carries over to the lines that follow. A required glossary term that is left out triggers one automatic retry. An optional "check translations by translating back" setting (off by default, costs a second model call per line) flags lines that drift from what was said.
+- **Pipeline health** — the "Pipeline" button in the audio bar shows how far behind transcription and translation are, how many chunks are waiting, and recent errors; its dot turns amber or red when something is wrong.
+- **Autosave** — the transcript is saved in the browser every few seconds. After a reload or crash an empty page offers to restore it.
+- **Microphone failover** — if the microphone being recorded from stops (unplugged, or a wireless transmitter's battery runs out), recording continues on the system default input (the built-in mic), and a red, flickering warning stays on screen until you click "OK, I've seen this". If the original microphone reappears, the warning offers "Switch back to …". The same warning appears if macOS changes its default input while recording on "System default".
+- **File-based theological glossary (optional)** — a CSV of fixed Dutch→English terms plus a markdown doc of context-dependent disambiguation rules, loaded from files in `data/` (directory configurable via `GLOSSARY_DIR` in `.env`). Configure and reload it from Settings → General → Glossary. Segments whose translation appears to be missing an expected glossary term show a non-blocking warning icon — it's a hint for the human reviewer, not a blocker.
+- **Scripture quoting (optional)** — detects a spoken Bible reference ("Johannes 3:16") and substitutes the exact English verse text (ESV via API, falling back to the bundled KJV) instead of a model translation when the preacher reads verbatim; a paraphrase is still translated in his own words. Requires a one-time data build — see `scripts/build-bible-data.ts` and `CLAUDE.md`'s "Scripture pipeline". Configure from Settings → Sermon mode → Scripture quotes.
 - Uses the same OpenAI / Claude / Ollama translation providers as the main app (see below), configured independently per sermon-mode setting.
 
 Open `http://localhost:PORT/` to use it — live/subtitle mode is at `/live`.
@@ -97,7 +113,7 @@ Open `http://localhost:PORT/` to use it — live/subtitle mode is at `/live`.
 
 Lets people in the room who don't speak Dutch follow the English translation live on their own phone, over the same wifi network as the MBP running the app — no app install, no account.
 
-- Open Settings from the sermon-mode toolbar and click **"Luisteraars"** to see the address to hand out (e.g. `http://192.168.178.42:3000`) — it's read live off the machine's current network, so it's correct whether you're at home or at church.
+- Click the **Listeners** button in the sermon-mode toolbar (or open Settings → Sermon mode → Listeners) to see the address to hand out (e.g. `http://192.168.178.42:3000`) — it's read live off the machine's current network, so it's correct whether you're at home or at church.
 - A listener types that address into their phone's browser. Typing just the bare address (no path) takes them straight to the listener view — you don't need to tell them to add `/listen`.
 - The listener screen shows **only the finished English translation**, auto-scrolling as new lines arrive; scrolling up pauses that and shows a "Jump to live" button. A line that gets corrected after it first appears is re-pushed and shown in *italic*.
 - **This is not access control.** Anyone on the same wifi who reaches the server can open the listener view. Don't rely on it to keep the transcript private.
@@ -137,7 +153,7 @@ Any model available in Ollama that supports the chat/JSON completion API works �
 
 ## Running Locally — npm
 
-Requirements: Node 20+, ffmpeg (`brew install ffmpeg` on Mac).
+Requirements: Node 20+, ffmpeg (`brew install ffmpeg` on Mac). Runs on macOS and Windows (the npm scripts set environment variables through `cross-env`, so they work in the Windows command prompt too); only the local `mlx` engine is limited to Apple Silicon. Python is needed only for that engine.
 
 ```bash
 # 1. Copy the env template and fill in your keys
@@ -196,7 +212,7 @@ Every correction you make in sermon mode tells you where the transcription goes 
 npm run dev:record
 ```
 
-This is `npm run dev` plus `ASR_DEBUG_DIR=data/asr-debug`: each recording is written to `data/asr-debug/<timestamp>-<id>/` (gitignored). Open `http://localhost:PORT/`, record, and correct the Dutch text as you go, as usual.
+This is `npm run dev` plus `ASR_DEBUG_DIR=data/asr-debug`: each recording is written to `data/asr-debug/<timestamp>-<id>/` (gitignored). Open `http://localhost:PORT/`, record, and correct the Dutch text as you go, as usual. To listen back to a recorded service, see [docs/session-audio.md](docs/session-audio.md).
 
 **2. Stop the recording, wait ~5 seconds, and keep the page open.** The page saves what is on screen to the archive every minute and once more after you stop. Edits made after the last save are not included, so don't close the tab straight after your last edit.
 
@@ -214,10 +230,11 @@ Options: `--stage raw|stripped|corrected` (default `corrected`, the text as it r
 
 - **A correction you make again and again** (it appears under "Recurring substitutions") is a glossary candidate. Add the right word as a row in your glossary CSV (`data/*.csv`, Settings → General → Glossary → reload) or, for the free-text list, to Settings → General → *Vocabulary hints*. That list is what Whisper hears as context, so a name or term it keeps mishearing gets recognised.
 - **Mishearings of a Bible reference** (a book or number) show up in `edits.md` too; if a book-name spelling is the problem, add it as a `Bijbelboek` row in the CSV.
-- **Not sure whether Whisper or you was right?** Run `npx tsx scripts/asr-session-audio.ts <session-folder>` and listen to `full.wav` at the timestamp from `edits.md`.
-- **Want to know if a change helped?** Save the stretch as a corrected reference and score it — see `CLAUDE.md`'s "Evaluating ASR changes" (`npm run eval:asr`, `asr-compare.ts --score`).
+- **Not sure whether Whisper or you was right?** Run `npx tsx scripts/asr-session-audio.ts <session-folder>` and listen to `full.wav` at the timestamp from `edits.md`. Step-by-step instructions (joining the pieces, converting to `.m4a`, reading `timeline.txt`, cutting out one fragment) are in [docs/session-audio.md](docs/session-audio.md).
+- **Want to know if a change helped?** Turn the service you just corrected into test clips with `npx tsx scripts/build-asr-fixtures.ts <session-folder>` (audio slices plus your corrected text as the reference), then score with `npm run eval:asr` — see `CLAUDE.md`'s "Evaluating ASR changes". The same works for translation: `npx tsx scripts/build-translation-fixtures.ts <session-folder>` collects the English you wrote or corrected, and `npm run eval:translate -- --run openai --run claude` compares models against it (see "Evaluating translation changes").
+- **Which doubtful words were really wrong?** With the local MLX engine, `npx tsx scripts/asr-confidence-check.ts <session-folder>` shows how often the words Whisper was unsure about were the ones you corrected, to pick the threshold for the "check" chips.
 
-Notes: only the final text is stored, so an edit you later undid doesn't appear. Changes of more than 40 words in a row (a block you deleted, a chunk the page never showed) are listed apart in an "Unexplained" section and are not counted as edits. Punctuation, capitals, spelling variants and digits-versus-words are ignored; only changed words count.
+Notes: `edits.md` compares the final text, so an edit you later undid doesn't appear there — but every edit as it happened (what it replaced and what it became) is also appended to `<session-folder>/edits.jsonl`, and the translation calls (source, context, model, time, result) to `translations.jsonl`. Changes of more than 40 words in a row (a block you deleted, a chunk the page never showed) are listed apart in an "Unexplained" section and are not counted as edits. Punctuation, capitals, spelling variants and digits-versus-words are ignored; only changed words count.
 
 ---
 

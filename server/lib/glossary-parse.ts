@@ -32,6 +32,13 @@ export const KNOWN_CATEGORIES: ReadonlySet<string> = new Set([
   'Contextafhankelijk',
   'Psalmberijming',
   'Theologisch/Archaïsch',
+  // Everyday language, not only theology. These are plain tags (like Theologisch): they are not treated
+  // specially by the prompt or the adherence check, but a row with a category missing from this set is dropped.
+  'Algemeen',
+  'Gezegde',
+  'Spreekwoord',
+  'Beeldspraak',
+  'Afkorting',
 ]);
 
 const EXPECTED_HEADER = ['Nederlands', 'Engels', 'Categorie', 'Notitie'];

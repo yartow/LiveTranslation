@@ -1,15 +1,19 @@
 import { useCallback, useEffect, useRef } from 'react';
 import {
-  type SegmentStoreState, type SegmentAction, selectDirtyIds, selectTranslatable, selectContext,
+  type SegmentStoreState, type SegmentAction, selectDirtyIds, selectTranslatable, selectContext, hasNoSource, selectCorrectionExamples,
 } from '@/lib/sermon/segment-store';
 import { hashText } from '@/lib/sermon/segment-model';
-import { findBibleRef } from '@/lib/sermon/bible-ref';
+import type { PipelineStats } from '@/lib/sermon/pipeline-stats';
+import { pickReadingCandidate } from '@/lib/sermon/reading-candidate';
 import { translateItems, type TranslateRequestOptions, type ReadingCandidate } from '@/lib/sermon/translate-client';
+import { passageKey } from '@/lib/sermon/service-context';
 
 export interface TranslationRuntimeConfig extends TranslateRequestOptions {
   stabilityMs: number;
   contextBefore: number;
   contextAfter: number;
+  /** Bible passages the operator expects today (service-context.ts's plannedPassages), in order. */
+  plannedPassages?: ReadingCandidate[];
 }
 
 // Above this many dirty segments, a manual "Refresh all" asks for
@@ -33,13 +37,16 @@ const CONFIRM_ABOVE_DIRTY_COUNT = 50;
  * `state` during render rather than in an effect, so it can never lag a
  * commit behind — see the header comment there for why that used to matter.
  */
-export function useTranslationQueue(
-  stateRef: React.MutableRefObject<SegmentStoreState>,
-  dispatch: React.Dispatch<SegmentAction>,
-  configRef: React.MutableRefObject<TranslationRuntimeConfig>,
-  autoTranslateRef: React.MutableRefObject<boolean>,
-  flushersRef: React.MutableRefObject<Map<string, () => void>>,
-) {
+export interface TranslationQueueArgs {
+  stateRef: React.MutableRefObject<SegmentStoreState>;
+  dispatch: React.Dispatch<SegmentAction>;
+  configRef: React.MutableRefObject<TranslationRuntimeConfig>;
+  autoTranslateRef: React.MutableRefObject<boolean>;
+  flushersRef: React.MutableRefObject<Map<string, () => void>>;
+  stats?: PipelineStats;
+}
+
+export function useTranslationQueue({ stateRef, dispatch, configRef, autoTranslateRef, flushersRef, stats }: TranslationQueueArgs) {
   // Segment ids currently part of an in-flight batch — guards refreshAll/
   // refreshOne/auto-translate against issuing a second provider call for a
   // segment that's already TRANSLATING in another batch (e.g. a manual
@@ -50,6 +57,10 @@ export function useTranslationQueue(
   // recording session) can cancel any still-in-flight translate calls
   // instead of letting them dangle.
   const activeControllersRef = useRef(new Set<AbortController>());
+  // Planned passages (service context) whose reading has already been caught or announced, so each
+  // is only waited for once. Forgotten when the operator changes the list.
+  const plannedUsedRef = useRef(new Set<string>());
+  const plannedSigRef = useRef('');
 
   useEffect(() => {
     const controllers = activeControllersRef.current;
@@ -62,8 +73,11 @@ export function useTranslationQueue(
     // keystroke (e.g. Cmd+Enter) would translate the pre-edit text. See
     // SourceCell.tsx's commitPending/flushersRef registration.
     for (const id of ids) flushersRef.current.get(id)?.();
-    const cfg = { ...configRef.current, signal };
     const snapshot = stateRef.current;
+    // The operator's latest hand corrections travel with every batch, so the translator picks up their style as the sermon goes on.
+    const cfg = { ...configRef.current, signal, examples: selectCorrectionExamples(snapshot) };
+    const plannedSig = JSON.stringify(cfg.plannedPassages ?? []);
+    if (plannedSig !== plannedSigRef.current) { plannedSigRef.current = plannedSig; plannedUsedRef.current.clear(); }
 
     // Scripture (spec "Bijbelcitaten"): a segment whose own text resolves a
     // Bible reference (bible-ref.ts) starts a new reading; a segment with no
@@ -71,36 +85,27 @@ export function useTranslationQueue(
     // any, as its check candidate — see server/lib/scripture.ts for the
     // verbatim/paraphrase/ended adjudication this feeds into.
     // scriptureOverride (CLEAR_SCRIPTURE) skips detection entirely.
+    // A row added by hand (SermonMode's "Add row") has no Dutch yet: nothing to translate, and
+    // sending a blank item would only turn the row red.
     const items = ids
-      .filter(id => snapshot.byId[id])
+      .filter(id => snapshot.byId[id] && !hasNoSource(snapshot.byId[id]))
       .map(id => {
         const seg = snapshot.byId[id];
         const ctx = selectContext(snapshot, id, cfg.contextBefore, cfg.contextAfter);
 
-        let readingCandidate: ReadingCandidate | undefined;
-        let referenceHint: string | undefined;
-        let ownRef = false;
-
-        if (!seg.scriptureOverride) {
-          const ref = findBibleRef(seg.sourceText);
-          if (ref) {
-            referenceHint = ref.canonicalEn;
-            if (ref.verseStart !== null) {
-              readingCandidate = { bookNumber: ref.bookNumber, chapter: ref.chapter, verse: ref.verseStart };
-              ownRef = true;
-            }
-          } else if (snapshot.activeReading) {
-            readingCandidate = {
-              bookNumber: snapshot.activeReading.bookNumber,
-              chapter: snapshot.activeReading.chapter,
-              verse: snapshot.activeReading.nextVerse,
-            };
-          }
-        }
+        const { readingCandidate, referenceHint, ownRef, planned } = pickReadingCandidate({
+          text: seg.sourceText,
+          // Song lyrics are never a Bible reading (a song called "Psalm 23" must not start one).
+          scriptureOverride: seg.scriptureOverride || !!seg.lyrics,
+          activeReading: snapshot.activeReading,
+          plannedPassages: cfg.plannedPassages,
+          usedPlanned: plannedUsedRef.current,
+        });
 
         return {
           id, text: seg.sourceText, before: ctx.before, after: ctx.after,
-          requestHash: hashText(seg.sourceText), readingCandidate, referenceHint, ownRef,
+          requestHash: hashText(seg.sourceText), readingCandidate, referenceHint, ownRef, planned,
+          lyrics: !!seg.lyrics,
         };
       });
     if (items.length === 0) return;
@@ -113,6 +118,7 @@ export function useTranslationQueue(
     // replaces the previous one" (segment-store.ts's SET_ACTIVE_READING).
     for (const item of items) {
       if (item.ownRef && item.readingCandidate) {
+        plannedUsedRef.current.add(passageKey(item.readingCandidate)); // announced: no need to wait for it unannounced
         dispatch({
           type: 'SET_ACTIVE_READING', bookNumber: item.readingCandidate.bookNumber,
           chapter: item.readingCandidate.chapter, verse: item.readingCandidate.verse,
@@ -122,11 +128,18 @@ export function useTranslationQueue(
 
     dispatch({ type: 'MARK_TRANSLATING', ids: items.map(i => i.id) });
 
+    const callStartedAt = Date.now();
     try {
       const results = await translateItems(
-        items.map(({ id, text, before, after, readingCandidate, referenceHint }) => ({ id, text, before, after, readingCandidate, referenceHint })),
+        items.map(({ id, text, before, after, readingCandidate, referenceHint, lyrics }) => ({ id, text, before, after, readingCandidate, referenceHint, ...(lyrics ? { lyrics } : {}) })),
         cfg,
       );
+      if (stats) {
+        stats.translateOk(Date.now() - callStartedAt);
+        for (const r of results) {
+          if (r.status === 'error') stats.translateError(/rate limit/i.test(r.error), Date.now());
+        }
+      }
       const byId = new Map(results.map(r => [r.id, r]));
       for (const item of items) {
         const result = byId.get(item.id);
@@ -155,14 +168,20 @@ export function useTranslationQueue(
             type: 'APPLY_SCRIPTURE', id: item.id, text: result.scripture.text,
             reference: result.scripture.reference, version: result.scripture.version, requestHash: item.requestHash,
           });
-          if (isThisStillTheActiveReading && item.readingCandidate && typeof result.scripture.verseEnd === 'number') {
+          // A verbatim hit on a planned passage starts the reading (a paraphrase or a miss against one does not).
+          if (item.planned && item.readingCandidate) plannedUsedRef.current.add(passageKey(item.readingCandidate));
+          // A planned passage only starts a reading when none has been announced since this item was sent.
+          if ((isThisStillTheActiveReading || (item.planned && !current)) && item.readingCandidate && typeof result.scripture.verseEnd === 'number') {
             dispatch({
               type: 'SET_ACTIVE_READING', bookNumber: item.readingCandidate.bookNumber,
               chapter: item.readingCandidate.chapter, verse: result.scripture.verseEnd + 1, matched: true,
             });
           }
         } else {
-          dispatch({ type: 'APPLY_TRANSLATION', id: item.id, translation: result.translation, requestHash: item.requestHash, warnings: result.warnings });
+          dispatch({
+            type: 'APPLY_TRANSLATION', id: item.id, translation: result.translation, requestHash: item.requestHash,
+            warnings: result.warnings, fidelity: result.fidelity, lowFidelity: result.lowFidelity,
+          });
           if (isThisStillTheActiveReading) {
             // A paraphrase means the passage is really being discussed: mark the
             // reading matched and move it up to where the match began (never
@@ -183,11 +202,12 @@ export function useTranslationQueue(
       const message = err instanceof Error && err.name === 'AbortError'
         ? 'Translation request timed out'
         : err instanceof Error ? err.message : 'Translation request failed';
+      stats?.translateError(/rate limit|429/i.test(message), Date.now());
       for (const item of items) {
         dispatch({ type: 'SET_ERROR', id: item.id, error: message, requestHash: item.requestHash });
       }
     }
-  }, [dispatch, configRef, stateRef, flushersRef]);
+  }, [dispatch, configRef, stateRef, flushersRef, stats]);
 
   // Public entry point: dedupes against segments already part of another
   // in-flight batch (a manual Refresh firing while auto-translate's poll

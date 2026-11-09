@@ -9,9 +9,12 @@ export interface KeyChord {
   ctrlKey: boolean;
   shiftKey: boolean;
   code: string;
+  altKey?: boolean;
+  /** KeyboardEvent.key. Soft keyboards (iOS, Android) send key 'Enter' with an empty `code`, so Enter is matched on either. */
+  key?: string;
 }
 
-const isEnterCode = (chord: KeyChord): boolean => chord.code === 'Enter' || chord.code === 'NumpadEnter';
+const isEnterCode = (chord: KeyChord): boolean => chord.code === 'Enter' || chord.code === 'NumpadEnter' || chord.key === 'Enter';
 
 /** Cmd/Ctrl+Shift+Enter — re-translate every dirty segment. */
 export function isRefreshAllChord(chord: KeyChord): boolean {
@@ -21,4 +24,9 @@ export function isRefreshAllChord(chord: KeyChord): boolean {
 /** Cmd/Ctrl+Enter (no Shift) — re-translate only the segment under the cursor. */
 export function isRefreshOneChord(chord: KeyChord): boolean {
   return (chord.metaKey || chord.ctrlKey) && !chord.shiftKey && isEnterCode(chord);
+}
+
+/** Plain Enter (no Shift/Cmd/Ctrl/Alt) in a segment cell — save it and move to the same cell in the next row. */
+export function isNextRowChord(chord: KeyChord): boolean {
+  return !chord.metaKey && !chord.ctrlKey && !chord.shiftKey && !chord.altKey && isEnterCode(chord);
 }

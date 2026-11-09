@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeAll, afterAll } from 'vitest';
-import { translateSegments, type TranslateItemInput, type TranslateOptions } from '../../server/lib/sermon-translate.js';
+import { translateSegments, modelLabel, type TranslateItemInput, type TranslateOptions, type TranslationLogEntry } from '../../server/lib/sermon-translate.js';
 
 const baseOpts: TranslateOptions = {
   targetLanguage: 'en',
@@ -253,4 +253,183 @@ describe('translateSegments — scripture (Bijbelcitaten AC11/AC12)', () => {
 
     expect(results[0]).toEqual({ id: 'a', status: 'ok', translation: 'Ordinary sermon sentence, not a quote.' });
   }));
+});
+
+describe('translateSegments — translation log (deps.log)', () => {
+  it('logs one entry per item with source, context, model, latency and the result', async () => {
+    const entries: TranslationLogEntry[] = [];
+    const items: TranslateItemInput[] = [
+      { id: 'a', text: 'Genade zij u.', before: ['Voor.'], after: ['Na.'] },
+      { id: 'b', text: 'Amen.', before: [], after: [] },
+    ];
+    await translateSegments(items, baseOpts, { callModel: async () => 'Grace.', log: e => entries.push(e) });
+
+    expect(entries).toHaveLength(2);
+    const a = entries.find(e => e.id === 'a')!;
+    expect(a).toMatchObject({ provider: 'openai', model: 'gpt-4o-mini', source: 'Genade zij u.', before: ['Voor.'], after: ['Na.'], translation: 'Grace.' });
+    expect(a.error).toBeUndefined();
+    expect(typeof a.latencyMs).toBe('number');
+    expect(new Date(a.at).toString()).not.toBe('Invalid Date');
+  });
+
+  it('logs a failed item with its error and no translation', async () => {
+    const entries: TranslationLogEntry[] = [];
+    await translateSegments(
+      [{ id: 'bad', text: 'Dit faalt.', before: [], after: [] }], baseOpts,
+      { callModel: async () => { throw new Error('rate limit exceeded'); }, log: e => entries.push(e) },
+    );
+    expect(entries).toHaveLength(1);
+    expect(entries[0].error).toMatch(/rate limit/i);
+    expect(entries[0].translation).toBeUndefined();
+  });
+
+  it('a throwing logger never breaks the translation', async () => {
+    const results = await translateSegments(
+      [{ id: 'a', text: 'Amen.', before: [], after: [] }], baseOpts,
+      { callModel: async () => 'Amen.', log: () => { throw new Error('disk full'); } },
+    );
+    expect(results).toEqual([{ id: 'a', status: 'ok', translation: 'Amen.' }]);
+  });
+});
+
+describe('modelLabel', () => {
+  it('names the model the provider will really use', () => {
+    expect(modelLabel({ translationProvider: 'openai' })).toBe('gpt-4o-mini');
+    expect(modelLabel({ translationProvider: 'openai', model: 'gpt-4o' })).toBe('gpt-4o');
+    expect(modelLabel({ translationProvider: 'ollama', ollamaModel: 'qwen2.5:14b' })).toBe('qwen2.5:14b');
+    expect(modelLabel({ translationProvider: 'claude', model: 'ignored' })).toBe('claude-haiku-4-5-20251001');
+  });
+});
+
+// A helper for the tests below that need the mini glossary (Heiland -> Savior).
+async function withMiniGlossary<T>(fn: (opts: TranslateOptions) => Promise<T>): Promise<T> {
+  const { join } = await import('path');
+  const { _resetGlossaryForTests } = await import('../../server/lib/glossary-store.js');
+  const prevDir = process.env.GLOSSARY_DIR;
+  process.env.GLOSSARY_DIR = join(__dirname, '..', 'fixtures', 'glossary');
+  _resetGlossaryForTests();
+  try {
+    return await fn({ ...baseOpts, glossaryCsv: 'mini.csv', disambiguationPrompt: 'mini.md' });
+  } finally {
+    if (prevDir === undefined) delete process.env.GLOSSARY_DIR; else process.env.GLOSSARY_DIR = prevDir;
+    _resetGlossaryForTests();
+  }
+}
+
+describe('translateSegments — retry when a glossary term is missing', () => {
+  const item: TranslateItemInput = { id: 'a', text: 'Hij is de Heiland van de wereld.', before: [], after: [] };
+
+  it('asks once more, naming the terms, and keeps the better answer', () => withMiniGlossary(async (opts) => {
+    const entries: TranslationLogEntry[] = [];
+    const callModel = vi.fn(async (_s: string, user: string) => user.includes('<TERMINOLOGIE_CORRECTIE>') ? 'He is the Savior of the world.' : 'He is the Redeemer of the world.');
+    const [r] = await translateSegments([item], opts, { callModel, log: e => entries.push(e) });
+
+    expect(callModel).toHaveBeenCalledTimes(2);
+    const retryMessage = callModel.mock.calls[1][1];
+    expect(retryMessage).toContain('"Savior" for "Heiland"');
+    expect(retryMessage.indexOf('<TERMINOLOGIE_CORRECTIE>')).toBeLessThan(retryMessage.indexOf('<TE_VERTALEN>'));
+    expect(r).toEqual({ id: 'a', status: 'ok', translation: 'He is the Savior of the world.' }); // no warnings left -> key omitted
+    expect(entries[0].retried).toBe(true);
+  }));
+
+  it('keeps the first answer when the retry is no better', () => withMiniGlossary(async (opts) => {
+    const callModel = vi.fn(async (_s: string, user: string) => user.includes('<TERMINOLOGIE_CORRECTIE>') ? 'He is the Lord of the world.' : 'He is the Redeemer of the world.');
+    const [r] = await translateSegments([item], opts, { callModel });
+    expect(callModel).toHaveBeenCalledTimes(2);
+    expect(r).toMatchObject({ status: 'ok', translation: 'He is the Redeemer of the world.', warnings: [{ term: 'Heiland', expected: 'Savior' }] });
+  }));
+
+  it('keeps the first answer when the retry fails or comes back empty', () => withMiniGlossary(async (opts) => {
+    for (const second of [() => { throw new Error('rate limit'); }, () => '   ']) {
+      let n = 0;
+      const callModel = vi.fn(async () => { if (n++ === 0) return 'He is the Redeemer of the world.'; return second() as string; });
+      const [r] = await translateSegments([item], opts, { callModel });
+      expect(r).toMatchObject({ status: 'ok', translation: 'He is the Redeemer of the world.' });
+    }
+  }));
+
+  it('retries only once, and not at all when the first answer is fine', () => withMiniGlossary(async (opts) => {
+    const fine = vi.fn(async () => 'He is the Savior of the world.');
+    await translateSegments([item], opts, { callModel: fine });
+    expect(fine).toHaveBeenCalledTimes(1);
+
+    const bad = vi.fn(async () => 'He is the Redeemer of the world.');
+    await translateSegments([item], opts, { callModel: bad });
+    expect(bad).toHaveBeenCalledTimes(2);
+  }));
+
+  it('does not retry when glossary warnings are switched off', () => withMiniGlossary(async (opts) => {
+    const callModel = vi.fn(async () => 'He is the Redeemer of the world.');
+    await translateSegments([item], { ...opts, glossaryWarningsEnabled: false }, { callModel });
+    expect(callModel).toHaveBeenCalledTimes(1);
+  }));
+});
+
+describe('translateSegments — examples from the operator\'s corrections', () => {
+  it('puts them in every item\'s user message, outside the system prompt', async () => {
+    const calls: Array<{ system: string; user: string }> = [];
+    const callModel = vi.fn(async (system: string, user: string) => { calls.push({ system, user }); return 'Grace.'; });
+    await translateSegments(
+      [{ id: 'a', text: 'Genade zij u.', before: [], after: [] }, { id: 'b', text: 'Vrede zij u.', before: [], after: [] }],
+      { ...baseOpts, examples: [{ source: 'De Heer zij met u.', machine: 'The Lord be with you.', human: 'The Lord be with you all.' }] },
+      { callModel },
+    );
+    expect(calls).toHaveLength(2);
+    for (const c of calls) {
+      expect(c.user).toContain('<VOORBEELDEN_CORRECTIES>');
+      expect(c.user).toContain('HUMAN: The Lord be with you all.');
+      expect(c.system).not.toContain('The Lord be with you all.');
+    }
+  });
+
+  it('sends none when there are none', async () => {
+    const callModel = vi.fn(async (_s: string, _u: string) => 'Grace.');
+    await translateSegments([{ id: 'a', text: 'Genade zij u.', before: [], after: [] }], baseOpts, { callModel });
+    expect(callModel.mock.calls[0][1]).not.toContain('VOORBEELDEN');
+  });
+});
+
+describe('translateSegments — back-translation check', () => {
+  const item: TranslateItemInput = { id: 'a', text: 'Wij mogen vertrouwen op de trouw van onze God.', before: [], after: [] };
+  // The translating call and the back-translating call are told apart by their system prompt.
+  const model = (back: string) => vi.fn(async (system: string, _user: string) => system.startsWith('Translate the English text') ? back : 'We may trust in the faithfulness of our God.');
+
+  it('is off by default: no second call, no score', async () => {
+    const callModel = model('x');
+    const [r] = await translateSegments([item], baseOpts, { callModel });
+    expect(callModel).toHaveBeenCalledTimes(1);
+    expect(r).toEqual({ id: 'a', status: 'ok', translation: 'We may trust in the faithfulness of our God.' });
+  });
+
+  it('scores a faithful back-translation and does not flag it', async () => {
+    const entries: TranslationLogEntry[] = [];
+    const [r] = await translateSegments([item], { ...baseOpts, backTranslationCheck: true }, { callModel: model('Wij mogen vertrouwen op de trouw van onze God.'), log: e => entries.push(e) });
+    expect(r).toMatchObject({ status: 'ok', fidelity: 1 });
+    expect((r as { lowFidelity?: boolean }).lowFidelity).toBeUndefined();
+    expect(entries[0]).toMatchObject({ fidelity: 1, backTranslation: 'Wij mogen vertrouwen op de trouw van onze God.' });
+  });
+
+  it('flags a back-translation that drifted below the threshold', async () => {
+    const [r] = await translateSegments([item], { ...baseOpts, backTranslationCheck: true }, { callModel: model('Het regent vandaag hard in de stad.') });
+    expect(r).toMatchObject({ status: 'ok', fidelity: 0, lowFidelity: true });
+  });
+
+  it('honours a custom threshold', async () => {
+    const half = model('Wij mogen vertrouwen op de zon van de stad.');
+    const strict = await translateSegments([item], { ...baseOpts, backTranslationCheck: true, backTranslationThreshold: 0.6 }, { callModel: half });
+    const lenient = await translateSegments([item], { ...baseOpts, backTranslationCheck: true, backTranslationThreshold: 0.05 }, { callModel: half });
+    expect((strict[0] as { lowFidelity?: boolean }).lowFidelity).toBe(true);
+    expect((lenient[0] as { lowFidelity?: boolean }).lowFidelity).toBeUndefined();
+  });
+
+  it('skips segments too short to score, and never fails the translation if the check fails', async () => {
+    const callModel = model('x');
+    const [short] = await translateSegments([{ id: 's', text: 'Amen zeggen wij.', before: [], after: [] }], { ...baseOpts, backTranslationCheck: true }, { callModel });
+    expect(callModel).toHaveBeenCalledTimes(1);
+    expect((short as { fidelity?: number }).fidelity).toBeUndefined();
+
+    const failing = vi.fn(async (system: string) => { if (system.startsWith('Translate the English text')) throw new Error('boom'); return 'We may trust in God.'; });
+    const [r] = await translateSegments([item], { ...baseOpts, backTranslationCheck: true }, { callModel: failing });
+    expect(r).toEqual({ id: 'a', status: 'ok', translation: 'We may trust in God.' });
+  });
 });

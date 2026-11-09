@@ -2,11 +2,19 @@ import { useRef, useEffect, useLayoutEffect, useCallback } from 'react';
 import { BookOpen, Lock } from 'lucide-react';
 import type { Segment } from '@/lib/sermon/segment-model';
 import type { SegmentAction } from '@/lib/sermon/segment-store';
+import { isNextRowChord } from '@/lib/sermon/hotkeys';
+import { shouldSyncCellDom } from '@/lib/sermon/cell-sync';
+import type { CellKind } from '@/lib/sermon/focus-cell';
+import { looksLikeSongLink } from '@/lib/sermon/lyrics';
 
 interface TargetCellProps {
   segment: Segment;
   dispatch: React.Dispatch<SegmentAction>;
   activeSegmentIdRef: React.MutableRefObject<string | null>;
+  /** Return in this cell: the grid moves to the same cell of the next row (or adds a row after the last). Must be stable. */
+  onEnterNext?: (id: string, cell: CellKind) => void;
+  /** A song link pasted into an "Add lyrics" row (segment.lyrics.part === 'pending'). Must be stable. */
+  onLyricsLink?: (id: string, cell: CellKind, link: string) => void;
 }
 
 const EDIT_DEBOUNCE_MS = 120;
@@ -24,11 +32,14 @@ const EDIT_DEBOUNCE_MS = 120;
 // Uncontrolled, same as SourceCell: React never writes `value` back on a normal
 // render, so a re-render can't move the caret. Machine text (a finished
 // translation, a scripture substitution) is pushed into the DOM imperatively.
-export default function TargetCell({ segment, dispatch, activeSegmentIdRef }: TargetCellProps) {
+export default function TargetCell({ segment, dispatch, activeSegmentIdRef, onEnterNext, onLyricsLink }: TargetCellProps) {
   const ref = useRef<HTMLTextAreaElement>(null);
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   // Latest typed value not yet dispatched into the store.
   const pendingRef = useRef<string | null>(null);
+  // What this cell last dispatched. The store echoes it back; that echo must not be written over the
+  // textarea (see cell-sync.ts). Null once the store holds anything else.
+  const lastCommittedRef = useRef<string | null>(null);
   // Always the latest segment, so the commit callbacks stay stable (the unmount flush must not re-run per render).
   const segmentRef = useRef(segment);
   segmentRef.current = segment;
@@ -41,26 +52,41 @@ export default function TargetCell({ segment, dispatch, activeSegmentIdRef }: Ta
   }, []);
 
   // Push store text into the DOM, unless the translator is mid-typing (their next
-  // commit replaces it anyway). Layout effect: the DOM must be current before the
+  // commit replaces it anyway) or the store text is just our own commit coming back
+  // (shouldSyncCellDom). Layout effect: the DOM must be current before the
   // browser delivers the next keystroke.
   useLayoutEffect(() => {
     const el = ref.current;
     if (!el) return;
-    if (el.value !== segment.translatedText && !(document.activeElement === el && pendingRef.current !== null)) {
+    const focused = document.activeElement === el;
+    if (shouldSyncCellDom({
+      domValue: el.value, storeValue: segment.translatedText, focused,
+      hasPending: pendingRef.current !== null, lastCommitted: lastCommittedRef.current,
+    })) {
       const { selectionStart, selectionEnd } = el;
       el.value = segment.translatedText;
-      if (document.activeElement === el) el.setSelectionRange(selectionStart, selectionEnd);
+      if (focused) el.setSelectionRange(selectionStart, selectionEnd);
     }
+    if (segment.translatedText !== lastCommittedRef.current) lastCommittedRef.current = null;
     autoGrow();
   }, [segment.translatedText, autoGrow]);
 
   const commitPending = useCallback(() => {
     if (debounceRef.current) { clearTimeout(debounceRef.current); debounceRef.current = null; }
-    const value = pendingRef.current;
+    const typed = pendingRef.current;
     pendingRef.current = null;
+    // Read the textarea, not just the last `input` value: a text expander (Typinator) can put its
+    // expansion in without an `input` event, and committing the stale value would then make the
+    // store's echo overwrite it. After unmount there is no element, so the typed value is all there is.
+    const el = ref.current;
+    const value = el ? el.value : typed;
     if (value === null) return;
+    if (typed !== null && value !== typed) {
+      console.warn(`[TargetCell] ${segmentRef.current.id}: textarea changed without an input event (typed ${JSON.stringify(typed.slice(-40))}, now ${JSON.stringify(value.slice(-40))}) — text expander?`);
+    }
     const seg = segmentRef.current;
     if (value === seg.translatedText) return;
+    lastCommittedRef.current = value;
     dispatch({ type: 'SET_TARGET_MANUAL', id: seg.id, translatedText: value, now: Date.now() });
   }, [dispatch]);
 
@@ -84,14 +110,17 @@ export default function TargetCell({ segment, dispatch, activeSegmentIdRef }: Ta
 
   const handleKeyDown = useCallback((e: React.KeyboardEvent<HTMLTextAreaElement>) => {
     if (e.key === 'Escape') { e.currentTarget.blur(); return; }
-    // Plain Enter = "send this now" (Shift+Enter still inserts a newline; Cmd/Ctrl+Enter is the refresh hotkey).
-    if (e.key === 'Enter' && !e.shiftKey && !e.metaKey && !e.ctrlKey && !e.altKey && !e.nativeEvent.isComposing) {
+    // Plain Enter = "send this now and go to the next row" (Shift+Enter still inserts a newline;
+    // Cmd/Ctrl+Enter is the refresh hotkey).
+    if (!e.nativeEvent.isComposing && isNextRowChord({ metaKey: e.metaKey, ctrlKey: e.ctrlKey, shiftKey: e.shiftKey, altKey: e.altKey, code: e.code, key: e.key })) {
       e.preventDefault();
       commitPending();
+      onEnterNext?.(segmentRef.current.id, 'target');
     }
-  }, [commitPending]);
+  }, [commitPending, onEnterNext]);
 
   const isScripture = segment.status === 'SCRIPTURE';
+  const isPendingLyrics = segment.lyrics?.part === 'pending';
   // A SCRIPTURE segment is exact quoted verse text, not a model translation —
   // it should never read as "stale" the way a not-yet-(re)translated row does.
   const isStale = segment.status !== 'TRANSLATED' && !isScripture && !segment.manualOverride;
@@ -108,7 +137,7 @@ export default function TargetCell({ segment, dispatch, activeSegmentIdRef }: Ta
           {segment.scripture.reference} · {segment.scripture.version}
         </div>
       )}
-      {segment.manualOverride && (
+      {segment.manualOverride && !segment.lyrics && (
         <Lock className="absolute top-2.5 right-2 w-3 h-3 text-blue-500 pointer-events-none" aria-label="Manually edited" />
       )}
       <textarea
@@ -119,14 +148,21 @@ export default function TargetCell({ segment, dispatch, activeSegmentIdRef }: Ta
         onBlur={handleBlur}
         onKeyDown={handleKeyDown}
         data-segment-id={segment.id}
+        data-cell="target"
         data-testid={`target-edit-${segment.id}`}
         aria-label="Translation"
-        placeholder={segment.status === 'TRANSLATING' ? '…' : 'Type translation…'}
+        onPaste={isPendingLyrics && onLyricsLink ? (e) => {
+          const text = e.clipboardData.getData('text');
+          if (!looksLikeSongLink(text)) return;
+          e.preventDefault();
+          onLyricsLink(segment.id, 'target', text.trim());
+        } : undefined}
+        placeholder={isPendingLyrics ? 'Paste an AllSongs link here for an English song' : segment.status === 'TRANSLATING' ? '…' : 'Type translation…'}
         rows={1}
         className={
           'w-full resize-none overflow-hidden bg-transparent px-3 py-2 pr-7 text-sm leading-relaxed rounded-md border-l-2 min-h-[2.25rem] ' +
           'placeholder:italic placeholder:text-muted-foreground/60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring ' +
-          (segment.manualOverride ? 'border-blue-400' : isScripture ? 'border-indigo-400' : 'border-transparent') +
+          (segment.lyrics ? 'border-violet-400' : segment.manualOverride ? 'border-blue-400' : isScripture ? 'border-indigo-400' : 'border-transparent') +
           (isStale ? ' opacity-60 focus:opacity-100' : '')
         }
       />

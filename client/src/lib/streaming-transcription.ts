@@ -1,6 +1,7 @@
 import type { ChunkTranscriptionEvents, TranslationProvider } from './chunk-based-transcription';
+import type { TranscriptionBackend } from './transcription-backend';
 
-export class StreamingTranscription {
+export class StreamingTranscription implements TranscriptionBackend {
   private ws: WebSocket | null = null;
   private audioContext: AudioContext | null = null;
   private mediaStream: MediaStream | null = null;

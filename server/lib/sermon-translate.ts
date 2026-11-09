@@ -5,8 +5,10 @@
 // plan doc §4 for the full design.
 
 import { client as openaiClient } from './openai';
-import { makeClient as ollamaClient, OLLAMA_NO_THINKING } from './ollama';
-import { buildSystemPrompt, buildUserMessage, getFileGlossaryContext } from './sermon-prompt';
+import { makeClient as ollamaClient, OLLAMA_NO_THINKING, DEFAULT_OLLAMA_BASE_URL, DEFAULT_OLLAMA_MODEL } from './ollama';
+import { postAnthropicMessage, ANTHROPIC_MODEL } from './anthropic';
+import { buildSystemPrompt, buildUserMessage, buildServiceContextBlock, getFileGlossaryContext, type CorrectionExample } from './sermon-prompt';
+import { similarity } from './text-similarity';
 import { getGlossaryBundle } from './glossary-store';
 import { checkGlossaryAdherence, type GlossaryWarning } from './glossary-check';
 import { adjudicateScripture, type ReadingCandidate } from './scripture';
@@ -23,6 +25,8 @@ export interface TranslateItemInput {
   readingCandidate?: ReadingCandidate;
   /** How to render a spoken reference announcement in English (e.g. "John 3:16") — passed through to the prompt as a rendering hint only, see sermon-prompt.ts. */
   referenceHint?: string;
+  /** A verse of a sung song ("Add lyrics"): translated line by line, see sermon-prompt.ts's <LIEDTEKST>. */
+  lyrics?: boolean;
 }
 
 /** Mirrors the outcome of server/lib/scripture.ts's adjudicateScripture for one item — see that module for the full verbatim/paraphrase/ended semantics. */
@@ -41,7 +45,13 @@ export interface ScriptureResultInfo {
 }
 
 export type TranslateItemResult =
-  | { id: string; status: 'ok'; translation: string; warnings?: GlossaryWarning[]; scripture?: ScriptureResultInfo }
+  | {
+      id: string; status: 'ok'; translation: string; warnings?: GlossaryWarning[]; scripture?: ScriptureResultInfo;
+      /** Back-translation check only: how close the English, translated back to Dutch, is to what was said (0-1). */
+      fidelity?: number;
+      /** fidelity is below the operator's threshold — set only when true. */
+      lowFidelity?: boolean;
+    }
   | { id: string; status: 'error'; error: string };
 
 export interface TranslateOptions {
@@ -54,6 +64,14 @@ export interface TranslateOptions {
   ollamaModel?: string;
   /** Free-text glossary from client settings — the v1 fallback, used only when no file glossary is loaded. See sermon-prompt.ts's getFileGlossaryContext. */
   glossaryOverride?: string;
+  /** Earlier hand corrections in this sermon (machine -> human), shown to the model as examples of the translator's preferences. Per request. */
+  examples?: CorrectionExample[];
+  /** Translate every result back to Dutch and compare it with the source (costs a second call per segment). Off by default. */
+  backTranslationCheck?: boolean;
+  /** Below this similarity (0-1) a back-translated segment is flagged. Default BACK_TRANSLATION_THRESHOLD. */
+  backTranslationThreshold?: number;
+  /** "Today's service" (title, planned passages, names/terms, notes) as labelled lines — see client/src/lib/sermon/service-context.ts and sermon-prompt.ts's buildServiceContextBlock. Part of the cached system prefix. */
+  serviceContext?: string;
   /** Basenames selecting which files server/lib/glossary-store.ts loads — server-default selection is used when omitted. */
   glossaryCsv?: string;
   disambiguationPrompt?: string;
@@ -95,8 +113,68 @@ export function claudeMaxTokens(userMessageLength: number): number {
 // timeout once it's actually running.
 const BATCH_TIMEOUT_MS = 90_000;
 
+/**
+ * The back-translation check is advisory and costs a second sequential call per item. It runs after the item has
+ * released its translation slot (so it never makes queued translations wait) and is skipped once the batch has
+ * been running this long — the client gives up on a request after 30 s (translate-client.ts) and would then
+ * discard every finished translation, so a late check must not be what tips it over.
+ */
+const ADVISORY_BUDGET_MS = 15_000;
+
+/** One line of a session's translations.jsonl: what was asked, what came back, how long it took. */
+export interface TranslationLogEntry {
+  at: string;
+  id: string;
+  provider: SermonTranslationProvider;
+  model: string;
+  latencyMs: number;
+  source: string;
+  before: string[];
+  after: string[];
+  translation?: string;
+  error?: string;
+  warnings?: GlossaryWarning[];
+  /** How the Bible-quote pipeline treated the item, when it was checked. */
+  scripture?: { kind: 'verbatim' | 'paraphrase' | 'ended'; reference?: string; version?: string };
+  /** The first answer broke a glossary term and a second call was made — see sermon-translate.ts. */
+  retried?: boolean;
+  /** Back-translation similarity to the source (0-1), when the check ran. */
+  fidelity?: number;
+  /** The English translated back to Dutch, when the check ran — what the score was computed from. */
+  backTranslation?: string;
+}
+
 export interface TranslateDeps {
   callModel?: (systemPrompt: string, userMessage: string, opts: TranslateOptions, signal: AbortSignal) => Promise<string>;
+  /** Called once per item with the outcome (success or error). Must not throw. */
+  log?: (entry: TranslationLogEntry) => void;
+}
+
+/** What translateOne learned beyond the result itself, for the log. */
+interface ItemMeta {
+  /** The optional back-translation check, run after the item has left the translation slot (see translateSegments). */
+  backCheck?: () => Promise<void>;
+  retried?: boolean;
+  fidelity?: number;
+  back?: string;
+}
+
+/** Placeholder until calibrated against a real session's translations.jsonl (fidelity is logged for every checked item). */
+export const BACK_TRANSLATION_THRESHOLD = 0.2;
+/** Fewer words than this and bigram overlap says nothing. */
+const BACK_TRANSLATION_MIN_WORDS = 5;
+const BACK_TRANSLATION_SYSTEM = 'Translate the English text between <TEKST> tags into Dutch. Translate literally and completely; never add, drop or explain anything. Reply with exactly {"translation": "..."} — a single JSON object, no explanation, no markdown fencing.';
+
+const DEFAULT_MODELS: Record<SermonTranslationProvider, string> = {
+  openai: 'gpt-4o-mini',
+  claude: ANTHROPIC_MODEL,
+  ollama: DEFAULT_OLLAMA_MODEL,
+};
+
+export function modelLabel(opts: Pick<TranslateOptions, 'translationProvider' | 'model' | 'ollamaModel'>): string {
+  if (opts.translationProvider === 'ollama') return opts.ollamaModel || DEFAULT_MODELS.ollama;
+  if (opts.translationProvider === 'claude') return DEFAULT_MODELS.claude;
+  return opts.model || DEFAULT_MODELS.openai;
 }
 
 /** Translates each item independently (own semaphore slot, own timeout); never throws — failures become {status:'error'} entries. */
@@ -115,7 +193,7 @@ export async function translateSegments(
     deityCapitals: opts.deityCapitals ?? false,
     fallbackGlossary: opts.glossaryOverride,
   });
-  const systemPrompt = buildSystemPrompt(opts.targetLanguage, glossaryContext);
+  const systemPrompt = buildSystemPrompt(opts.targetLanguage, glossaryContext, buildServiceContextBlock(opts.serviceContext));
   const callModel = deps.callModel ?? callModelDefault;
   const warningsEnabled = opts.glossaryWarningsEnabled !== false && !!bundle;
 
@@ -124,12 +202,11 @@ export async function translateSegments(
   // Batch-wide deadline — combined into every item's own signal below so a
   // queued (not-yet-started) item can never outlive it even though its own
   // ITEM_TIMEOUT_MS timer hasn't started counting yet.
+  const batchStartedAt = Date.now();
   const batchTimeout = AbortSignal.timeout(BATCH_TIMEOUT_MS);
   const batchSignal = opts.signal ? AbortSignal.any([batchTimeout, opts.signal]) : batchTimeout;
 
-  return Promise.all(items.map(async (item): Promise<TranslateItemResult> => {
-    await semaphore.acquire();
-    try {
+  const translateOne = async (item: TranslateItemInput, meta: ItemMeta): Promise<TranslateItemResult> => {
       const timeout = AbortSignal.timeout(itemTimeoutMs(item.text.length));
       const combinedSignal = AbortSignal.any([timeout, batchSignal]);
 
@@ -190,29 +267,96 @@ export async function translateSegments(
         }
       }
 
-      const userMessage = buildUserMessage({
+      const messageInput = {
         before: item.before, target: item.text, after: item.after,
-        scriptureGuidance, referenceHint: item.referenceHint,
-      });
+        scriptureGuidance, referenceHint: item.referenceHint, examples: opts.examples,
+        ...(item.lyrics ? { lyrics: true } : {}),
+      };
+      const userMessage = buildUserMessage(messageInput);
 
-      const translation = await callModel(systemPrompt, userMessage, opts, combinedSignal);
+      let translation = await callModel(systemPrompt, userMessage, opts, combinedSignal);
       if (typeof translation !== 'string' || !translation.trim()) {
         return { id: item.id, status: 'error', error: 'Empty translation response' };
       }
 
+      let warnings: GlossaryWarning[] = [];
+      if (warningsEnabled && bundle) {
+        warnings = checkGlossaryAdherence(item.text, translation, bundle.checkIndex);
+        // A required glossary term was left out: ask once more, naming the terms, and keep the second
+        // answer only if it breaks fewer of them. Any failure of the retry keeps the first answer.
+        if (warnings.length > 0) {
+          meta.retried = true;
+          try {
+            const second = await callModel(systemPrompt, buildUserMessage({ ...messageInput, terminologyFix: warnings }), opts, combinedSignal);
+            if (typeof second === 'string' && second.trim()) {
+              const secondWarnings = checkGlossaryAdherence(item.text, second, bundle.checkIndex);
+              if (secondWarnings.length < warnings.length) { translation = second; warnings = secondWarnings; }
+            }
+          } catch { /* keep the first answer */ }
+        }
+      }
+
       const result: TranslateItemResult = { id: item.id, status: 'ok', translation };
       if (scriptureInfo) result.scripture = scriptureInfo;
-      if (warningsEnabled && bundle) {
-        const warnings = checkGlossaryAdherence(item.text, translation, bundle.checkIndex);
-        if (warnings.length > 0) result.warnings = warnings;
+      if (warnings.length > 0) result.warnings = warnings;
+
+      // Optional: translate it back to Dutch and see how far that is from what was said (run by the caller, outside the slot).
+      if (opts.backTranslationCheck && item.text.trim().split(/\s+/).length >= BACK_TRANSLATION_MIN_WORDS) {
+        const final = translation;
+        meta.backCheck = async () => {
+          try {
+            const back = await callModel(BACK_TRANSLATION_SYSTEM, `<TEKST>\n${final.replace(/<\/?TEKST>/gi, '')}\n</TEKST>`, opts, combinedSignal);
+            if (typeof back === 'string' && back.trim()) {
+              const fidelity = Math.round(similarity(item.text, back) * 100) / 100;
+              meta.fidelity = fidelity;
+              meta.back = back;
+              result.fidelity = fidelity;
+              if (fidelity < (opts.backTranslationThreshold ?? BACK_TRANSLATION_THRESHOLD)) result.lowFidelity = true;
+            }
+          } catch { /* the check is advisory: no score, the translation stands */ }
+        };
       }
       return result;
+  };
+
+  return Promise.all(items.map(async (item): Promise<TranslateItemResult> => {
+    await semaphore.acquire();
+    const startedAt = Date.now();
+    const meta: ItemMeta = {};
+    let outcome: TranslateItemResult;
+    try {
+      outcome = await translateOne(item, meta);
     } catch (err) {
       console.error(`Sermon translate item ${item.id} failed:`, err);
-      return { id: item.id, status: 'error', error: classifyError(err) };
+      outcome = { id: item.id, status: 'error', error: classifyError(err) };
     } finally {
       semaphore.release();
     }
+    if (meta.backCheck && outcome.status === 'ok' && Date.now() - batchStartedAt < ADVISORY_BUDGET_MS) await meta.backCheck();
+    if (deps.log) {
+      try {
+        deps.log({
+          at: new Date(startedAt).toISOString(), id: item.id,
+          provider: opts.translationProvider, model: modelLabel(opts),
+          latencyMs: Date.now() - startedAt,
+          source: item.text, before: item.before, after: item.after,
+          ...(outcome.status === 'ok'
+            ? {
+                translation: outcome.translation,
+                warnings: outcome.warnings,
+                scripture: outcome.scripture
+                  ? {
+                      kind: outcome.scripture.verbatim ? 'verbatim' as const : outcome.scripture.paraphrase ? 'paraphrase' as const : 'ended' as const,
+                      reference: outcome.scripture.reference, version: outcome.scripture.version,
+                    }
+                  : undefined,
+              }
+            : { error: outcome.error }),
+          retried: meta.retried, fidelity: meta.fidelity, backTranslation: meta.back,
+        });
+      } catch { /* a debugging aid must never fail a translation */ }
+    }
+    return outcome;
   }));
 }
 
@@ -261,9 +405,9 @@ async function callOpenAI(systemPrompt: string, userMessage: string, opts: Trans
 }
 
 async function callOllama(systemPrompt: string, userMessage: string, opts: TranslateOptions, signal: AbortSignal): Promise<string> {
-  const response = await ollamaClient(opts.ollamaBaseUrl || 'http://localhost:11434').chat.completions.create(
+  const response = await ollamaClient(opts.ollamaBaseUrl || DEFAULT_OLLAMA_BASE_URL).chat.completions.create(
     {
-      model: opts.ollamaModel || 'qwen3.6:latest',
+      model: opts.ollamaModel || DEFAULT_OLLAMA_MODEL,
       messages: [
         { role: 'system', content: systemPrompt },
         { role: 'user', content: userMessage },
@@ -277,37 +421,19 @@ async function callOllama(systemPrompt: string, userMessage: string, opts: Trans
   return extractTranslation(response.choices[0]?.message?.content || '{}');
 }
 
-// Claude prompt caching needs `system` as a block array with cache_control —
-// the existing callClaude() in anthropic.ts uses a plain string `system` and
-// is shared by other callers, so this is a separate implementation rather
-// than a retrofit (plan §4: "Bestaande callClaude niet aanpassen").
+// Claude prompt caching needs `system` as a block array with cache_control,
+// which callClaude() in anthropic.ts (plain string `system`) does not send —
+// so this builds its own body and shares only the transport.
 async function callClaudeCached(systemPrompt: string, userMessage: string, apiKey: string, signal: AbortSignal): Promise<string> {
-  const effectiveKey = apiKey || process.env.ANTHROPIC_API_KEY || '';
-  if (!effectiveKey) throw new Error('No Anthropic API key provided. Add one in Settings.');
-
-  const response = await fetch('https://api.anthropic.com/v1/messages', {
-    method: 'POST',
-    headers: {
-      'x-api-key': effectiveKey,
-      'anthropic-version': '2023-06-01',
-      'content-type': 'application/json',
-    },
-    body: JSON.stringify({
-      model: 'claude-haiku-4-5-20251001',
+  const raw = await postAnthropicMessage(
+    {
       max_tokens: claudeMaxTokens(userMessage.length),
       system: [{ type: 'text', text: systemPrompt, cache_control: { type: 'ephemeral' } }],
       messages: [{ role: 'user', content: userMessage }],
-    }),
+    },
+    apiKey,
     signal,
-  });
-
-  if (!response.ok) {
-    const text = await response.text().catch(() => response.statusText);
-    throw new Error(`Anthropic API error ${response.status}: ${text}`);
-  }
-
-  const data = await response.json() as { content?: Array<{ text?: string }> };
-  const raw = data.content?.[0]?.text ?? '';
+  );
   const match = raw.match(/\{[\s\S]*\}/);
   return match ? extractTranslation(match[0]) : '';
 }

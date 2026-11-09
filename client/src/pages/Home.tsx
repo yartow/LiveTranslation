@@ -21,10 +21,10 @@ import { ChunkBasedTranscription } from '@/lib/chunk-based-transcription';
 import { BrowserSpeechTranscription } from '@/lib/browser-speech-transcription';
 import { StreamingTranscription } from '@/lib/streaming-transcription';
 import { LocalWhisperTranscription } from '@/lib/local-whisper-transcription';
+import type { TranscriptionBackend } from '@/lib/transcription-backend';
+import DebugPanel from '@/components/DebugPanel';
 import { useAudioQuality } from '@/hooks/useAudioQuality';
 import { saveSession } from '@/lib/session-db';
-
-type AnyTranscriptionBackend = StreamingTranscription | ChunkBasedTranscription | BrowserSpeechTranscription | LocalWhisperTranscription;
 
 interface TranscriptionSegment {
   original: string;
@@ -95,7 +95,6 @@ export default function Home() {
   const [debugLogs, setDebugLogs] = useState<string[]>([]);
   const [debugPanelCollapsed, setDebugPanelCollapsed] = useState(true);
   const [debugPanelHeight, setDebugPanelHeight] = useState(0);
-  const debugPanelRef = useRef<HTMLDivElement>(null);
   const [isImproving, setIsImproving] = useState(false);
   const [lookbackChars, setLookbackChars] = useState(() => settings.defaultLookbackChars);
   useEffect(() => { setLookbackChars(settings.defaultLookbackChars); }, [settings.defaultLookbackChars]);
@@ -111,19 +110,6 @@ export default function Home() {
       .catch(() => setWebGpuSupported(false));
   }, []);
 
-  // Measure the debug panel (header + body, whichever is currently rendered) so the
-  // text-display container below can reserve exactly that much bottom padding — the
-  // panel used to be a fixed overlay that simply covered the last line of text.
-  useEffect(() => {
-    const el = debugPanelRef.current;
-    if (!el) { setDebugPanelHeight(0); return; }
-    const observer = new ResizeObserver(([entry]) => {
-      setDebugPanelHeight(entry.contentRect.height);
-    });
-    observer.observe(el);
-    return () => observer.disconnect();
-  }, [settings.debugMode, debugLogs.length, debugPanelCollapsed]);
-
   const [subtitleCurrent, setSubtitleCurrent] = useState('');
   const [subtitlePrevious, setSubtitlePrevious] = useState('');
   const subtitleCurrentRef = useRef('');
@@ -134,7 +120,7 @@ export default function Home() {
 
   const detectSpeakers = settings.speechMode === 'dialogue';
 
-  const backendRef = useRef<AnyTranscriptionBackend | null>(null);
+  const backendRef = useRef<TranscriptionBackend | null>(null);
   const transcriptionSegmentsRef = useRef<TranscriptionSegment[]>([]);
   const pendingRetranslationRef = useRef(false);
   const previousTargetLanguageRef = useRef(targetLanguage);
@@ -412,9 +398,7 @@ export default function Home() {
           setTranslatedText(newTranslated);
           setPreviewText('');
           // Keep Whisper context up-to-date for the next chunk
-          if (backendRef.current instanceof ChunkBasedTranscription) {
-            backendRef.current.setPreviousTranscript(newOriginal.slice(-300));
-          }
+          backendRef.current?.setPreviousTranscript?.(newOriginal.slice(-300));
 
           setSubtitlePrevious(subtitleCurrentRef.current);
           subtitleCurrentRef.current = translated;
@@ -466,7 +450,7 @@ export default function Home() {
         },
       };
 
-      let backend: AnyTranscriptionBackend;
+      let backend: TranscriptionBackend;
 
       backendRef.current = null;
       setIsRecording(true);
@@ -484,11 +468,16 @@ export default function Home() {
           settings.openaiApiKey,
           settings.anthropicApiKey,
           settings.localWhisperModel,
+          settings.theologicalGlossary,
+          sermonContextRef.current,
+          settings.ollamaBaseUrl,
+          settings.ollamaModel,
         );
       } else if (settings.transcriptionProvider === 'browser') {
-        backend = new BrowserSpeechTranscription(events);
+        const browserBackend = new BrowserSpeechTranscription(events);
+        backend = browserBackend;
         backendRef.current = backend;
-        await backend.start(
+        await browserBackend.start(
           sourceLanguage,
           targetLanguage,
           detectSpeakers,
@@ -497,6 +486,8 @@ export default function Home() {
           settings.anthropicApiKey,
           settings.theologicalGlossary,
           sermonContextRef.current,
+          settings.ollamaBaseUrl,
+          settings.ollamaModel,
         );
       } else if (settings.transcriptionProvider === 'whisper' || settings.transcriptionProvider === 'mlx') {
         const chunkBackend = new ChunkBasedTranscription(events, chunkDurationSecs * 1000);
@@ -506,22 +497,24 @@ export default function Home() {
         backendRef.current = backend;
         const engine = settings.transcriptionProvider === 'mlx' ? 'mlx' : 'openai';
         if (settings.debugMode) addDebugLog(`Connecting to ${engine === 'mlx' ? 'local MLX' : 'Whisper'} chunk transcription…`);
-        await chunkBackend.start(
+        await chunkBackend.start({
           sourceLanguage,
           targetLanguage,
           detectSpeakers,
-          settings.translationProvider,
-          settings.openaiApiKey,
-          settings.anthropicApiKey,
-          settings.theologicalGlossary,
-          sermonContextRef.current,
-          settings.debugMode,
-          settings.audioNormalizationGain,
-          settings.chunkOverlapMs,
-          settings.useVADChunking,
-          settings.vadSilenceThresholdMs,
+          translationProvider: settings.translationProvider,
+          openaiApiKey: settings.openaiApiKey,
+          anthropicApiKey: settings.anthropicApiKey,
+          glossary: settings.theologicalGlossary,
+          sermonContext: sermonContextRef.current,
+          debugMode: settings.debugMode,
+          normalizationGain: settings.audioNormalizationGain,
+          chunkOverlapMs: settings.chunkOverlapMs,
+          useVADChunking: settings.useVADChunking,
+          vadSilenceThresholdMs: settings.vadSilenceThresholdMs,
           engine,
-        );
+          ollamaBaseUrl: settings.ollamaBaseUrl,
+          ollamaModel: settings.ollamaModel,
+        });
       } else {
         // AssemblyAI real-time streaming (PCM16 over WebSocket)
         const streamingBackend = new StreamingTranscription(events);
@@ -745,9 +738,7 @@ export default function Home() {
                     onChange={(e) => {
                       const secs = Number(e.target.value);
                       setChunkDurationSecs(secs);
-                      if (backendRef.current instanceof ChunkBasedTranscription) {
-                        backendRef.current.setChunkDuration(secs * 1000);
-                      }
+                      backendRef.current?.setChunkDuration?.(secs * 1000);
                     }}
                     className="text-sm border border-input rounded-lg px-2 py-1.5 bg-background text-foreground disabled:opacity-50"
                     data-testid="select-chunk-duration"
@@ -836,17 +827,11 @@ export default function Home() {
           useVADChunking={settings.useVADChunking}
           onGainChange={(gain) => {
             updateSettings({ audioNormalizationGain: gain });
-            if (backendRef.current instanceof ChunkBasedTranscription) {
-              backendRef.current.setNormalizationGain(gain);
-            } else if (backendRef.current instanceof StreamingTranscription) {
-              backendRef.current.setNormalizationGain(gain);
-            }
+            backendRef.current?.setNormalizationGain?.(gain);
           }}
           onVADThresholdChange={(ms) => {
             updateSettings({ vadSilenceThresholdMs: ms });
-            if (backendRef.current instanceof ChunkBasedTranscription) {
-              backendRef.current.setVADThreshold(ms);
-            }
+            backendRef.current?.setVADThreshold?.(ms);
           }}
           onNormalizeClick={() => setIsWizardOpen(true)}
         />
@@ -898,42 +883,16 @@ export default function Home() {
 
       {/* ── Debug overlay ────────────────────────────────────────────────── */}
       {/* Collapsed by default — only the header bar's height needs reserving
-          most of the time. Whichever state is rendered, debugPanelRef measures
-          it and the text-display container above reserves that much space. */}
+          most of the time. DebugPanel reports its height (debugPanelHeight) and the
+          text-display container above reserves that much space. */}
       {settings.debugMode && debugLogs.length > 0 && (
-        <div
-          ref={debugPanelRef}
-          className="fixed left-0 right-0 mx-4 z-10"
-          style={{ bottom: 'calc(88px + env(safe-area-inset-bottom, 0px))' }}
-        >
-          <div className="rounded-lg border border-border bg-background/95 backdrop-blur-sm shadow-lg overflow-hidden">
-            <div className="px-3 py-1.5 border-b border-border flex items-center justify-between">
-              <button
-                type="button"
-                onClick={() => setDebugPanelCollapsed(c => !c)}
-                className="flex items-center gap-1 text-xs font-semibold text-muted-foreground hover:text-foreground"
-                data-testid="button-debug-panel-toggle"
-              >
-                {debugPanelCollapsed ? <ChevronDown className="w-3 h-3" /> : <ChevronUp className="w-3 h-3" />}
-                Debug log ({debugLogs.length})
-              </button>
-              <button
-                type="button"
-                onClick={() => setDebugLogs([])}
-                className="text-xs text-muted-foreground hover:text-foreground"
-              >
-                Clear
-              </button>
-            </div>
-            {!debugPanelCollapsed && (
-              <div className="max-h-32 overflow-y-auto px-3 py-2 space-y-0.5">
-                {debugLogs.map((log, i) => (
-                  <p key={i} className="text-xs font-mono text-muted-foreground leading-relaxed">{log}</p>
-                ))}
-              </div>
-            )}
-          </div>
-        </div>
+        <DebugPanel
+          logs={debugLogs}
+          collapsed={debugPanelCollapsed}
+          onToggleCollapsed={() => setDebugPanelCollapsed(c => !c)}
+          onClear={() => setDebugLogs([])}
+          onHeightChange={setDebugPanelHeight}
+        />
       )}
 
       {/* ── Fixed bottom action bar ───────────────────────────────────────── */}
@@ -1027,11 +986,7 @@ export default function Home() {
         onClose={() => setIsWizardOpen(false)}
         onApply={(gain) => {
           updateSettings({ audioNormalizationGain: gain });
-          if (backendRef.current instanceof ChunkBasedTranscription) {
-            backendRef.current.setNormalizationGain(gain);
-          } else if (backendRef.current instanceof StreamingTranscription) {
-            backendRef.current.setNormalizationGain(gain);
-          }
+          backendRef.current?.setNormalizationGain?.(gain);
         }}
       />
     </div>

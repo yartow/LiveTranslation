@@ -1,9 +1,13 @@
 import { useState } from 'react';
-import { Languages, Loader2, Mic, Pause, Play, RefreshCw, Send, Settings, Square, Users } from 'lucide-react';
+import { Download, Languages, Loader2, Mic, Music, Pause, Play, Plus, RefreshCw, Send, Settings, Square, Users } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Label } from '@/components/ui/label';
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
 import ListenerAddressPanel from './ListenerAddressPanel';
+import ServiceContextPopover from './ServiceContextPopover';
+import SuggestionsPopover from './SuggestionsPopover';
+import type { EditSuggestion } from '@/lib/sermon/edit-suggestions';
+import type { ServiceContext } from '@/lib/sermon/service-context';
 
 interface SermonToolbarProps {
   isRecording: boolean;
@@ -14,6 +18,12 @@ interface SermonToolbarProps {
   onToggleRecording: () => void;
   dirtyCount: number;
   onRefreshAll: () => void;
+  /** Adds an empty row to type into by hand (no microphone needed). */
+  onAddRow: () => void;
+  /** Saves the English as markdown (data/transcripts/) and downloads it — see useTranscriptSave.ts. */
+  onSaveMarkdown: () => void;
+  /** Adds a row to paste an AllSongs song link into — see useLyricsInsert.ts. */
+  onAddLyrics: () => void;
   autoTranslate: boolean;
   onToggleAutoTranslate: (value: boolean) => void;
   maxLatencySecs: number;
@@ -24,6 +34,13 @@ interface SermonToolbarProps {
   listenersEnabled: boolean;
   onToggleListeners: () => void;
   onOpenSettings: () => void;
+  /** "Today's service" — see ServiceContextPopover. */
+  serviceContext: ServiceContext;
+  onChangeServiceContext: (next: ServiceContext) => void;
+  /** Corrections the operator keeps making by hand, offered as glossary entries. */
+  suggestions: EditSuggestion[];
+  onAddSuggestion: (suggestion: EditSuggestion) => void;
+  onDismissSuggestion: (suggestion: EditSuggestion) => void;
   isMac: boolean;
 }
 
@@ -51,9 +68,9 @@ function ToggleChip({ on, onClick, icon, label, title, testId }: {
 }
 
 export default function SermonToolbar({
-  isRecording, isProcessing, isPaused, onTogglePause, onToggleRecording, dirtyCount, onRefreshAll,
+  isRecording, isProcessing, isPaused, onTogglePause, onToggleRecording, dirtyCount, onRefreshAll, onAddRow, onSaveMarkdown, onAddLyrics,
   autoTranslate, onToggleAutoTranslate, maxLatencySecs, onChangeMaxLatencySecs,
-  listenerCount, listenersEnabled, onToggleListeners, onOpenSettings, isMac,
+  listenerCount, listenersEnabled, onToggleListeners, onOpenSettings, serviceContext, onChangeServiceContext, suggestions, onAddSuggestion, onDismissSuggestion, isMac,
 }: SermonToolbarProps) {
   const refreshHint = isMac ? '⌘⇧⏎' : 'Ctrl+Shift+Enter';
   const [isListenerPopoverOpen, setIsListenerPopoverOpen] = useState(false);
@@ -104,6 +121,28 @@ export default function SermonToolbar({
         <kbd className="ml-1 hidden sm:inline text-[10px] text-muted-foreground border rounded px-1 py-0.5">{refreshHint}</kbd>
       </Button>
 
+      <Button
+        variant="outline"
+        size="sm"
+        onClick={onAddRow}
+        data-testid="button-add-row"
+        title="Add an empty row to type into by hand (works without a microphone)"
+      >
+        <Plus className="w-3.5 h-3.5" />
+        Add row
+      </Button>
+
+      <Button
+        variant="outline"
+        size="sm"
+        onClick={onAddLyrics}
+        data-testid="button-add-lyrics"
+        title="Add a song: paste an AllSongs link into the new row (right = English song, left = Dutch song)"
+      >
+        <Music className="w-3.5 h-3.5" />
+        Add lyrics
+      </Button>
+
       {/* Three independent switches: recording (round button + Pause above), translation, listeners.
           Any of them can be off while the others keep going, e.g. recording stopped but typing
           corrections that still go out to the phones. */}
@@ -150,6 +189,21 @@ export default function SermonToolbar({
       </div>
 
       <div className="flex-1" />
+
+      <SuggestionsPopover suggestions={suggestions} onAdd={onAddSuggestion} onDismiss={onDismissSuggestion} />
+
+      <ServiceContextPopover value={serviceContext} onChange={onChangeServiceContext} />
+
+      <Button
+        variant="outline"
+        size="sm"
+        onClick={onSaveMarkdown}
+        data-testid="button-save-markdown"
+        title="Save the English as a markdown file (also saved automatically when you stop recording)"
+      >
+        <Download className="w-3.5 h-3.5" />
+        Save .md
+      </Button>
 
       <Popover open={isListenerPopoverOpen} onOpenChange={setIsListenerPopoverOpen}>
         <PopoverTrigger asChild>

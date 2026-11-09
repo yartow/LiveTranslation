@@ -10,18 +10,22 @@ import {
   formatForExport,
 } from './lib/openai';
 import { correctAndTranslateWithClaude, retroactiveCorrectionWithClaude } from './lib/anthropic';
-import { correctAndTranslateWithOllama, retroactiveCorrectionWithOllama, isValidOllamaBaseUrl } from './lib/ollama';
+import { correctAndTranslateWithOllama, retroactiveCorrectionWithOllama, isValidOllamaBaseUrl, DEFAULT_OLLAMA_BASE_URL, DEFAULT_OLLAMA_MODEL } from './lib/ollama';
 import { transcribeWithMlx } from './lib/mlx-whisper';
 import { isAsrArtifact, stripAsrArtifacts } from './lib/asr-artifacts';
 import { translateSegments, type TranslateItemResult, type SermonTranslationProvider } from './lib/sermon-translate';
 import { parseSermonItems } from './lib/sermon-items';
+import { parseCorrectionExamples } from './lib/sermon-prompt';
 import { addToGlossary } from './lib/glossary-add';
+import { saveTranscript, isValidSessionId } from './lib/transcript-file';
+import { fetchSongLyrics, AllSongsError } from './lib/allsongs';
 import { applyLearnedCorrections } from './lib/asr-corrections';
 import { getInputVolume, setInputVolume, isValidInputVolume } from './lib/mac-input-volume';
-import { isOperatorRequest } from './lib/loopback';
+import { isOperatorRequest, isLoopbackAddress } from './lib/loopback';
 import { getGlossaryStatus, reloadGlossary } from './lib/glossary-store';
 import { isSafeGlossaryName } from './lib/glossary-file';
 import { archiveEnabled, getCurrentArchiveDir } from './lib/chunk-transcription';
+import { appendToArchive, logTranslation } from './lib/session-archive';
 import { join as joinPath } from 'path';
 import fs from 'fs';
 import os from 'os';
@@ -79,7 +83,7 @@ async function runCorrectAndTranslate(
     return correctAndTranslateWithClaude(text, targetLanguage, detectSpeakers, anthropicApiKey || '', glossary, sermonContext);
   }
   if (provider === 'ollama') {
-    return correctAndTranslateWithOllama(text, targetLanguage, detectSpeakers, ollamaModel || 'qwen3.6:latest', ollamaBaseUrl || 'http://localhost:11434', glossary, sermonContext);
+    return correctAndTranslateWithOllama(text, targetLanguage, detectSpeakers, ollamaModel || DEFAULT_OLLAMA_MODEL, ollamaBaseUrl || DEFAULT_OLLAMA_BASE_URL, glossary, sermonContext);
   }
   if (provider === 'none') {
     return { correctedText: text, translatedText: '' };
@@ -103,7 +107,7 @@ async function runRetroactiveCorrection(
     return retroactiveCorrectionWithClaude(accumulatedText, targetLanguage, detectSpeakers, anthropicApiKey || '', glossary, sermonContext);
   }
   if (provider === 'ollama') {
-    return retroactiveCorrectionWithOllama(accumulatedText, targetLanguage, detectSpeakers, ollamaModel || 'qwen3.6:latest', ollamaBaseUrl || 'http://localhost:11434', glossary, sermonContext);
+    return retroactiveCorrectionWithOllama(accumulatedText, targetLanguage, detectSpeakers, ollamaModel || DEFAULT_OLLAMA_MODEL, ollamaBaseUrl || DEFAULT_OLLAMA_BASE_URL, glossary, sermonContext);
   }
   if (provider === 'none') {
     return { correctedText: accumulatedText, translatedText: '' };
@@ -232,10 +236,18 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
-  // Text-only translation — used by browser SpeechRecognition mode and re-translation
-  app.post('/api/translate', rateLimiter, async (req, res) => {
+  // Text-only translation — used by browser SpeechRecognition mode, re-translation
+  // and the "Improve" button. The three routes differ only in the name of the
+  // text field, the provider call and the error wording.
+  const textTranslationRoute = (
+    textField: 'text' | 'originalText' | 'accumulatedText',
+    run: typeof runCorrectAndTranslate,
+    logLabel: string,
+    failureMessage: string,
+  ) => async (req: Request, res: Response) => {
     try {
-      const { text, targetLanguage, detectSpeakers, translationProvider, openaiApiKey, anthropicApiKey, glossary, sermonContext, ollamaModel, ollamaBaseUrl } = req.body;
+      const { targetLanguage, detectSpeakers, translationProvider, openaiApiKey, anthropicApiKey, glossary, sermonContext, ollamaModel, ollamaBaseUrl } = req.body;
+      const text = req.body[textField];
 
       if (!text) return res.status(400).json({ error: 'No text provided' });
 
@@ -243,7 +255,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
       if (!provider) return res.status(400).json({ error: 'Invalid translationProvider' });
       if (isBadOllamaBaseUrl(ollamaBaseUrl)) return res.status(400).json({ error: 'Invalid ollamaBaseUrl' });
 
-      const { correctedText, translatedText } = await runCorrectAndTranslate(
+      const { correctedText, translatedText } = await run(
         text,
         targetLanguage || 'nl',
         detectSpeakers ?? false,
@@ -258,79 +270,20 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
       res.json({ correctedText, translatedText });
     } catch (error) {
-      console.error('Translation error:', error);
+      console.error(`${logLabel}:`, error);
       res.status(500).json({
-        error: 'Failed to translate text',
+        error: failureMessage,
         details: error instanceof Error ? error.message : 'Unknown error',
       });
     }
-  });
+  };
 
-  app.post('/api/retranslate', rateLimiter, async (req, res) => {
-    try {
-      const { originalText, targetLanguage, detectSpeakers, translationProvider, openaiApiKey, anthropicApiKey, glossary, sermonContext, ollamaModel, ollamaBaseUrl } = req.body;
-
-      if (!originalText) return res.status(400).json({ error: 'No text provided' });
-
-      const provider = parseProvider(translationProvider);
-      if (!provider) return res.status(400).json({ error: 'Invalid translationProvider' });
-      if (isBadOllamaBaseUrl(ollamaBaseUrl)) return res.status(400).json({ error: 'Invalid ollamaBaseUrl' });
-
-      const { correctedText, translatedText } = await runCorrectAndTranslate(
-        originalText,
-        targetLanguage || 'nl',
-        detectSpeakers ?? false,
-        provider,
-        openaiApiKey || undefined,
-        anthropicApiKey || undefined,
-        glossary || undefined,
-        sermonContext || undefined,
-        ollamaModel || undefined,
-        ollamaBaseUrl || undefined,
-      );
-
-      res.json({ correctedText, translatedText });
-    } catch (error) {
-      console.error('Re-translation error:', error);
-      res.status(500).json({
-        error: 'Failed to re-translate text',
-        details: error instanceof Error ? error.message : 'Unknown error',
-      });
-    }
-  });
-
-  app.post('/api/retroactive-correct', rateLimiter, async (req, res) => {
-    try {
-      const { accumulatedText, targetLanguage, detectSpeakers, translationProvider, openaiApiKey, anthropicApiKey, glossary, sermonContext, ollamaModel, ollamaBaseUrl } = req.body;
-
-      if (!accumulatedText) return res.status(400).json({ error: 'No text provided' });
-
-      const provider = parseProvider(translationProvider);
-      if (!provider) return res.status(400).json({ error: 'Invalid translationProvider' });
-      if (isBadOllamaBaseUrl(ollamaBaseUrl)) return res.status(400).json({ error: 'Invalid ollamaBaseUrl' });
-
-      const { correctedText, translatedText } = await runRetroactiveCorrection(
-        accumulatedText,
-        targetLanguage || 'nl',
-        detectSpeakers ?? false,
-        provider,
-        openaiApiKey || undefined,
-        anthropicApiKey || undefined,
-        glossary || undefined,
-        sermonContext || undefined,
-        ollamaModel || undefined,
-        ollamaBaseUrl || undefined,
-      );
-
-      res.json({ correctedText, translatedText });
-    } catch (error) {
-      console.error('Retroactive correction error:', error);
-      res.status(500).json({
-        error: 'Failed to perform retroactive correction',
-        details: error instanceof Error ? error.message : 'Unknown error',
-      });
-    }
-  });
+  app.post('/api/translate', rateLimiter,
+    textTranslationRoute('text', runCorrectAndTranslate, 'Translation error', 'Failed to translate text'));
+  app.post('/api/retranslate', rateLimiter,
+    textTranslationRoute('originalText', runCorrectAndTranslate, 'Re-translation error', 'Failed to re-translate text'));
+  app.post('/api/retroactive-correct', rateLimiter,
+    textTranslationRoute('accumulatedText', runRetroactiveCorrection, 'Retroactive correction error', 'Failed to perform retroactive correction'));
 
   // Sermon mode: translate a batch of dirty segments in one request (see
   // client/src/hooks/useTranslationQueue.ts). Deliberately batched rather
@@ -342,7 +295,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
       const {
         targetLanguage, translationProvider, model,
         openaiApiKey, anthropicApiKey, ollamaBaseUrl, ollamaModel,
-        glossary, items,
+        glossary, items, serviceContext, examples, backTranslationCheck, backTranslationThreshold,
         glossaryCsv, disambiguationPrompt, bibleVersion, deityCapitals, glossaryWarnings,
         scriptureEnabled, esvApiKey, scriptureFallback,
       } = req.body;
@@ -394,6 +347,10 @@ export async function registerRoutes(app: Express): Promise<Server> {
         ollamaBaseUrl: ollamaBaseUrl || undefined,
         ollamaModel: ollamaModel || undefined,
         glossaryOverride: glossary || undefined,
+        serviceContext: typeof serviceContext === 'string' ? serviceContext.slice(0, 8000) : undefined, // buildServiceContextBlock applies the real cap
+        examples: parseCorrectionExamples(examples),
+        backTranslationCheck: backTranslationCheck === true,
+        backTranslationThreshold: typeof backTranslationThreshold === 'number' && backTranslationThreshold > 0 && backTranslationThreshold < 1 ? backTranslationThreshold : undefined,
         glossaryCsv: parsedGlossaryCsv || undefined,
         disambiguationPrompt: parsedDisambiguationPrompt || undefined,
         bibleVersion: VALID_BIBLE_VERSIONS.has(bibleVersion) ? bibleVersion : undefined,
@@ -403,7 +360,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
         esvApiKey: esvApiKey || undefined,
         scriptureFallback: scriptureFallback === 'none' ? 'none' : 'kjv',
         signal: controller.signal,
-      });
+      }, { log: logTranslation });
 
       // A blank cell fails alone instead of taking the whole batch down with a 400.
       const blank: TranslateItemResult[] = parsedItems.blankIds.map(id => ({ id, status: 'error', error: 'Nothing to translate — the source text is empty' }));
@@ -464,6 +421,41 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
     reloadGlossary({ csv: parsedCsv });
     res.json({ ok: true, glossaryRowAdded: result.glossaryRowAdded, correctionAdded: result.correctionAdded });
+  });
+
+  // Operator-only: one song's lyrics from AllSongs (server/lib/allsongs.ts) for sermon mode's
+  // "Add lyrics". Only the song id is taken from the pasted link; the host is ALLSONGS_URL.
+  app.get('/api/lyrics', rateLimiter, async (req, res) => {
+    if (!isOperatorRequest(req.socket.remoteAddress)) {
+      return res.status(403).json({ error: 'Only available from the operator machine' });
+    }
+    const url = typeof req.query.url === 'string' ? req.query.url : '';
+    try {
+      res.json(await fetchSongLyrics(url));
+    } catch (err) {
+      if (err instanceof AllSongsError) return res.status(err.status).json({ error: err.message });
+      console.error('[lyrics] failed:', err);
+      res.status(500).json({ error: 'Could not load the song' });
+    }
+  });
+
+  // Operator-only: the English of the service as markdown (server/lib/transcript-file.ts), written each
+  // time recording stops and on later edits (client/src/hooks/useTranscriptSave.ts). text/plain because
+  // the body is the markdown itself; the client names only its session id, never a path.
+  app.post('/api/sermon/transcript-md', express.text({ type: '*/*', limit: '5mb' }), async (req, res) => {
+    if (!isOperatorRequest(req.socket.remoteAddress)) {
+      return res.status(403).json({ error: 'Only available from the operator machine' });
+    }
+    const session = req.query.session;
+    if (!isValidSessionId(session)) return res.status(400).json({ error: 'invalid session' });
+    if (typeof req.body !== 'string' || !req.body.trim()) return res.status(400).json({ error: 'empty body' });
+    try {
+      const file = await saveTranscript(session, req.body);
+      res.json({ ok: true, file });
+    } catch (err) {
+      console.error('[transcript-md] save failed:', err);
+      res.status(500).json({ error: 'write failed' });
+    }
   });
 
   // macOS system input volume (see server/lib/mac-input-volume.ts). Operator
@@ -548,6 +540,27 @@ export async function registerRoutes(app: Express): Promise<Server> {
     });
   });
 
+  // Session archive extras: the page batches the operator's edits and its own errors and posts
+  // them as JSON lines. Each line is parsed and re-serialised so the .jsonl files stay well-formed;
+  // text/plain for the same reason as /transcript above. Operator-only, like the other writers.
+  const archiveLines = (fileName: string) => [
+    express.text({ type: '*/*', limit: '2mb' }),
+    (req: Request, res: Response) => {
+      if (!isOperatorRequest(req.socket.remoteAddress)) return res.status(403).json({ error: 'Only available to the operator' });
+      if (!archiveEnabled() || !getCurrentArchiveDir()) return res.status(404).json({ error: 'archive not active' });
+      if (typeof req.body !== 'string' || !req.body) return res.status(400).json({ error: 'empty body' });
+      const lines: string[] = [];
+      for (const line of req.body.split('\n')) {
+        if (!line.trim()) continue;
+        try { lines.push(JSON.stringify(JSON.parse(line))); } catch { /* drop a malformed line */ }
+      }
+      if (lines.length) appendToArchive(fileName, lines.join('\n') + '\n');
+      res.json({ ok: true, lines: lines.length });
+    },
+  ];
+  app.post('/api/asr-debug/edit-log', ...archiveLines('edits.jsonl'));
+  app.post('/api/asr-debug/client-log', ...archiveLines('client-errors.jsonl'));
+
   // Listener mode (CLAUDE.md "Listener mode"): the address(es) the operator
   // reads out to the congregation, shown in SermonToolbar's "Luisteraars"
   // popover. The MBP's LAN IP changes with the network (home vs. church), so
@@ -573,9 +586,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
     if (process.env.NODE_ENV !== 'development') {
       return res.status(403).json({ error: 'Not available in production' });
     }
-    const remoteAddress = req.socket.remoteAddress ?? '';
-    const isLoopback = remoteAddress === '127.0.0.1' || remoteAddress === '::1' || remoteAddress === '::ffff:127.0.0.1';
-    if (!isLoopback) {
+    if (!isLoopbackAddress(req.socket.remoteAddress)) {
       return res.status(403).json({ error: 'Only available to local requests' });
     }
     res.json({

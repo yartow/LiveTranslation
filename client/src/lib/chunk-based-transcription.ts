@@ -1,7 +1,12 @@
+import { createSerialRunner } from './serial-runner';
+import { PerfMonitor } from './sermon/perf-monitor';
+import type { TranscriptionBackend } from './transcription-backend';
+
 export interface ChunkTranscriptionEvents {
   onReady: () => void;
   onRawTranscript: (text: string, chunkIndex: number) => void;
-  onTranslation: (original: string, translated: string, chunkIndex: number) => void;
+  /** `lowWords`: words Whisper was clearly unsure about in this chunk (MLX engine only). */
+  onTranslation: (original: string, translated: string, chunkIndex: number, lowWords?: string[]) => void;
   onError: (message: string) => void;
   onClose: () => void;
   onStreamReady?: (stream: MediaStream) => void;
@@ -10,6 +15,12 @@ export interface ChunkTranscriptionEvents {
   onAudioLevel?: (rms: number, peak?: number) => void;
   /** A non-fatal heads-up for the operator (e.g. the chosen microphone was missing and the default was used). */
   onNotice?: (message: string) => void;
+  /** A chunk was committed and sent to the server (pipeline health: the start of its delay). */
+  onChunkSent?: (chunkIndex: number) => void;
+  /** The server has handled every chunk below `done` — with or without text (pipeline health: the end of the delay). */
+  onChunkProgress?: (done: number) => void;
+  /** The connection dropped mid-recording and a reconnect was scheduled. */
+  onReconnecting?: () => void;
 }
 
 export type TranslationProvider = 'openai' | 'claude' | 'ollama' | 'none';
@@ -22,6 +33,27 @@ export type TranscriptionEngine = 'openai' | 'mlx';
 // but never translate — translation happens later, per-sentence, with
 // context (see server/lib/sermon-translate.ts).
 export type OutputMode = 'translate' | 'correct-only';
+
+export interface ChunkStartOptions {
+  sourceLanguage: string;
+  targetLanguage: string;
+  detectSpeakers: boolean;
+  translationProvider?: TranslationProvider;
+  openaiApiKey?: string;
+  anthropicApiKey?: string;
+  glossary?: string;
+  /** Leading glossary lines (today's service) that must stay first in Whisper's prompt — see glossaryWithServiceParts. */
+  glossaryPriorityLines?: number;
+  sermonContext?: string;
+  debugMode?: boolean;
+  normalizationGain?: number;
+  chunkOverlapMs?: number;
+  useVADChunking?: boolean;
+  vadSilenceThresholdMs?: number;
+  engine?: TranscriptionEngine;
+  ollamaBaseUrl?: string;
+  ollamaModel?: string;
+}
 
 // Circular ring buffer keeping the last `capacity` float32 samples for overlap.
 class OverlapBuffer {
@@ -347,7 +379,82 @@ export function windowMeanAbs(frame: Float32Array, windowSamples: number): numbe
   return out;
 }
 
-export class ChunkBasedTranscription {
+/**
+ * Level measurements for one audio frame. `rms`/`peak` are taken from the raw
+ * input (what the input stage delivers, for the level meter); `gained` is the
+ * input times the normalization gain, clamped to [-1, 1] so a high gain
+ * cannot clip; `meanAbs` is the mean absolute value of `gained`, which the
+ * silence gate and the VAD work from.
+ */
+export function analyzeFrame(input: Float32Array, gain: number): { rms: number; peak: number; gained: Float32Array; meanAbs: number } {
+  let sumSq = 0;
+  let peak = 0;
+  for (let i = 0; i < input.length; i++) {
+    sumSq += input[i] * input[i];
+    const a = Math.abs(input[i]);
+    if (a > peak) peak = a;
+  }
+  const rms = Math.sqrt(sumSq / input.length);
+
+  const gained = new Float32Array(input.length);
+  for (let i = 0; i < input.length; i++) {
+    gained[i] = Math.max(-1, Math.min(1, input[i] * gain));
+  }
+
+  let sumAbs = 0;
+  for (let i = 0; i < gained.length; i++) sumAbs += Math.abs(gained[i]);
+  return { rms, peak, gained, meanAbs: sumAbs / gained.length };
+}
+
+/**
+ * VAD "silence" for chunk cutting. Relative to the tracked noise floor: with
+ * the browser's noise suppression off, a room's ambient level can sit above
+ * any fixed threshold, in which case pauses would never be seen and every
+ * chunk would run to the hard cap, cutting mid-word.
+ */
+export function isVadSilent(meanAbs: number, noiseFloor: number): boolean {
+  return meanAbs < Math.max(0.005, noiseFloor * VAD_SILENCE_FLOOR_RATIO);
+}
+
+export interface CommitState {
+  useVAD: boolean;
+  vadSilenceMs: number;
+  vadSilenceThresholdMs: number;
+  /** Samples (16 kHz) buffered in the chunk being built. */
+  sampleCount: number;
+  minSamples: number;
+  maxSamples: number;
+}
+
+/**
+ * Whether the chunk being built should be cut now: 'vad' on a pause once
+ * enough audio has accumulated, 'cap' at the hard maximum (also the only
+ * trigger when VAD is off, i.e. fixed-length chunks), else null.
+ */
+export function decideCommit(s: CommitState): 'vad' | 'cap' | null {
+  if (s.useVAD && s.vadSilenceMs >= s.vadSilenceThresholdMs && s.sampleCount >= s.minSamples) return 'vad';
+  if (s.sampleCount >= s.maxSamples) return 'cap';
+  return null;
+}
+
+/**
+ * The deviceId the stream really opened ('' for the system default, which Chrome reports as
+ * 'default'/'communications'), so callers compare against what is recording, not what was asked for.
+ */
+export function realDeviceId(stream: MediaStream): string {
+  const id = stream.getAudioTracks()[0]?.getSettings?.().deviceId ?? '';
+  return id === 'default' || id === 'communications' ? '' : id;
+}
+
+/** A microphone switch was requested but the recording is (or just got) stopped — not a device problem. */
+export class RecordingStoppedError extends Error {
+  constructor(message = 'Recording stopped') {
+    super(message);
+    this.name = 'RecordingStoppedError';
+  }
+}
+
+export class ChunkBasedTranscription implements TranscriptionBackend {
   private ws: WebSocket | null = null;
   private mediaStream: MediaStream | null = null;
   private audioContext: AudioContext | null = null;
@@ -370,6 +477,7 @@ export class ChunkBasedTranscription {
   private ollamaModel: string;
   private anthropicApiKey: string;
   private glossary: string;
+  private glossaryPriority = 0;
   private sermonContext: string;
   private debugMode: boolean;
   private previousTranscript: string = '';
@@ -431,6 +539,8 @@ export class ChunkBasedTranscription {
   private samplesPushed = 0;
   private telemetryRows: Array<Record<string, number | boolean>> = [];
   private lastTelemetryFlushAt = 0;
+  // The page's own load (long tasks, timer lateness), sent as `perf` rows while the archive is on.
+  private perf: PerfMonitor | null = null;
 
   // Resolved when the server's 'stop_complete' message arrives — see stop().
   private stopCompleteResolve: (() => void) | null = null;
@@ -454,24 +564,25 @@ export class ChunkBasedTranscription {
     this.assembler = new ChunkAssembler(Math.round(this.overlapMs * TARGET_RATE / 1000));
   }
 
-  async start(
-    sourceLanguage: string,
-    targetLanguage: string,
-    detectSpeakers: boolean,
-    translationProvider: TranslationProvider = 'openai',
+  async start({
+    sourceLanguage,
+    targetLanguage,
+    detectSpeakers,
+    translationProvider = 'openai',
     openaiApiKey = '',
     anthropicApiKey = '',
     glossary = '',
+    glossaryPriorityLines = 0,
     sermonContext = '',
     debugMode = false,
     normalizationGain = 1.0,
     chunkOverlapMs = 500,
     useVADChunking = false,
     vadSilenceThresholdMs = 800,
-    engine: TranscriptionEngine = 'openai',
-    ollamaBaseUrl?: string,
-    ollamaModel?: string,
-  ): Promise<void> {
+    engine = 'openai',
+    ollamaBaseUrl,
+    ollamaModel,
+  }: ChunkStartOptions): Promise<void> {
     this.sourceLanguage = sourceLanguage;
     this.targetLanguage = targetLanguage;
     this.detectSpeakers = detectSpeakers;
@@ -483,6 +594,7 @@ export class ChunkBasedTranscription {
     if (ollamaBaseUrl !== undefined) this.ollamaBaseUrl = ollamaBaseUrl;
     if (ollamaModel !== undefined) this.ollamaModel = ollamaModel;
     this.glossary = glossary;
+    this.glossaryPriority = glossaryPriorityLines;
     this.sermonContext = sermonContext;
     this.debugMode = debugMode;
     this.normalizationGain = normalizationGain;
@@ -496,6 +608,8 @@ export class ChunkBasedTranscription {
     this.audioQueue = [];
     this.previousTranscript = '';
     this.archive = false;
+    this.perf?.stop();
+    this.perf = null;
     this.archiveId = Date.now().toString(36);
     this.samplesPushed = 0;
     this.telemetryRows = [];
@@ -519,7 +633,10 @@ export class ChunkBasedTranscription {
           if (message.type === 'ready') {
             this.events.onDebug?.('Server acknowledged — requesting microphone…');
             this.archive = !!message.archive;
-            if (this.archive) this.events.onDebug?.('Session archive ON (server has ASR_DEBUG_DIR) — recording all audio + level timeline');
+            if (this.archive) {
+              this.events.onDebug?.('Session archive ON (server has ASR_DEBUG_DIR) — recording all audio + level timeline');
+              this.startPerfMonitor();
+            }
             this.ws = ws;
             this.attachWsHandlers(ws);
             this.startAudioCapture()
@@ -558,6 +675,7 @@ export class ChunkBasedTranscription {
       ollamaBaseUrl: this.ollamaBaseUrl,
       ollamaModel: this.ollamaModel,
       glossary: this.glossary,
+      glossaryPriority: this.glossaryPriority,
       sermonContext: this.sermonContext,
       debugMode: this.debugMode,
       outputMode: this.outputMode,
@@ -583,7 +701,11 @@ export class ChunkBasedTranscription {
             this.events.onRawTranscript(message.text, message.chunkIndex);
             break;
           case 'translation':
-            this.events.onTranslation(message.original, message.translated, message.chunkIndex);
+            this.events.onTranslation(message.original, message.translated, message.chunkIndex,
+              Array.isArray(message.lowWords) ? message.lowWords.filter((w: unknown): w is string => typeof w === 'string') : undefined);
+            break;
+          case 'chunk_progress':
+            if (typeof message.done === 'number') this.events.onChunkProgress?.(message.done);
             break;
           case 'chunk_error':
           case 'error':
@@ -615,6 +737,7 @@ export class ChunkBasedTranscription {
   }
 
   private scheduleReconnect(): void {
+    this.events.onReconnecting?.();
     const delay = Math.min(1000 * Math.pow(2, this.reconnectAttempts), 30_000);
     this.reconnectAttempts++;
     setTimeout(() => this.reconnectWs(), delay);
@@ -648,22 +771,33 @@ export class ChunkBasedTranscription {
     };
   }
 
-  private async startAudioCapture(): Promise<void> {
+  /**
+   * Opens the microphone `deviceId` ('' = system default). A device that has
+   * disappeared since it was picked falls back to the system default
+   * (`fellBack`) rather than failing; any other error is thrown.
+   */
+  private async openInput(deviceId: string): Promise<{ stream: MediaStream; fellBack: boolean }> {
     const constraints: MediaTrackConstraints = this.rawAudioCapture
       ? { echoCancellation: false, noiseSuppression: false, autoGainControl: false, channelCount: 1 }
       : { echoCancellation: true, noiseSuppression: true };
     try {
-      this.mediaStream = await navigator.mediaDevices.getUserMedia({
-        audio: this.inputDeviceId ? { ...constraints, deviceId: { exact: this.inputDeviceId } } : constraints,
+      const stream = await navigator.mediaDevices.getUserMedia({
+        audio: deviceId ? { ...constraints, deviceId: { exact: deviceId } } : constraints,
       });
+      return { stream, fellBack: false };
     } catch (err) {
-      // The chosen microphone was unplugged since it was picked: never block the
-      // recording on that, use the system default and say so.
       const name = err instanceof DOMException ? err.name : '';
-      if (!this.inputDeviceId || (name !== 'OverconstrainedError' && name !== 'NotFoundError')) throw err;
-      this.events.onNotice?.('The selected microphone is not available — using the system default instead.');
-      this.mediaStream = await navigator.mediaDevices.getUserMedia({ audio: constraints });
+      if (!deviceId || (name !== 'OverconstrainedError' && name !== 'NotFoundError')) throw err;
+      return { stream: await navigator.mediaDevices.getUserMedia({ audio: constraints }), fellBack: true };
     }
+  }
+
+  private async startAudioCapture(): Promise<void> {
+    // The chosen microphone was unplugged since it was picked: never block the
+    // recording on that, use the system default and say so.
+    const opened = await this.openInput(this.inputDeviceId);
+    this.mediaStream = opened.stream;
+    if (opened.fellBack) this.events.onNotice?.('The selected microphone is not available — using the system default instead.');
     this.events.onStreamReady?.(this.mediaStream);
     this.events.onDebug?.(`Microphone acquired (${this.rawAudioCapture ? 'raw, no echo/noise/gain processing' : 'browser-processed'}) — starting PCM pipeline`);
 
@@ -702,33 +836,10 @@ export class ChunkBasedTranscription {
       if (this.paused) { this.events.onAudioLevel?.(0); return; }
       const input = event.inputBuffer.getChannelData(0);
 
-      // RMS for audio level callback
-      let sumSq = 0;
-      let peak = 0;
-      for (let i = 0; i < input.length; i++) {
-        sumSq += input[i] * input[i];
-        const a = Math.abs(input[i]);
-        if (a > peak) peak = a;
-      }
-      const rms = Math.sqrt(sumSq / input.length);
+      const { rms, peak, gained, meanAbs } = analyzeFrame(input, this.normalizationGain);
       this.events.onAudioLevel?.(rms, peak);
 
-      // Apply normalization gain (clamp to prevent clipping)
-      const gained = new Float32Array(input.length);
-      for (let i = 0; i < input.length; i++) {
-        gained[i] = Math.max(-1, Math.min(1, input[i] * this.normalizationGain));
-      }
-
-      // Mean absolute value for silence gate / VAD
-      let sumAbs = 0;
-      for (let i = 0; i < gained.length; i++) sumAbs += Math.abs(gained[i]);
-      const meanAbs = sumAbs / gained.length;
-      // VAD "silence" for chunk cutting. Relative to the tracked noise floor:
-      // with the browser's noise suppression off, a room's ambient level can
-      // sit above any fixed threshold, in which case pauses would never be
-      // seen and every chunk would run to the hard cap, cutting mid-word.
-      const isSilent = meanAbs < Math.max(0.005, this.gate.noiseFloor * VAD_SILENCE_FLOOR_RATIO);
-
+      const isSilent = isVadSilent(meanAbs, this.gate.noiseFloor);
       if (isSilent) {
         this.vadSilenceMs += this.frameDurationMs;
       } else {
@@ -748,17 +859,16 @@ export class ChunkBasedTranscription {
       this.assembler.push(resampled);
       this.samplesPushed += resampled.length;
 
-      // VAD-triggered commit: a pause, once enough audio has accumulated.
-      if (
-        this.useVAD &&
-        this.vadSilenceMs >= this.vadSilenceThresholdMs &&
-        this.assembler.sampleCount >= this.minChunkSamples()
-      ) {
-        this.commitChunk('vad');
-        this.vadSilenceMs = 0;
-      } else if (this.assembler.sampleCount >= this.maxChunkSamples()) {
-        // Hard cap (also the only trigger when VAD is off, i.e. fixed-length chunks).
-        this.commitChunk('cap');
+      const reason = decideCommit({
+        useVAD: this.useVAD,
+        vadSilenceMs: this.vadSilenceMs,
+        vadSilenceThresholdMs: this.vadSilenceThresholdMs,
+        sampleCount: this.assembler.sampleCount,
+        minSamples: this.minChunkSamples(),
+        maxSamples: this.maxChunkSamples(),
+      });
+      if (reason) {
+        this.commitChunk(reason);
         this.vadSilenceMs = 0;
       }
     };
@@ -774,6 +884,7 @@ export class ChunkBasedTranscription {
         useVAD: this.useVAD, vadSilenceThresholdMs: this.vadSilenceThresholdMs,
         minChunkMs: this.minChunkMs, maxChunkMs: this.maxChunkSamples() / TARGET_RATE * 1000, overlapMs: this.overlapMs,
         normalizationGain: this.normalizationGain, rawAudioCapture: this.rawAudioCapture,
+        deviceLabel: this.mediaStream?.getAudioTracks()[0]?.label ?? '',
         userAgent: navigator.userAgent, startedAt: Date.now(),
       }));
     }
@@ -843,6 +954,7 @@ export class ChunkBasedTranscription {
     new Uint8Array(combined).set(new Uint8Array(wavBuf), 5);
 
     this.sendBinary(combined, currentIndex);
+    this.events.onChunkSent?.(currentIndex);
 
     this.events.onDebug?.(`Chunk ${currentIndex}: ${total.length} samples (${(total.length / TARGET_RATE).toFixed(1)}s)`);
   }
@@ -880,6 +992,9 @@ export class ChunkBasedTranscription {
     this.sendOrQueue(frame);
   }
 
+  // Set by resume(): the next telemetry row follows a pause, so the wall-clock jump before it is not a stall.
+  private resumedSinceLastRow = false;
+
   /** One row per audio frame (~85-256 ms): level, noise floor, VAD/gate state. Batched ~every 2 s. */
   private recordTelemetry(rms: number, peak: number, meanAbs: number, silent: boolean, frame: Float32Array): void {
     // Zero-crossing rate: a cheap pitch/noisiness proxy (speech vowels low, hiss/fricatives high).
@@ -898,8 +1013,18 @@ export class ChunkBasedTranscription {
       gateRunMs: Math.round(this.gate.longestRunMs),
       chunkSecs: round(this.assembler.sampleCount / TARGET_RATE, 2),
       zcr: round(crossings / frame.length, 3),
+      ...(this.resumedSinceLastRow ? { resumed: true } : {}),
     });
+    this.resumedSinceLastRow = false;
     if (Date.now() - this.lastTelemetryFlushAt >= 2000) this.flushTelemetry();
+  }
+
+  private startPerfMonitor(): void {
+    this.perf = new PerfMonitor((rows) => {
+      // Dropped while the socket is down, like telemetry: the audio frames are what must survive a reconnect.
+      if (this.ws?.readyState === WebSocket.OPEN) this.ws.send(JSON.stringify({ type: 'perf', rows }));
+    });
+    this.perf.start();
   }
 
   private flushTelemetry(): void {
@@ -974,6 +1099,13 @@ export class ChunkBasedTranscription {
     }
   }
 
+  /** Replaces the vocabulary for Whisper's prompt and the per-chunk correction, effective from the next chunk. */
+  setGlossary(glossary: string, priorityLines = 0): void {
+    this.glossary = glossary;
+    this.glossaryPriority = priorityLines;
+    if (this.ws?.readyState === WebSocket.OPEN) this.ws.send(JSON.stringify({ type: 'config', glossary, glossaryPriority: priorityLines }));
+  }
+
   updateConfig(
     sourceLanguage: string,
     targetLanguage: string,
@@ -1034,11 +1166,72 @@ export class ChunkBasedTranscription {
     this.events.onDebug?.('Paused');
   }
 
+  /**
+   * Moves a running recording to another microphone ('' = system default)
+   * without touching the socket, the chunk numbering or the AudioContext — only
+   * the source node feeding the ScriptProcessor changes. The new device is
+   * opened first, so if that fails the old one keeps recording and the error
+   * goes to the caller. What was heard so far is committed as its own chunk,
+   * so no chunk mixes two microphones, and the noise floor starts over (a
+   * different mic has a different one).
+   */
+  switchInputDevice(deviceId: string): Promise<{ label: string; fellBack: boolean; deviceId: string }> {
+    // One at a time, in the order requested: opening a device can take seconds (Bluetooth), and
+    // the switch that resolves last must not beat one that was asked for later.
+    return this.runSwitch(() => this.performSwitch(deviceId));
+  }
+
+  private runSwitch = createSerialRunner();
+
+  private async performSwitch(deviceId: string): Promise<{ label: string; fellBack: boolean; deviceId: string }> {
+    if (!this.isRecording || !this.audioContext || !this.processor) throw new RecordingStoppedError('Not recording');
+    const { stream, fellBack } = await this.openInput(deviceId);
+    const label = stream.getAudioTracks()[0]?.label ?? '';
+    // Stopped (or torn down) while the new device was opening.
+    if (!this.isRecording || !this.audioContext || !this.processor) {
+      stream.getTracks().forEach(t => t.stop());
+      throw new RecordingStoppedError();
+    }
+    let source: MediaStreamAudioSourceNode;
+    try {
+      source = this.audioContext.createMediaStreamSource(stream);
+    } catch (err) {
+      stream.getTracks().forEach(t => t.stop());
+      throw err;
+    }
+    if (this.assembler.sampleCount >= 100) this.commitChunk('stop');
+    this.assembler.discard();
+    this.gate = new SpeechGate();
+    this.vadSilenceMs = 0;
+
+    const oldStream = this.mediaStream;
+    this.source?.disconnect();
+    source.connect(this.processor);
+    this.source = source;
+    this.mediaStream = stream;
+    // stop() does not fire the old track's 'ended' event, so the failure handler stays quiet.
+    oldStream?.getTracks().forEach(t => t.stop());
+    this.inputDeviceId = deviceId;
+
+    this.events.onStreamReady?.(stream);
+    this.events.onDebug?.(`Switched microphone to "${label}"${fellBack ? ' (selected device missing, system default)' : ''}`);
+    if (this.archive) {
+      this.sendOrQueue(JSON.stringify({ type: 'device_switch', label, fellBack, startSample: this.samplesPushed }));
+    }
+    return { label, fellBack, deviceId: realDeviceId(stream) };
+  }
+
   resume(): void {
     if (!this.isRecording || !this.paused) return;
     this.paused = false;
     this.vadSilenceMs = 0;
+    this.resumedSinceLastRow = true;
     this.events.onDebug?.('Resumed');
+  }
+
+  /** True while a recording is live, including during a reconnect; false once stop() has run. */
+  get active(): boolean {
+    return this.isRecording;
   }
 
   async stop(): Promise<void> {
@@ -1050,6 +1243,8 @@ export class ChunkBasedTranscription {
     // Flush remaining buffered audio as the final chunk
     if (this.assembler.sampleCount >= 100) this.commitChunk('stop');
     if (this.archive) this.flushTelemetry();
+    this.perf?.stop();
+    this.perf = null;
 
     this.processor?.disconnect();
     this.source?.disconnect();

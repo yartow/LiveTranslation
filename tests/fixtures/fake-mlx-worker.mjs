@@ -17,6 +17,6 @@ createInterface({ input: process.stdin }).on('line', (line) => {
       seen.add(req.path);
     }
     await new Promise((r) => setTimeout(r, delay));
-    console.log(JSON.stringify({ id: req.id, text: `ok:${req.path}` }));
+    console.log(JSON.stringify({ id: req.id, text: `ok:${req.path}`, decode_secs: 1.25 }));
   });
 });

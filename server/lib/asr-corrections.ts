@@ -120,13 +120,24 @@ export function resetAsrCorrectionsCache(): void {
  * The session's vocabulary hints with the learned correct terms in front.
  * Whisper's prompt keeps only the first terms and the correction prompt gets the
  * whole list, so putting learned terms first means the operator's own
- * corrections are never the ones cut off.
+ * corrections are never the ones cut off. The first `priorityLines` lines of the session glossary (today's
+ * service title and terms) stay in front of even those: the prompt only has room for ~15 terms, and
+ * once that many corrections are learned they would otherwise push the names of this service out.
  */
-export function effectiveGlossary(sessionGlossary: string | undefined): string {
+export function effectiveGlossary(sessionGlossary: string | undefined, priorityLines = 0): string {
   const { terms } = load();
   if (terms.length === 0) return sessionGlossary ?? '';
   const existing = (sessionGlossary ?? '').split('\n').map(l => l.trim()).filter(Boolean);
+  const head = existing.slice(0, Math.max(0, priorityLines));
+  const termOf = (l: string) => l.split('=')[0].trim().toLowerCase();
+  const taken = new Set(head.map(termOf));
+  const learned = terms.filter(t => !taken.has(t.toLowerCase()));
   const have = new Set(terms.map(t => t.toLowerCase()));
-  const rest = existing.filter(l => !have.has(l.split('=')[0].trim().toLowerCase()));
-  return [...terms, ...rest].join('\n');
+  const rest = existing.slice(head.length).filter(l => !have.has(termOf(l)) && !taken.has(termOf(l)));
+  return [...head, ...learned, ...rest].join('\n');
+}
+
+/** A client-sent count of priority glossary lines -> a small non-negative integer (anything else: 0). */
+export function parsePriorityLines(raw: unknown): number {
+  return typeof raw === 'number' && Number.isInteger(raw) && raw > 0 ? Math.min(raw, 100) : 0;
 }
