@@ -56,6 +56,7 @@ function SegmentRowImpl({ segment, dispatch, activeSegmentIdRef, onRefreshOne, f
         {segment.status === 'TRANSLATING' && (
           <button
             type="button"
+            tabIndex={-1}
             onClick={() => onRefreshOne(segment.id)}
             className="text-muted-foreground hover:text-foreground transition-colors"
             aria-label="Retry if this stays stuck"
@@ -68,6 +69,7 @@ function SegmentRowImpl({ segment, dispatch, activeSegmentIdRef, onRefreshOne, f
         {segment.status === 'PROVISIONAL' && (
           <button
             type="button"
+            tabIndex={-1}
             onClick={() => onRefreshOne(segment.id)}
             className="text-muted-foreground hover:text-foreground transition-colors"
             aria-label="Translate this provisional text now"
@@ -80,6 +82,7 @@ function SegmentRowImpl({ segment, dispatch, activeSegmentIdRef, onRefreshOne, f
         {segment.status === 'ERROR' && (
           <button
             type="button"
+            tabIndex={-1}
             onClick={() => onRefreshOne(segment.id)}
             className="text-destructive hover:opacity-70"
             aria-label={`Retry — ${segment.error ?? 'error'}`}
@@ -92,6 +95,7 @@ function SegmentRowImpl({ segment, dispatch, activeSegmentIdRef, onRefreshOne, f
         {(segment.status === 'EDITED' || segment.status === 'PENDING') && (
           <button
             type="button"
+            tabIndex={-1}
             onClick={() => onRefreshOne(segment.id)}
             className="text-muted-foreground/50 hover:text-foreground transition-colors"
             aria-label="Re-translate this segment"
@@ -104,6 +108,7 @@ function SegmentRowImpl({ segment, dispatch, activeSegmentIdRef, onRefreshOne, f
         {segment.status === 'SCRIPTURE' && (
           <button
             type="button"
+            tabIndex={-1}
             onClick={() => dispatch({ type: 'CLEAR_SCRIPTURE', id: segment.id, now: Date.now() })}
             className="text-blue-500/70 hover:text-foreground transition-colors"
             aria-label={`Scripture quote (${segment.scripture?.reference ?? ''}, ${segment.scripture?.version ?? ''}) — click to treat as a normal translation`}
