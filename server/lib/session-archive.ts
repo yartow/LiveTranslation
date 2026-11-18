@@ -8,6 +8,7 @@ import { appendFile } from 'fs/promises';
 import { join } from 'path';
 import { archiveEnabled, getCurrentArchiveDir } from './chunk-transcription';
 import type { TranslationLogEntry } from './sermon-translate';
+import type { ListenerTranslationLogEntry } from './listener-translate';
 
 /** Appends `text` (already newline-terminated lines) to `<current session folder>/<fileName>`. */
 export function appendToArchive(fileName: string, text: string): boolean {
@@ -19,5 +20,10 @@ export function appendToArchive(fileName: string, text: string): boolean {
 }
 
 export function logTranslation(entry: TranslationLogEntry): void {
+  appendToArchive('translations.jsonl', JSON.stringify(entry) + '\n');
+}
+
+/** An extra-language listener translation (English -> Hindi/Tamil/Chinese): same file as the sermon translations, told apart by its `lang` field. */
+export function logListenerTranslation(entry: ListenerTranslationLogEntry): void {
   appendToArchive('translations.jsonl', JSON.stringify(entry) + '\n');
 }

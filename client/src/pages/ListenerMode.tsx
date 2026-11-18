@@ -1,5 +1,6 @@
 // Listener mode's phone view — CLAUDE.md "Listener mode". Route "/listen"
-// (App.tsx). English translation only, read-only, auto-scrolling.
+// (App.tsx). The translation only (English, or another language the operator offers — picked in the
+// header or with /listen?lang=hi), read-only, auto-scrolling. Never the Dutch.
 //
 // Deliberately standalone: no Header, no SettingsDialog, no useSettings, no
 // mic. This page never touches the operator's settings/recording machinery
@@ -11,8 +12,12 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { ArrowDown, RefreshCw, Wifi, WifiOff } from 'lucide-react';
 import ListenerMarkdown from '@/components/listener/ListenerMarkdown';
+import {
+  LISTENER_LANGUAGE_INFO, LISTENER_LANG_STORAGE_KEY, LISTENER_UI,
+  initialListenerLang, isListenerLang, resolveListenerLang, type ListenerLang,
+} from '@/lib/listener-languages';
 
-/** Mirrors server/lib/listener-hub.ts's ListenerLine — client/server share no code, see sermon-prompt.ts's header comment for the established pattern of documenting these mirrors explicitly. */
+/** Mirrors server/lib/listener-lines.ts's ListenerLine — client/server share no code, see sermon-prompt.ts's header comment for the established pattern of documenting these mirrors explicitly. */
 interface ListenerLine {
   id: string;
   index: number;
@@ -47,8 +52,22 @@ const WATCHDOG_MS = 5_000;
 const LIVE_EDGE_PX = 48;
 const FOLLOW_DISENGAGE_PX = 120;
 
+function readStoredLang(): string | null {
+  try { return localStorage.getItem(LISTENER_LANG_STORAGE_KEY); } catch { return null; }
+}
+
 export default function ListenerMode() {
   const [linesById, setLinesById] = useState<Record<string, ListenerLine>>({});
+  // The language the phone shows. Starts on English: the hub says which others are on offer (`languages`),
+  // and only then does the phone switch to what it asked for (?lang= or the remembered choice).
+  const [lang, setLang] = useState<ListenerLang>('en');
+  const [offered, setOffered] = useState<string[]>([]);
+  const langRef = useRef<ListenerLang>('en');
+  const hubLangRef = useRef<ListenerLang>('en'); // what the hub believes this socket reads — it starts every connection on English
+  const offeredRef = useRef<string[]>([]);
+  const wantedRef = useRef<ListenerLang>(initialListenerLang(window.location.search, readStoredLang()));
+  const info = LISTENER_LANGUAGE_INFO[lang];
+  const ui = LISTENER_UI[lang];
   const [connection, setConnection] = useState<ConnectionState>('connecting');
   const [following, setFollowing] = useState(true);
 
@@ -62,6 +81,28 @@ export default function ListenerMode() {
     () => Object.values(linesById).sort((a, b) => a.index - b.index),
     [linesById],
   );
+
+  // Show `next` and, when it is not what the hub is sending this socket, ask for it.
+  const applyLanguage = useCallback((next: ListenerLang) => {
+    langRef.current = next;
+    setLang(next);
+    const ws = wsRef.current;
+    if (ws && ws.readyState === WebSocket.OPEN && hubLangRef.current !== next) {
+      ws.send(JSON.stringify({ type: 'setLanguage', lang: next }));
+      hubLangRef.current = next;
+    }
+  }, []);
+
+  const chooseLanguage = useCallback((value: string) => {
+    if (!isListenerLang(value)) return;
+    wantedRef.current = value;
+    try { localStorage.setItem(LISTENER_LANG_STORAGE_KEY, value); } catch { /* private mode: it just isn't remembered */ }
+    applyLanguage(resolveListenerLang(value, offeredRef.current));
+  }, [applyLanguage]);
+
+  useEffect(() => {
+    document.documentElement.lang = info.htmlLang;
+  }, [info.htmlLang]);
 
   // Dark by default — best contrast in a dim sanctuary (design_guidelines.md
   // "Readability first"). Unlike SermonMode there is no toggle here; a
@@ -90,6 +131,7 @@ export default function ListenerMode() {
       ws.onopen = () => {
         reconnectAttemptsRef.current = 0;
         lastMessageAt = Date.now();
+        hubLangRef.current = 'en'; // every connection starts on English; `languages` follows at once
         setConnection('connected');
       };
       ws.onmessage = (evt) => {
@@ -100,11 +142,21 @@ export default function ListenerMode() {
         } catch {
           return;
         }
-        if (msg?.type === 'snapshot' && Array.isArray(msg.lines)) {
+        if (msg?.type === 'languages' && Array.isArray(msg.enabled)) {
+          const list = msg.enabled.filter((l: unknown) => isListenerLang(l) && l !== 'en') as string[];
+          offeredRef.current = list;
+          setOffered(list);
+          // Go to the wanted language when it is on offer (or back to English when it no longer is).
+          const target = resolveListenerLang(wantedRef.current, list);
+          if (target !== hubLangRef.current || target !== langRef.current) applyLanguage(target);
+        } else if (msg?.type === 'snapshot' && Array.isArray(msg.lines)) {
+          // Only what is in the language on screen: a late message for the one just left is dropped.
+          if ((msg.lang ?? 'en') !== langRef.current) return;
           const next: Record<string, ListenerLine> = {};
           for (const line of msg.lines) next[line.id] = line;
           setLinesById(next);
         } else if (msg?.type === 'update' && Array.isArray(msg.lines)) {
+          if ((msg.lang ?? 'en') !== langRef.current) return;
           setLinesById(prev => {
             const next = { ...prev };
             for (const line of msg.lines) next[line.id] = line;
@@ -161,7 +213,7 @@ export default function ListenerMode() {
       wsRef.current?.close();
       wsRef.current = null;
     };
-  }, []);
+  }, [applyLanguage]);
 
   // Auto-scroll to the newest line whenever the ordered set changes, but
   // only while following — a listener who scrolled up to re-read something
@@ -194,9 +246,22 @@ export default function ListenerMode() {
 
   return (
     <div className="flex flex-col h-screen bg-background text-foreground">
-      <header className="flex items-center justify-between px-4 py-3 border-b border-border">
-        <span className="text-sm font-medium text-muted-foreground">Live translation</span>
-        <div className="flex items-center gap-3">
+      <header className="flex flex-wrap items-center justify-between gap-x-3 gap-y-2 px-4 py-3 border-b border-border">
+        <span className="text-sm font-medium text-muted-foreground">{ui.title}</span>
+        <div className="flex flex-wrap items-center gap-x-3 gap-y-2">
+          {offered.length > 0 && (
+            <select
+              value={lang}
+              onChange={(e) => chooseLanguage(e.target.value)}
+              aria-label={ui.language}
+              data-testid="select-listener-language"
+              className="rounded-full border border-border bg-background px-3 py-1.5 text-xs font-medium text-foreground"
+            >
+              {(['en', ...offered] as ListenerLang[]).map(code => (
+                <option key={code} value={code}>{LISTENER_LANGUAGE_INFO[code].native}</option>
+              ))}
+            </select>
+          )}
           <span
             className="flex items-center gap-1.5 text-xs text-muted-foreground"
             aria-live="polite"
@@ -204,12 +269,12 @@ export default function ListenerMode() {
             {connection === 'connected' ? (
               <>
                 <Wifi className="w-3.5 h-3.5" />
-                Connected
+                {ui.connected}
               </>
             ) : (
               <>
                 <WifiOff className="w-3.5 h-3.5 animate-pulse" />
-                {connection === 'connecting' ? 'Connecting…' : 'Reconnecting…'}
+                {connection === 'connecting' ? ui.connecting : ui.reconnecting}
               </>
             )}
           </span>
@@ -217,12 +282,12 @@ export default function ListenerMode() {
               version of this page after the operator restarted the app. */}
           <button
             onClick={() => window.location.reload()}
-            aria-label="Refresh"
+            aria-label={ui.refresh}
             data-testid="button-refresh"
             className="flex items-center gap-1.5 rounded-full border border-border px-3 py-1.5 text-xs font-medium text-foreground"
           >
             <RefreshCw className="w-3.5 h-3.5" />
-            Refresh
+            {ui.refresh}
           </button>
         </div>
       </header>
@@ -232,10 +297,10 @@ export default function ListenerMode() {
         onScroll={handleScroll}
         className="flex-1 overflow-y-auto px-4 py-6"
       >
-        <div className="max-w-prose mx-auto space-y-4">
+        <div className="max-w-prose mx-auto space-y-4" lang={info.htmlLang}>
           {orderedLines.length === 0 ? (
             <p className="text-muted-foreground text-center text-sm mt-12">
-              Waiting for the translation to begin…
+              {ui.waiting}
             </p>
           ) : (
             orderedLines.map(line => (
@@ -243,8 +308,8 @@ export default function ListenerMode() {
                 key={line.id}
                 text={line.text}
                 className={
-                  'text-xl leading-relaxed sm:text-2xl sm:leading-relaxed ' +
-                  (line.edited ? 'italic text-foreground/90' : 'text-foreground')
+                  `text-xl sm:text-2xl ${info.leading} ` +
+                  (line.edited && info.italicForEdited ? 'italic text-foreground/90' : 'text-foreground')
                 }
               />
             ))
@@ -259,7 +324,7 @@ export default function ListenerMode() {
           className="fixed bottom-6 left-1/2 -translate-x-1/2 flex items-center gap-1.5 rounded-full border border-border bg-primary text-primary-foreground px-4 py-2 text-sm font-medium"
         >
           <ArrowDown className="w-4 h-4" />
-          Jump to live
+          {ui.jumpToLive}
         </button>
       )}
     </div>

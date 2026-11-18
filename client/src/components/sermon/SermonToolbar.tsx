@@ -30,6 +30,7 @@ interface SermonToolbarProps {
   onChangeMaxLatencySecs: (value: number) => void;
   /** Live count of connected /listen sockets — see useListenerBroadcast.ts. */
   listenerCount: number;
+  listenersByLang?: Record<string, number>;
   /** "Send to listeners" switch — independent of recording and of auto-translate. */
   listenersEnabled: boolean;
   onToggleListeners: () => void;
@@ -70,7 +71,7 @@ function ToggleChip({ on, onClick, icon, label, title, testId }: {
 export default function SermonToolbar({
   isRecording, isProcessing, isPaused, onTogglePause, onToggleRecording, dirtyCount, onRefreshAll, onAddRow, onSaveMarkdown, onAddLyrics,
   autoTranslate, onToggleAutoTranslate, maxLatencySecs, onChangeMaxLatencySecs,
-  listenerCount, listenersEnabled, onToggleListeners, onOpenSettings, serviceContext, onChangeServiceContext, suggestions, onAddSuggestion, onDismissSuggestion, isMac,
+  listenerCount, listenersByLang, listenersEnabled, onToggleListeners, onOpenSettings, serviceContext, onChangeServiceContext, suggestions, onAddSuggestion, onDismissSuggestion, isMac,
 }: SermonToolbarProps) {
   const refreshHint = isMac ? '⌘⇧⏎' : 'Ctrl+Shift+Enter';
   const [isListenerPopoverOpen, setIsListenerPopoverOpen] = useState(false);
@@ -218,7 +219,7 @@ export default function SermonToolbar({
           </Button>
         </PopoverTrigger>
         <PopoverContent align="end" className="w-80">
-          <ListenerAddressPanel open={isListenerPopoverOpen} listenerCount={listenerCount} />
+          <ListenerAddressPanel open={isListenerPopoverOpen} listenerCount={listenerCount} listenersByLang={listenersByLang} />
         </PopoverContent>
       </Popover>
 

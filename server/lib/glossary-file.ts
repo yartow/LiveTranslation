@@ -8,6 +8,7 @@
 
 import path from 'node:path';
 import fs from 'node:fs';
+import { parseCsv } from './csv-parse';
 
 export const MAX_GLOSSARY_BYTES = 512 * 1024;
 
@@ -94,6 +95,14 @@ export function csvQuote(field: string): string {
   return /[",\r\n]/.test(field) ? `"${field.replace(/"/g, '""')}"` : field;
 }
 
+/** How many columns the first line of an open CSV has (0 when it cannot be read). */
+function headerWidth(fd: number, size: number): number {
+  const buf = Buffer.alloc(Math.min(size, 4096));
+  fs.readSync(fd, buf, 0, buf.length, 0);
+  const line = buf.toString('utf8').replace(/^\uFEFF/, '').split('\n')[0].replace(/\r$/, '');
+  return line ? parseCsv(line)[0]?.length ?? 0 : 0;
+}
+
 /**
  * Appends one row to a glossary-directory CSV. The ONLY write path into
  * GLOSSARY_DIR — append-only, sandboxed by resolveGlossaryPath, and it
@@ -104,10 +113,10 @@ export function csvQuote(field: string): string {
  */
 export function appendCsvRow(name: string, fields: string[], header?: string[]): void {
   const p = resolveGlossaryPath(name, 'csv');
-  const row = fields.map(csvQuote).join(',') + '\n';
 
   let prefix = '';
   let size = 0;
+  let width = Math.max(fields.length, header?.length ?? 0);
   if (fs.existsSync(p)) {
     const stat = fs.statSync(p);
     if (!stat.isFile()) throw new Error(`Not a file: ${name}`);
@@ -118,6 +127,7 @@ export function appendCsvRow(name: string, fields: string[], header?: string[]):
         const last = Buffer.alloc(1);
         fs.readSync(fd, last, 0, 1, size - 1);
         if (last[0] !== 0x0a) prefix = '\n';
+        width = Math.max(fields.length, headerWidth(fd, size));
       } finally {
         fs.closeSync(fd);
       }
@@ -125,6 +135,9 @@ export function appendCsvRow(name: string, fields: string[], header?: string[]):
   } else if (header) {
     prefix = header.map(csvQuote).join(',') + '\n';
   }
+  // A file with extra columns (the language columns of the listener glossary) keeps every row as wide as its header.
+  const padded = fields.concat(new Array<string>(Math.max(0, width - fields.length)).fill(''));
+  const row = padded.map(csvQuote).join(',') + '\n';
 
   const chunk = prefix + row;
   if (size + Buffer.byteLength(chunk) > MAX_GLOSSARY_BYTES) {

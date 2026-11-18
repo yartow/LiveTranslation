@@ -4,6 +4,7 @@
 // does the storage reads and hands the merged object here.
 
 import { normalizeServiceContext } from '@/lib/sermon/service-context';
+import { normalizeListenerLanguages } from '@/lib/listener-languages';
 import type { AppSettings } from '@/hooks/useSettings';
 
 const clamp = (v: number, min: number, max: number): number => Math.max(min, Math.min(max, v));
@@ -80,6 +81,9 @@ export function sanitizeSettings(merged: AppSettings, defaults: AppSettings): Ap
   if (typeof s.esvApiKey !== 'string') s.esvApiKey = defaults.esvApiKey;
   s.sermonScriptureFallback = oneOf(s.sermonScriptureFallback, ['kjv', 'none'], defaults.sermonScriptureFallback);
   s.sermonServiceContext = normalizeServiceContext(s.sermonServiceContext);
+
+  // Sermon mode — listener languages
+  s.listenerLanguages = normalizeListenerLanguages(s.listenerLanguages);
 
   return s;
 }

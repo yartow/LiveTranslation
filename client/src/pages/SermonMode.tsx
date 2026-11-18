@@ -19,6 +19,7 @@ import { RecordingStoppedError } from '@/lib/chunk-based-transcription';
 import { useTranslationQueue } from '@/hooks/useTranslationQueue';
 import { useSermonIngest } from '@/hooks/useSermonIngest';
 import { useListenerBroadcast } from '@/hooks/useListenerBroadcast';
+import { buildListenerConfig, LISTENER_LANGUAGE_INFO, type ListenerLang } from '@/lib/listener-languages';
 import { useMicDevices } from '@/hooks/useMicDevices';
 import { useEditArchive, useTranscriptSnapshots } from '@/hooks/useSessionArchive';
 import { useSegmentStore } from '@/hooks/useSegmentStore';
@@ -80,7 +81,30 @@ export default function SermonMode() {
   // The "send to listeners" switch. Session-only on purpose (not a setting): it
   // starts on at every page load so it can't stay off by accident into the next service.
   const [listenersEnabled, setListenersEnabled] = useState(true);
-  const { listenerCount } = useListenerBroadcast(stateRef, state, listenersEnabled);
+  // Which extra languages phones may pick (Settings › Listeners) and how each is translated; the hub does the
+  // translating, from the English published above.
+  const listenerConfig = useMemo(
+    () => buildListenerConfig(
+      settings.listenerLanguages,
+      { baseUrl: settings.ollamaBaseUrl, model: settings.ollamaModel },
+      settings.sermonGlossaryEnabled ? settings.sermonGlossaryCsv : '',
+    ),
+    [settings.listenerLanguages, settings.ollamaBaseUrl, settings.ollamaModel, settings.sermonGlossaryEnabled, settings.sermonGlossaryCsv],
+  );
+  const { listenerCount, listenersByLang, translationErrors } = useListenerBroadcast(stateRef, state, listenersEnabled, listenerConfig);
+  // Say so when a listener language stops translating (bad key, rate limit) — the phones fall back to English.
+  const reportedErrorsRef = useRef<Record<string, string>>({});
+  useEffect(() => {
+    for (const lang of Object.keys(translationErrors)) {
+      if (reportedErrorsRef.current[lang] === translationErrors[lang]) continue;
+      toast({
+        title: `${LISTENER_LANGUAGE_INFO[lang as ListenerLang]?.name ?? lang} translation for listeners failed`,
+        description: `${translationErrors[lang]}. Those phones show the English line until it works again.`,
+        variant: 'destructive',
+      });
+    }
+    reportedErrorsRef.current = { ...translationErrors };
+  }, [translationErrors, toast]);
 
   // Audio bar: which mic is in use and how loud it is. The level store is an
   // external store so ~10 audio frames a second only re-render the meter.
@@ -250,6 +274,7 @@ export default function SermonMode() {
         maxLatencySecs={settings.sermonMaxLatencySecs}
         onChangeMaxLatencySecs={(v) => updateSettings({ sermonMaxLatencySecs: v })}
         listenerCount={listenerCount}
+        listenersByLang={listenersByLang}
         listenersEnabled={listenersEnabled}
         onToggleListeners={() => setListenersEnabled(v => !v)}
         onOpenSettings={() => setIsSettingsOpen(true)}

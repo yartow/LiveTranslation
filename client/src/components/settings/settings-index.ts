@@ -61,7 +61,7 @@ export const SETTINGS_PAGES: SettingsPage[] = [
   { id: 'sermon-translation', group: 'sermon', title: 'Translation', summary: 'Provider, model and context', scope: 'sermon', icon: 'Languages' },
   { id: 'sermon-timing', group: 'sermon', title: 'Timing', summary: 'Block length and stability', scope: 'sermon', icon: 'Timer' },
   { id: 'sermon-scripture', group: 'sermon', title: 'Scripture quotes', summary: 'Exact Bible text for read verses', scope: 'sermon', icon: 'BookOpen' },
-  { id: 'sermon-listeners', group: 'sermon', title: 'Listeners', summary: 'Address for phones on the same Wi-Fi', scope: 'sermon', icon: 'Users' },
+  { id: 'sermon-listeners', group: 'sermon', title: 'Listeners', summary: 'Address and languages for phones on the same Wi-Fi', scope: 'sermon', icon: 'Users' },
   // ── Live mode ──
   { id: 'live-translation', group: 'live', title: 'Translation', summary: 'Provider for live subtitles', scope: 'live', icon: 'Languages' },
   { id: 'live-improve', group: 'live', title: 'Improve button', summary: 'Re-process recent text with an LLM', scope: 'live', icon: 'Sparkles' },
@@ -125,6 +125,10 @@ export const SETTINGS_ITEMS: SettingsItem[] = [
 
   // ── Sermon: listeners ──
   { id: 'listener-address', page: 'sermon-listeners', label: 'Listener address', description: 'Give this address to listeners on the same Wi-Fi so they can follow the English translation on their phone. Look it up again after joining a different network.', keywords: ['ip', 'lan', 'wifi', 'phone', 'listen', 'url', 'address', 'luisteraars', 'network'] },
+  { id: 'listener-lang-hi', page: 'sermon-listeners', label: 'Hindi for listeners (हिन्दी)', description: 'Lets listeners pick Hindi on their phone. Translated from the finished English, only while someone is reading it; a few cents per service.', keywords: ['hindi', 'हिन्दी', 'hi', 'language', 'indian', 'translate', 'listeners', 'phone', 'taal'] },
+  { id: 'listener-lang-ta', page: 'sermon-listeners', label: 'Tamil for listeners (தமிழ்)', description: 'Lets listeners pick Tamil on their phone. Translated from the finished English, only while someone is reading it; a few cents per service. Tamil is the language models are weakest in: have a Tamil reader check a sample before relying on it.', keywords: ['tamil', 'தமிழ்', 'ta', 'language', 'indian', 'translate', 'listeners', 'phone', 'taal'] },
+  { id: 'listener-lang-zh', page: 'sermon-listeners', label: 'Simplified Chinese for listeners (简体中文)', description: 'Lets listeners pick Simplified Chinese on their phone. Translated from the finished English, only while someone is reading it; a few cents per service.', keywords: ['chinese', 'simplified', '简体中文', 'mandarin', 'zh', 'language', 'translate', 'listeners', 'phone', 'chinees'] },
+  { id: 'listener-lang-zh-TW', page: 'sermon-listeners', label: 'Traditional Chinese for listeners (繁體中文)', description: 'Lets listeners pick Traditional Chinese on their phone. Translated from the finished English, only while someone is reading it; a few cents per service.', keywords: ['chinese', 'traditional', '繁體中文', 'mandarin', 'taiwan', 'hong kong', 'zh-tw', 'language', 'translate', 'listeners', 'phone', 'chinees'] },
 
   // ── Live: translation ──
   { id: 'live-translation-provider', page: 'live-translation', label: 'Translation provider', description: 'Corrects and translates each live chunk. "None" shows the raw transcription only. This does not affect Sermon mode.', keywords: ['translate', 'correction', 'openai', 'claude', 'ollama', 'none', 'provider', 'subtitle'] },

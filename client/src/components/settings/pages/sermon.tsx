@@ -11,6 +11,7 @@ import {
   SelectValue,
 } from '@/components/ui/select';
 import type { SermonBibleVersion, SermonScriptureFallback, SermonTranslationProvider } from '@/hooks/useSettings';
+import { EXTRA_LISTENER_LANGUAGES, type ExtraListenerLang, type ListenerLanguageSetting } from '@/lib/listener-languages';
 import CopyableUrlList from '@/components/CopyableUrlList';
 import { useLanAddress } from '@/hooks/useLanAddress';
 import { Note, PageHeader, SettingItem, Warning } from '../primitives';
@@ -325,7 +326,53 @@ export function SermonScripturePage({ settings, onUpdate }: SettingsPageProps) {
 
 // ── Listeners ──
 
-export function SermonListenersPage({ isOpen }: SettingsPageProps) {
+/** One extra listener language: an on/off switch and, once on, how it is translated. */
+function ListenerLanguageSettingRow({ lang, value, onChange, ollamaModel }: {
+  lang: ExtraListenerLang;
+  value: ListenerLanguageSetting;
+  onChange: (next: ListenerLanguageSetting) => void;
+  ollamaModel: string;
+}) {
+  const itemId = `listener-lang-${lang}`;
+  return (
+    <div className="space-y-2">
+      <SettingItem id={itemId} layout="row" htmlFor={`${itemId}-switch`}>
+        <Switch
+          id={`${itemId}-switch`}
+          checked={value.enabled}
+          onCheckedChange={(checked) => onChange({ ...value, enabled: checked })}
+          data-testid={`switch-${itemId}`}
+        />
+      </SettingItem>
+      {value.enabled && (
+        <div className="space-y-2 rounded-md border border-border p-3">
+          <Label className="text-xs text-muted-foreground">Translated with</Label>
+          <ProviderSelect
+            value={value.provider}
+            onChange={(provider) => onChange({ ...value, provider })}
+            testId={`select-${itemId}-provider`}
+          />
+          {value.provider === 'openai' && (
+            <Input
+              type="text"
+              value={value.model}
+              onChange={(e) => onChange({ ...value, model: e.target.value })}
+              placeholder="gpt-4o-mini"
+              className="h-8 text-xs"
+              aria-label="OpenAI model"
+              data-testid={`input-${itemId}-model`}
+            />
+          )}
+          {value.provider === 'ollama' && (
+            <Note>Uses the Ollama model set under General › Local models{ollamaModel ? ` (${ollamaModel})` : ''}.</Note>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+export function SermonListenersPage({ isOpen, settings, onUpdate }: SettingsPageProps) {
   // The page is only mounted while selected, so the lookup runs only when it is visible.
   const lan = useLanAddress(isOpen);
   return (
@@ -343,6 +390,28 @@ export function SermonListenersPage({ isOpen }: SettingsPageProps) {
         </Button>
       </SettingItem>
       <Note>Include the <code>http://</code> and the port when typing it into a phone.</Note>
+
+      <div className="space-y-4">
+        <div className="space-y-1">
+          <h3 className="text-sm font-semibold text-foreground">Languages on the phones</h3>
+          <p className="text-xs text-muted-foreground">
+            English is always there. Each language you switch on appears in a picker on the phone page
+            (<code>/listen</code>, or <code>/listen?lang=hi</code> to open it directly). It is translated on the
+            server from your finished English, only while a phone is reading it, using the keys in the server's
+            <code> .env</code> (OPENAI_API_KEY / ANTHROPIC_API_KEY) — not the ones in this browser. The operator
+            screen stays Dutch and English.
+          </p>
+        </div>
+        {EXTRA_LISTENER_LANGUAGES.map((lang) => (
+          <ListenerLanguageSettingRow
+            key={lang}
+            lang={lang}
+            value={settings.listenerLanguages[lang]}
+            ollamaModel={settings.ollamaModel}
+            onChange={(next) => onUpdate({ listenerLanguages: { ...settings.listenerLanguages, [lang]: next } })}
+          />
+        ))}
+      </div>
     </div>
   );
 }
