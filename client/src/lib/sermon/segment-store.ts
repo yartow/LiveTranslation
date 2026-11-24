@@ -10,7 +10,7 @@
 // the plan doc for the full rationale.
 
 import { type Segment, type SegmentStatus, type GlossaryWarning, type ScriptureInfo, type LyricsInfo, hashText, isDirty, createSegment } from './segment-model';
-import { stripMarkdown } from './markdown';
+import { ensureHeading, stripMarkdown } from './markdown';
 
 /**
  * Tracks an in-progress Bible reading across segments (spec "Bijbelcitaten"
@@ -570,9 +570,7 @@ export function selectPublishableLines(state: SegmentStoreState): PublishableLin
     if (!seg.translatedText.trim() || seg.lyrics?.part === 'pending') continue;
     if (seg.status !== 'TRANSLATED' && seg.status !== 'SCRIPTURE' && !seg.manualOverride) continue;
     // A song's title row is a heading on the phones and in the saved transcript.
-    const text = seg.lyrics?.part === 'title' && !seg.translatedText.trimStart().startsWith('#')
-      ? `### ${seg.translatedText.trim()}`
-      : seg.translatedText;
+    const text = seg.lyrics?.part === 'title' ? ensureHeading(seg.translatedText) : seg.translatedText;
     lines.push({ id: seg.id, index: seg.index, text, manual: seg.manualOverride });
   }
   return lines;

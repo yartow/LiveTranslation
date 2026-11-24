@@ -2,7 +2,7 @@ import { useRef, useEffect, useLayoutEffect, useCallback } from 'react';
 import { BookOpen, Lock } from 'lucide-react';
 import type { Segment } from '@/lib/sermon/segment-model';
 import type { SegmentAction } from '@/lib/sermon/segment-store';
-import { useAutoGrowOnResize } from '@/hooks/useAutoGrowOnResize';
+import { growToFit, useAutoGrowOnResize } from '@/hooks/useAutoGrowOnResize';
 import { isNextRowChord } from '@/lib/sermon/hotkeys';
 import { shouldSyncCellDom } from '@/lib/sermon/cell-sync';
 import type { CellKind } from '@/lib/sermon/focus-cell';
@@ -48,8 +48,7 @@ export default function TargetCell({ segment, dispatch, activeSegmentIdRef, onEn
   const autoGrow = useCallback(() => {
     const el = ref.current;
     if (!el) return;
-    el.style.height = 'auto';
-    el.style.height = `${el.scrollHeight}px`;
+    growToFit(el);
   }, []);
 
   useAutoGrowOnResize(ref, autoGrow);

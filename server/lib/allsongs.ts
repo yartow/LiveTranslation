@@ -59,6 +59,15 @@ export class AllSongsError extends Error {
   constructor(message: string, readonly status: 400 | 404 | 502) { super(message); }
 }
 
+/**
+ * A literal backslash + n (or \r\n) in a lyric is a line break that was escaped twice somewhere upstream.
+ * Turned into a real newline here, once, before the text can reach the grid, the translator or the phones.
+ * Only that sequence: any other backslash stays.
+ */
+export function unescapeLineBreaks(text: string): string {
+  return text.replace(/\\r\\n|\\n/g, '\n');
+}
+
 function isSong(v: any): v is SongLyrics {
   return v && typeof v.id === 'string' && Array.isArray(v.sections)
     && v.sections.every((s: any) => s && typeof s.text === 'string' && typeof s.id === 'string')
@@ -76,8 +85,8 @@ async function getSong(id: string, base: string, fetchImpl: typeof fetch): Promi
   const body = await res.json().catch(() => null);
   if (!res.ok || !isSong(body)) throw new AllSongsError(`AllSongs answered HTTP ${res.status}`, 502);
   return {
-    id: body.id, song_id: body.song_id ?? null, title: body.title ?? null, language: body.language ?? null,
-    sections: body.sections.map(s => ({ id: s.id, type: String(s.type ?? 'other'), label: String(s.label ?? ''), text: s.text })),
+    id: body.id, song_id: body.song_id ?? null, title: body.title == null ? null : unescapeLineBreaks(body.title), language: body.language ?? null,
+    sections: body.sections.map(s => ({ id: s.id, type: String(s.type ?? 'other'), label: String(s.label ?? ''), text: unescapeLineBreaks(s.text) })),
     alternates: body.alternates.filter(a => a && typeof a.id === 'string')
       .map(a => ({ id: a.id, language: a.language ?? null, title: a.title ?? null })),
   };

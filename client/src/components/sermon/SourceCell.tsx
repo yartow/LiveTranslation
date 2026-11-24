@@ -2,7 +2,7 @@ import { useRef, useEffect, useLayoutEffect, useCallback } from 'react';
 import { looksLikeSongLink } from '@/lib/sermon/lyrics';
 import type { Segment } from '@/lib/sermon/segment-model';
 import type { SegmentAction } from '@/lib/sermon/segment-store';
-import { useAutoGrowOnResize } from '@/hooks/useAutoGrowOnResize';
+import { growToFit, useAutoGrowOnResize } from '@/hooks/useAutoGrowOnResize';
 import { isNextRowChord } from '@/lib/sermon/hotkeys';
 import type { CellKind } from '@/lib/sermon/focus-cell';
 import type { ConfidenceStore } from '@/lib/sermon/confidence-store';
@@ -50,8 +50,7 @@ export default function SourceCell({ segment, dispatch, activeSegmentIdRef, flus
   const autoGrow = useCallback(() => {
     const el = ref.current;
     if (!el) return;
-    el.style.height = 'auto';
-    el.style.height = `${el.scrollHeight}px`;
+    growToFit(el);
   }, []);
 
   useAutoGrowOnResize(ref, autoGrow);

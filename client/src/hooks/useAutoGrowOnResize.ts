@@ -7,6 +7,18 @@ import { useEffect } from 'react';
  * the last lines (`overflow-hidden`). Only width is compared, because growing
  * changes the height, which would otherwise re-trigger the observer.
  */
+/**
+ * Sizes a textarea to its text: height = scrollHeight. scrollHeight is rounded to a whole pixel, and at
+ * a fractional zoom / device pixel ratio that can be 1px short, which clips the last line behind
+ * whatever sits below (the "check:" chips) — so if it still doesn't fit, grow by the difference.
+ */
+export function growToFit(el: HTMLTextAreaElement): void {
+  el.style.height = 'auto';
+  el.style.height = `${el.scrollHeight}px`;
+  const short = el.scrollHeight - el.clientHeight;
+  if (short > 0) el.style.height = `${el.scrollHeight + short}px`;
+}
+
 export function useAutoGrowOnResize(ref: React.RefObject<HTMLTextAreaElement>, autoGrow: () => void): void {
   useEffect(() => {
     const el = ref.current;
@@ -22,7 +34,17 @@ export function useAutoGrowOnResize(ref: React.RefObject<HTMLTextAreaElement>, a
     // Fonts arriving late re-wrap text at an unchanged width.
     void document.fonts?.ready.then(autoGrow);
     window.addEventListener(TEXT_SIZE_EVENT, autoGrow);
-    return () => { ro.disconnect(); window.removeEventListener(TEXT_SIZE_EVENT, autoGrow); };
+    // Browser zoom (Cmd +/-) fires window `resize` and changes devicePixelRatio; the row can wrap
+    // differently without this textarea's own width changing, so don't rely on the observer alone.
+    window.addEventListener('resize', autoGrow);
+    const vv = window.visualViewport;
+    vv?.addEventListener('resize', autoGrow);
+    return () => {
+      ro.disconnect();
+      window.removeEventListener(TEXT_SIZE_EVENT, autoGrow);
+      window.removeEventListener('resize', autoGrow);
+      vv?.removeEventListener('resize', autoGrow);
+    };
   }, [ref, autoGrow]);
 }
 

@@ -3,6 +3,7 @@
 // useLyricsInsert.ts (via the server's GET /api/lyrics, server/lib/allsongs.ts).
 
 import type { LyricsRow } from './segment-store';
+import { ensureHeading } from './markdown';
 
 /** Mirrors server/lib/allsongs.ts's SongLyrics (client and server share no code). */
 export interface SongLyrics {
@@ -43,7 +44,8 @@ export function lyricsRows(song: SongLyrics, english: SongLyrics | undefined, pa
   const rows: LyricsRow[] = [];
 
   if (isEnglish) {
-    if (title) rows.push({ sourceText: '', translatedText: title, lyrics: info('title') });
+    // English text only gets the heading marker; the Dutch side stays plain (it is the translator's input).
+    if (title) rows.push({ sourceText: '', translatedText: ensureHeading(title), lyrics: info('title') });
     for (const s of song.sections) rows.push({ sourceText: '', translatedText: s.text, lyrics: info('verse') });
     return { rows, english: 'as-is', warnings };
   }
@@ -58,7 +60,7 @@ export function lyricsRows(song: SongLyrics, english: SongLyrics | undefined, pa
   }
   const enTitle = (english?.title ?? '').trim();
   if (title || enTitle) {
-    rows.push({ sourceText: title, ...(enTitle ? { translatedText: enTitle } : {}), lyrics: info('title') });
+    rows.push({ sourceText: title, ...(enTitle ? { translatedText: ensureHeading(enTitle) } : {}), lyrics: info('title') });
   }
   const n = Math.max(song.sections.length, enSections.length);
   for (let i = 0; i < n; i++) {
