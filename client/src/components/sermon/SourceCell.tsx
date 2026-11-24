@@ -207,7 +207,7 @@ export default function SourceCell({ segment, dispatch, activeSegmentIdRef, flus
         placeholder={segment.lyrics?.part === 'pending' ? 'Paste an AllSongs link here for a Dutch song' : undefined}
         rows={1}
         className={
-          'w-full resize-none overflow-hidden bg-transparent px-3 py-2 pr-16 text-sm leading-relaxed rounded-md ' +
+          'w-full resize-none overflow-hidden bg-transparent px-3 py-2 pr-16 text-[length:var(--sermon-text-size,14px)] leading-relaxed rounded-md ' +
           'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring ' +
           (isDirtyVisual ? 'border-l-2 border-amber-400'
             : isProvisional ? 'border-l-2 border-dashed border-muted-foreground/40 italic'

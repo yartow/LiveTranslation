@@ -21,6 +21,10 @@ export function useAutoGrowOnResize(ref: React.RefObject<HTMLTextAreaElement>, a
     ro.observe(el);
     // Fonts arriving late re-wrap text at an unchanged width.
     void document.fonts?.ready.then(autoGrow);
-    return () => ro.disconnect();
+    window.addEventListener(TEXT_SIZE_EVENT, autoGrow);
+    return () => { ro.disconnect(); window.removeEventListener(TEXT_SIZE_EVENT, autoGrow); };
   }, [ref, autoGrow]);
 }
+
+/** Dispatched on `window` when the sermon text size changes: the cells' height is fixed in px, and a font-size change alters neither the text nor the width, so nothing else would re-measure them. */
+export const TEXT_SIZE_EVENT = 'sermon-text-size';

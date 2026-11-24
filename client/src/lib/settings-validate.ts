@@ -5,6 +5,7 @@
 
 import { normalizeServiceContext } from '@/lib/sermon/service-context';
 import { normalizeListenerLanguages } from '@/lib/listener-languages';
+import { clampTextSize, COLLAPSED_COLUMNS } from '@/lib/sermon/layout';
 import type { AppSettings } from '@/hooks/useSettings';
 
 const clamp = (v: number, min: number, max: number): number => Math.max(min, Math.min(max, v));
@@ -66,6 +67,8 @@ export function sanitizeSettings(merged: AppSettings, defaults: AppSettings): Ap
   s.sermonAsrCorrection = boolOr(s.sermonAsrCorrection, defaults.sermonAsrCorrection);
   s.sermonAutoTranslate = boolOr(s.sermonAutoTranslate, defaults.sermonAutoTranslate);
   s.sermonBackTranslationCheck = boolOr(s.sermonBackTranslationCheck, defaults.sermonBackTranslationCheck);
+  s.sermonTextSize = clampTextSize(s.sermonTextSize);
+  s.sermonCollapsedColumn = oneOf(s.sermonCollapsedColumn, COLLAPSED_COLUMNS, defaults.sermonCollapsedColumn);
   s.sermonBackTranslationThreshold = clampedNumber(s.sermonBackTranslationThreshold, defaults.sermonBackTranslationThreshold, 0.05, 0.6);
 
   // Sermon mode — file-based glossary

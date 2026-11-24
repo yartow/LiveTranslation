@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import type { ComponentType } from 'react';
 import {
   AudioLines, BookA, BookOpen, Bug, ChevronLeft, ChevronRight, Cpu, KeyRound, Languages,
-  Mic, Search, SlidersHorizontal, Sparkles, SpellCheck, Timer, Users,
+  Mic, Search, SlidersHorizontal, Sparkles, SpellCheck, Timer, Type, Users,
 } from 'lucide-react';
 import type { LucideIcon } from 'lucide-react';
 import {
@@ -28,7 +28,7 @@ import {
   ApiKeysPage, DebugPage, GlossaryPage, LanguagesPage, MicrophonePage, OllamaPage, SpeechPage,
 } from './pages/general';
 import {
-  SermonCorrectionPage, SermonListenersPage, SermonScripturePage, SermonTimingPage,
+  SermonCorrectionPage, SermonDisplayPage, SermonListenersPage, SermonScripturePage, SermonTimingPage,
   SermonTranslationPage,
 } from './pages/sermon';
 import { LiveAudioPage, LiveImprovePage, LiveTranslationPage } from './pages/live';
@@ -45,7 +45,7 @@ interface SettingsDialogProps {
 
 const ICONS: Record<string, LucideIcon> = {
   AudioLines, BookA, BookOpen, Bug, Cpu, KeyRound, Languages, Mic, SlidersHorizontal,
-  Sparkles, SpellCheck, Timer, Users,
+  Sparkles, SpellCheck, Timer, Type, Users,
 };
 
 const PAGES: Record<string, ComponentType<SettingsPageProps>> = {
@@ -57,6 +57,7 @@ const PAGES: Record<string, ComponentType<SettingsPageProps>> = {
   glossary: GlossaryPage,
   'sermon-correction': SermonCorrectionPage,
   'sermon-translation': SermonTranslationPage,
+  'sermon-display': SermonDisplayPage,
   'sermon-timing': SermonTimingPage,
   'sermon-scripture': SermonScripturePage,
   'sermon-listeners': SermonListenersPage,

@@ -1,6 +1,7 @@
 import { useState, useCallback } from 'react';
 import { EMPTY_SERVICE_CONTEXT, type ServiceContext } from '@/lib/sermon/service-context';
 import { sanitizeSettings } from '@/lib/settings-validate';
+import { TEXT_SIZE_DEFAULT, type CollapsedColumn } from '@/lib/sermon/layout';
 import { DEFAULT_LISTENER_LANGUAGES, type ListenerLanguageSettings } from '@/lib/listener-languages';
 
 export type TranscriptionProvider = 'whisper' | 'browser' | 'transformers' | 'mlx';
@@ -69,6 +70,10 @@ export interface AppSettings {
   activeDeviceProfileId: string | null;
   // sermon mode — see client/src/pages/SermonMode.tsx
   sermonMaxLatencySecs: number;
+  // Size (px) of the Dutch + English cell text only — see lib/sermon/layout.ts
+  sermonTextSize: number;
+  // Which sermon column is hidden (Ctrl+1 / Ctrl+2) — at most one
+  sermonCollapsedColumn: CollapsedColumn;
   sermonStabilityMs: number;
   sermonContextBefore: number;
   sermonContextAfter: number;
@@ -139,6 +144,8 @@ export const defaultSettings: AppSettings = {
   // an existing localStorage profile keeps its stored value across this
   // change (the useSettings migration below only clamps, never bumps it).
   sermonMaxLatencySecs: 10,
+  sermonTextSize: TEXT_SIZE_DEFAULT,
+  sermonCollapsedColumn: 'none',
   sermonStabilityMs: 1200,
   sermonContextBefore: 2,
   sermonContextAfter: 1,
@@ -216,6 +223,8 @@ export function useSettings() {
           deviceProfiles: next.deviceProfiles,
           activeDeviceProfileId: next.activeDeviceProfileId,
           sermonMaxLatencySecs: next.sermonMaxLatencySecs,
+          sermonTextSize: next.sermonTextSize,
+          sermonCollapsedColumn: next.sermonCollapsedColumn,
           sermonStabilityMs: next.sermonStabilityMs,
           sermonContextBefore: next.sermonContextBefore,
           sermonContextAfter: next.sermonContextAfter,

@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import { Button } from '@/components/ui/button';
+import { clampTextSize, TEXT_SIZE_MAX, TEXT_SIZE_MIN, TEXT_SIZE_STEP } from '@/lib/sermon/layout';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Switch } from '@/components/ui/switch';
@@ -212,6 +213,31 @@ export function SermonTranslationPage({ settings, onUpdate }: SettingsPageProps)
 }
 
 // ── Timing ──
+
+export function SermonDisplayPage({ settings, onUpdate }: SettingsPageProps) {
+  return (
+    <div className="space-y-6">
+      <PageHeader pageId="sermon-display" />
+
+      <SettingItem id="sermon-text-size" htmlFor="sermon-text-size-slider">
+        <div className="flex items-center gap-3">
+          <input
+            id="sermon-text-size-slider"
+            type="range"
+            min={TEXT_SIZE_MIN}
+            max={TEXT_SIZE_MAX}
+            step={TEXT_SIZE_STEP}
+            value={settings.sermonTextSize}
+            onChange={(e) => onUpdate({ sermonTextSize: clampTextSize(Number(e.target.value)) })}
+            className="flex-1 accent-primary"
+          />
+          <span className="text-xs text-muted-foreground w-12 text-right">{settings.sermonTextSize}px</span>
+        </div>
+        <p className="mt-2 text-xs text-muted-foreground">Shortcuts: Ctrl+= / Ctrl+- (also A− / A+ in the toolbar). Ctrl+1 / Ctrl+2 hide the Dutch / English column, Ctrl+3 collapses the header. If macOS or Chrome keeps Ctrl+1..3, use Ctrl+Alt+1..3.</p>
+      </SettingItem>
+    </div>
+  );
+}
 
 export function SermonTimingPage({ settings, onUpdate }: SettingsPageProps) {
   return (

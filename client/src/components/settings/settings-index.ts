@@ -59,6 +59,7 @@ export const SETTINGS_PAGES: SettingsPage[] = [
   // ── Sermon mode ──
   { id: 'sermon-correction', group: 'sermon', title: 'Transcript correction', summary: 'Clean-up of each transcribed chunk', scope: 'sermon', icon: 'SpellCheck' },
   { id: 'sermon-translation', group: 'sermon', title: 'Translation', summary: 'Provider, model and context', scope: 'sermon', icon: 'Languages' },
+  { id: 'sermon-display', group: 'sermon', title: 'Display', summary: 'Size of the Dutch and English text', scope: 'sermon', icon: 'Type' },
   { id: 'sermon-timing', group: 'sermon', title: 'Timing', summary: 'Block length and stability', scope: 'sermon', icon: 'Timer' },
   { id: 'sermon-scripture', group: 'sermon', title: 'Scripture quotes', summary: 'Exact Bible text for read verses', scope: 'sermon', icon: 'BookOpen' },
   { id: 'sermon-listeners', group: 'sermon', title: 'Listeners', summary: 'Address and languages for phones on the same Wi-Fi', scope: 'sermon', icon: 'Users' },
@@ -113,6 +114,9 @@ export const SETTINGS_ITEMS: SettingsItem[] = [
   { id: 'sermon-back-translation', page: 'sermon-translation', label: 'Check translations by translating back', description: 'Translates every English line back to Dutch and compares it with what was said; a line that drifts gets an amber warning icon. Costs a second model call per segment, so translations arrive a little later. Off by default.', keywords: ['back', 'translation', 'check', 'fidelity', 'drift', 'verify', 'accuracy', 'terugvertalen'] },
   { id: 'sermon-back-translation-threshold', page: 'sermon-translation', label: 'Back-translation sensitivity', description: 'A line is flagged when its back-translation matches the Dutch less than this (0.05–0.6). Higher flags more lines. The score of every checked line is logged in translations.jsonl (dev:record) to help choose a value.', keywords: ['threshold', 'sensitivity', 'fidelity', 'similarity', 'flag'] },
   { id: 'sermon-context', page: 'sermon-translation', label: 'Context sentences', description: 'How many neighbouring segments are sent along as context: before (0–5) and after (0–3).', keywords: ['context', 'before', 'after', 'neighbours', 'surrounding'] },
+
+  // ── Sermon: display ──
+  { id: 'sermon-text-size', page: 'sermon-display', label: 'Text size', description: 'Size of the Dutch and English text in the rows only (12–120 px); the toolbar and everything else keep their size. Also A− / A+ in the toolbar and Ctrl+= / Ctrl+-.', keywords: ['font', 'size', 'bigger', 'larger', 'zoom', 'text', 'letter', 'tekst', 'grootte', 'lettergrootte'] },
 
   // ── Sermon: timing ──
   { id: 'sermon-max-latency', page: 'sermon-timing', label: 'Block length', description: 'How long a block of speech runs before it is finalized as one segment and translated. Transcribed text already shows (and can be edited) as soon as it arrives; longer blocks read more smoothly, shorter ones are translated sooner. Applies to a running session.', keywords: ['latency', 'delay', 'bracket', 'segment', 'seconds', 'vertraging'] },

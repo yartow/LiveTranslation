@@ -1,13 +1,16 @@
-import { Settings, Sun, Moon, BookOpenText, Mic } from 'lucide-react';
+import { Settings, Sun, Moon, BookOpenText, Mic, ChevronUp } from 'lucide-react';
 import { Link, useLocation } from 'wouter';
 
 interface HeaderProps {
   onThemeToggle?: () => void;
   onSettingsOpen?: () => void;
   isDark?: boolean;
+  /** Sermon mode only: shows a button that collapses the whole header block (see SermonMode.tsx). */
+  onCollapse?: () => void;
+  collapseHint?: string;
 }
 
-export default function Header({ onThemeToggle, onSettingsOpen, isDark }: HeaderProps) {
+export default function Header({ onThemeToggle, onSettingsOpen, isDark, onCollapse, collapseHint }: HeaderProps) {
   const [location] = useLocation();
   // Preekmodus is now the app's default route ("/"); live/subtitle mode lives at "/live".
   const inLiveMode = location === '/live';
@@ -38,6 +41,17 @@ export default function Header({ onThemeToggle, onSettingsOpen, isDark }: Header
               data-testid="button-theme-toggle"
             >
               {isDark ? <Sun className="w-4 h-4" /> : <Moon className="w-4 h-4" />}
+            </button>
+          )}
+          {onCollapse && (
+            <button
+              onClick={onCollapse}
+              className="text-muted-foreground hover:text-foreground p-2 rounded-md transition-colors"
+              aria-label="Collapse the header"
+              title={`Collapse the header${collapseHint ? ` (${collapseHint})` : ''}`}
+              data-testid="button-collapse-header"
+            >
+              <ChevronUp className="w-4 h-4" />
             </button>
           )}
           {onSettingsOpen && (

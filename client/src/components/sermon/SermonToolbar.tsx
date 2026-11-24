@@ -7,6 +7,7 @@ import ListenerAddressPanel from './ListenerAddressPanel';
 import ServiceContextPopover from './ServiceContextPopover';
 import SuggestionsPopover from './SuggestionsPopover';
 import type { EditSuggestion } from '@/lib/sermon/edit-suggestions';
+import { TEXT_SIZE_MAX, TEXT_SIZE_MIN } from '@/lib/sermon/layout';
 import type { ServiceContext } from '@/lib/sermon/service-context';
 
 interface SermonToolbarProps {
@@ -43,6 +44,9 @@ interface SermonToolbarProps {
   onAddSuggestion: (suggestion: EditSuggestion) => void;
   onDismissSuggestion: (suggestion: EditSuggestion) => void;
   isMac: boolean;
+  /** Size (px) of the Dutch/English text; A- / A+ step it. */
+  textSize: number;
+  onChangeTextSize: (direction: 1 | -1) => void;
 }
 
 function ToggleChip({ on, onClick, icon, label, title, testId }: {
@@ -71,7 +75,7 @@ function ToggleChip({ on, onClick, icon, label, title, testId }: {
 export default function SermonToolbar({
   isRecording, isProcessing, isPaused, onTogglePause, onToggleRecording, dirtyCount, onRefreshAll, onAddRow, onSaveMarkdown, onAddLyrics,
   autoTranslate, onToggleAutoTranslate, maxLatencySecs, onChangeMaxLatencySecs,
-  listenerCount, listenersByLang, listenersEnabled, onToggleListeners, onOpenSettings, serviceContext, onChangeServiceContext, suggestions, onAddSuggestion, onDismissSuggestion, isMac,
+  listenerCount, listenersByLang, listenersEnabled, onToggleListeners, onOpenSettings, serviceContext, onChangeServiceContext, suggestions, onAddSuggestion, onDismissSuggestion, isMac, textSize, onChangeTextSize,
 }: SermonToolbarProps) {
   const refreshHint = isMac ? '⌘⇧⏎' : 'Ctrl+Shift+Enter';
   const [isListenerPopoverOpen, setIsListenerPopoverOpen] = useState(false);
@@ -132,6 +136,31 @@ export default function SermonToolbar({
         <Plus className="w-3.5 h-3.5" />
         Add row
       </Button>
+
+      <div className="inline-flex items-center rounded-md border border-input" role="group" aria-label="Text size of the Dutch and English text">
+        <button
+          type="button"
+          onClick={() => onChangeTextSize(-1)}
+          disabled={textSize <= TEXT_SIZE_MIN}
+          className="px-2 h-8 text-xs font-medium rounded-l-md hover:bg-accent disabled:opacity-40"
+          aria-label="Smaller text"
+          title="Smaller Dutch and English text (Ctrl+-)"
+          data-testid="button-text-smaller"
+        >
+          A−
+        </button>
+        <button
+          type="button"
+          onClick={() => onChangeTextSize(1)}
+          disabled={textSize >= TEXT_SIZE_MAX}
+          className="px-2 h-8 text-base font-medium border-l border-input rounded-r-md hover:bg-accent disabled:opacity-40"
+          aria-label="Bigger text"
+          title="Bigger Dutch and English text (Ctrl+=)"
+          data-testid="button-text-bigger"
+        >
+          A+
+        </button>
+      </div>
 
       <Button
         variant="outline"

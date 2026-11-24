@@ -76,6 +76,15 @@ describe('sanitizeSettings', () => {
     expect(load({ defaultLookbackChars: 5000 }).defaultLookbackChars).toBe(5000); // no upper bound
   });
 
+  it('sermonTextSize is clamped to 12..120 and sermonCollapsedColumn must be a known value', () => {
+    expect(load({ sermonTextSize: 3 }).sermonTextSize).toBe(12);
+    expect(load({ sermonTextSize: 500 }).sermonTextSize).toBe(120);
+    expect(load({ sermonTextSize: 36 }).sermonTextSize).toBe(36);
+    expect(load({ sermonTextSize: 'big' }).sermonTextSize).toBe(defaultSettings.sermonTextSize);
+    expect(load({ sermonCollapsedColumn: 'target' }).sermonCollapsedColumn).toBe('target');
+    expect(load({ sermonCollapsedColumn: 'both' }).sermonCollapsedColumn).toBe(defaultSettings.sermonCollapsedColumn);
+  });
+
   it('booleans must be booleans', () => {
     const s = load({ sermonAutoTranslate: 'yes', sermonAsrCorrection: 0, sermonDeityCapitals: true });
     expect(s.sermonAutoTranslate).toBe(defaultSettings.sermonAutoTranslate);
