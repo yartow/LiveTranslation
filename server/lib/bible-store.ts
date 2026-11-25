@@ -37,6 +37,22 @@ const ENGLISH_FILES: Record<EnglishVersion, string> = {
  */
 const EXTRA_DUTCH_FILES = ['hsv-nl.json.gz', 'nbg-nl.json.gz'] as const;
 
+/**
+ * Whole-Bible texts for the phones' extra languages (listener mode, CLAUDE.md "Listener languages"): a verbatim
+ * reading is shown in the congregation's own Bible instead of a model translation of the English. They number
+ * verses like English Bibles (the build prints the few chapters where a source differs), so the English
+ * reference of a verdict ("John 3:16-18") looks the verses up directly. Built by scripts/build-bible-data.ts.
+ */
+export type ListenerBibleLang = 'hi' | 'ta' | 'zh' | 'zh-TW';
+const LISTENER_BIBLE_FILES: Record<ListenerBibleLang, string> = {
+  hi: 'hi-ov.json.gz',
+  ta: 'ta-ov.json.gz',
+  zh: 'zh-cuv.json.gz',
+  'zh-TW': 'zh-tw-rcuv.json.gz',
+};
+const cachedListenerBibles: Partial<Record<ListenerBibleLang, VerseMap | null>> = {};
+let cachedMismatch: Record<string, Set<string>> | undefined;
+
 let cachedSv: VerseMap | null | undefined; // undefined = not yet attempted this process
 let cachedExtraDutch: VerseMap[] | undefined;
 const cachedEnglish: Partial<Record<EnglishVersion, VerseMap | null>> = {};
@@ -68,6 +84,27 @@ export function getDutchAnchors(): VerseMap[] {
 export function getEnglishBible(version: EnglishVersion): VerseMap | null {
   if (cachedEnglish[version] === undefined) cachedEnglish[version] = loadGzippedJson(ENGLISH_FILES[version]);
   return cachedEnglish[version] ?? null;
+}
+
+export function getListenerBible(lang: ListenerBibleLang): VerseMap | null {
+  if (cachedListenerBibles[lang] === undefined) cachedListenerBibles[lang] = loadGzippedJson(LISTENER_BIBLE_FILES[lang]);
+  return cachedListenerBibles[lang] ?? null;
+}
+
+/**
+ * "book:chapter" keys where a listener Bible's verse numbering differs from English (written by the build as
+ * listener-bible-mismatch.json). A verse number there may not be the same verse, so nothing is substituted
+ * from those chapters. Missing file = none known.
+ */
+export function getListenerMismatchedChapters(lang: ListenerBibleLang): Set<string> {
+  if (cachedMismatch === undefined) {
+    cachedMismatch = {};
+    try {
+      const parsed = JSON.parse(readFileSync(path.join(resolveBibleDir(), 'listener-bible-mismatch.json'), 'utf-8'));
+      for (const [k, v] of Object.entries(parsed ?? {})) if (Array.isArray(v)) cachedMismatch[k] = new Set(v.filter((x): x is string => typeof x === 'string'));
+    } catch { /* not built yet */ }
+  }
+  return cachedMismatch[lang] ?? new Set();
 }
 
 export function getKjv(): VerseMap | null {
@@ -158,7 +195,26 @@ export function getEnglishVerseRange(
   return parts.join(' ');
 }
 
+/**
+ * Text of verses `verseStart..verseEnd` (English numbering) in a listener language's Bible. Verses the source
+ * leaves empty are skipped — Chinese Bibles fold some verses into the previous one — so a range yields the
+ * words that exist. Chinese is joined without spaces, the other scripts with one. Empty string when nothing
+ * was found (text not built, or the range lies outside the book).
+ */
+export function getListenerVerseRange(lang: ListenerBibleLang, n: number, c: number, verseStart: number, verseEnd: number): string {
+  const bible = getListenerBible(lang);
+  if (!bible) return '';
+  const parts: string[] = [];
+  for (let v = verseStart; v <= verseEnd; v++) {
+    const text = bible[verseKey(n, c, v)];
+    if (text) parts.push(text);
+  }
+  return parts.join(lang === 'zh' || lang === 'zh-TW' ? '' : ' ');
+}
+
 export function _resetBibleStoreForTests(): void {
+  cachedMismatch = undefined;
+  for (const k of Object.keys(cachedListenerBibles) as ListenerBibleLang[]) delete cachedListenerBibles[k];
   cachedSv = undefined;
   cachedExtraDutch = undefined;
   cachedPsalmTitles = undefined;

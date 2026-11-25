@@ -27,10 +27,16 @@ export interface ListenerLine {
 export interface HubState {
   /** The English lines, as published by the operator. The only source anything is ever translated from. */
   lines: Map<string, ListenerLine>;
+  /**
+   * Line id -> English Bible reference ("John 3:16-18") for lines that are a verbatim reading. A hint that
+   * rides next to the lines, never part of one (a ListenerLine stays four fields) and never sent to a phone;
+   * listener-translate.ts uses it to show the verse from the phone language's own Bible.
+   */
+  scriptures: Map<string, string>;
 }
 
 export function createHubState(): HubState {
-  return { lines: new Map() };
+  return { lines: new Map(), scriptures: new Map() };
 }
 
 /**
@@ -77,6 +83,30 @@ export function applySync(state: HubState, rawLines: unknown[]): ListenerLine[] 
 /** Wipes the backlog — called on CLEAR_ALL (a new service starting), so a phone connecting afterwards doesn't see a stale sermon. */
 export function applyClear(state: HubState): void {
   state.lines.clear();
+  state.scriptures.clear();
+}
+
+/** Longest scripture reference the hub keeps ("2 Thessalonians 3:16-18" is 23 characters). */
+export const MAX_REFERENCE_LENGTH = 64;
+
+/**
+ * Records the scripture hints that came with a batch of accepted lines. Every accepted line is settled by
+ * the hint: a line named in `raw` gets (or keeps) its reference, one that is not loses any it had — the
+ * operator's page sends the hint with every line that still is a verbatim reading, so an edited verse
+ * simply stops being one. Returns the ids whose reference changed (added, replaced or removed).
+ */
+export function applyScriptures(state: HubState, accepted: ListenerLine[], raw: unknown): string[] {
+  const hints = raw && typeof raw === 'object' && !Array.isArray(raw) ? raw as Record<string, unknown> : {};
+  const changed: string[] = [];
+  for (const line of accepted) {
+    const hint = hints[line.id];
+    const next = typeof hint === 'string' && hint.trim() && hint.length <= MAX_REFERENCE_LENGTH ? hint.trim() : undefined;
+    const previous = state.scriptures.get(line.id);
+    if (next === previous) continue;
+    if (next) state.scriptures.set(line.id, next); else state.scriptures.delete(line.id);
+    changed.push(line.id);
+  }
+  return changed;
 }
 
 /** All known lines, ordered for display — what a newly-connecting listener gets as its initial 'snapshot'. */

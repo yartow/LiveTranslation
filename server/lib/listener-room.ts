@@ -4,9 +4,11 @@
 //
 // Messages
 //   operator -> room   config {enabled, models, ollamaBaseUrl?, ollamaModel?}   which extra languages are offered
-//                      sync {lines, drafting?} | publish {lines, drafting?} | clear
+//                      sync {lines, drafting?, scriptures?} | publish {lines, drafting?, scriptures?} | clear
 //                      (`drafting` = ids of lines still being typed; used only to debounce translation,
-//                      never forwarded to phones)
+//                      never forwarded to phones. `scriptures` = {lineId: "John 3:16-18"} for lines that are
+//                      a verbatim Bible reading: the extra-language phones get the verses from their own
+//                      Bible instead of a translation. Also never forwarded; a line left out loses its hint)
 //   phone -> room      setLanguage {lang}                                         answered with a snapshot
 //   room -> phone      languages {enabled}  snapshot {lang, lines}  update {lang, lines}  clear  ping
 //   room -> operator   listenerCount {count, byLang}  translationStatus {lang, ok, error?}
@@ -15,7 +17,7 @@
 // straight through; any other language is produced by listener-translate.ts from the stored English.
 
 import {
-  applyClear, applyPublish, applySync, createHubState, snapshot,
+  applyClear, applyPublish, applyScriptures, applySync, createHubState, snapshot,
   type HubState, type ListenerLine,
 } from './listener-lines';
 import {
@@ -63,20 +65,22 @@ export class ListenerRoom {
    * this socket.
    */
   onBroadcasterMessage(message: unknown, ctx: { operator: boolean }): void {
-    const msg = message as { type?: unknown; lines?: unknown; drafting?: unknown } | null;
+    const msg = message as { type?: unknown; lines?: unknown; drafting?: unknown; scriptures?: unknown } | null;
     if (!msg || typeof msg !== 'object') return;
 
     if (msg.type === 'config') {
       if (!ctx.operator) { console.warn('[listener-room] Ignoring config from a non-operator connection'); return; }
       this.applyConfig(normalizeConfig(message));
     } else if (msg.type === 'sync' && Array.isArray(msg.lines)) {
-      applySync(this.state, msg.lines);
+      const accepted = applySync(this.state, msg.lines);
+      this.translator.invalidateScriptures(applyScriptures(this.state, accepted, msg.scriptures));
       this.translator.onSynced();
       // Phones replace (not merge) their view on a snapshot.
       this.sendSnapshots();
     } else if (msg.type === 'publish' && Array.isArray(msg.lines)) {
       const accepted = applyPublish(this.state, msg.lines);
       if (accepted.length === 0) return;
+      this.translator.invalidateScriptures(applyScriptures(this.state, accepted, msg.scriptures));
       this.sendToLanguage('en', { type: 'update', lang: 'en', lines: accepted });
       this.translator.onPublished(accepted, parseDrafting(msg.drafting));
     } else if (msg.type === 'clear') {

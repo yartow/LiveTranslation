@@ -19,6 +19,7 @@ import { WebSocket as WsWebSocket, WebSocketServer } from 'ws';
 import { isOperatorRequest } from './loopback';
 import { ListenerRoom, type Send } from './listener-room';
 import { fileGlossary } from './listener-glossary';
+import { listenerScriptureText } from './listener-scripture';
 import type { ListenerTranslationLogEntry, TranslateRequest } from './listener-translate';
 
 export * from './listener-lines';
@@ -34,7 +35,7 @@ function logListenerTranslation(entry: ListenerTranslationLogEntry): void {
 }
 
 // Module-level singleton room — see the header comment for why this is intentionally not per-session.
-const room = new ListenerRoom({ translate: translateWithProvider, log: logListenerTranslation, glossary: fileGlossary });
+const room = new ListenerRoom({ translate: translateWithProvider, log: logListenerTranslation, glossary: fileGlossary, scriptureText: listenerScriptureText });
 
 // Phones never learn that a connection died silently (server restart, phone
 // asleep, wifi handover — no 'close' event ever fires), so the hub sends a

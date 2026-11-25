@@ -566,7 +566,8 @@ describe('selectPublishableLines', () => {
 
     const lines = selectPublishableLines(state);
     expect(lines).toEqual([
-      { id: scriptureId, index: 0, text: 'For God so loved the world...', manual: false },
+      // a verbatim reading also carries its English reference (the hint for the extra-language phones)
+      { id: scriptureId, index: 0, text: 'For God so loved the world...', manual: false, scripture: 'John 3:16' },
       { id: manualId, index: 1, text: 'By hand.', manual: true },
     ]);
   });

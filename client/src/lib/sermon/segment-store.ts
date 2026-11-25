@@ -10,7 +10,7 @@
 // the plan doc for the full rationale.
 
 import { type Segment, type SegmentStatus, type GlossaryWarning, type ScriptureInfo, type LyricsInfo, hashText, isDirty, createSegment } from './segment-model';
-import { ensureHeading, stripMarkdown } from './markdown';
+import { ensureHeading, stripMarkdown, sameWords } from './markdown';
 
 /**
  * Tracks an in-progress Bible reading across segments (spec "Bijbelcitaten"
@@ -314,7 +314,10 @@ export function segmentReducer(state: SegmentStoreState, action: SegmentAction):
         glossaryWarnings: undefined,
         fidelity: undefined,
         lowFidelity: undefined, // the human's hand-written translation is authoritative
-        scripture: undefined,
+        // A verse that is only re-formatted (a "> " quote, **bold**) is still that verse: its reference stays, which is
+        // how the extra-language phones know to show it from their own Bible (selectPublishableLines). Changed words
+        // make it the operator's own text, which is translated like any other.
+        scripture: seg.scripture && sameWords(action.translatedText, seg.scripture.verses) ? seg.scripture : undefined,
       });
     }
 
@@ -566,6 +569,13 @@ export interface PublishableLine {
   text: string;
   /** The operator typed this line (manualOverride). Client-side only — never sent to the hub; it just decides whether a change reads as a revision. See useListenerBroadcast.ts's computeBatch. */
   manual: boolean;
+  /**
+   * English reference ("John 3:16-18") when this line is still exactly a verbatim Bible reading — the row was
+   * filled from the Bible text and its words have not been changed since (markdown such as a "> " quote does
+   * not count as a change). Client-side only; useListenerBroadcast.ts sends it to the hub as a hint, beside the
+   * line, so phones in Hindi/Tamil/Chinese get the verse from their own Bible. Never part of the hub's line.
+   */
+  scripture?: string;
 }
 
 /**
@@ -586,7 +596,8 @@ export function selectPublishableLines(state: SegmentStoreState): PublishableLin
     if (seg.status !== 'TRANSLATED' && seg.status !== 'SCRIPTURE' && !seg.manualOverride) continue;
     // A song's title row is a heading on the phones and in the saved transcript.
     const text = seg.lyrics?.part === 'title' ? ensureHeading(seg.translatedText) : seg.translatedText;
-    lines.push({ id: seg.id, index: seg.index, text, manual: seg.manualOverride });
+    const verbatim = !!seg.scripture && !seg.lyrics && sameWords(seg.translatedText, seg.scripture.verses);
+    lines.push({ id: seg.id, index: seg.index, text, manual: seg.manualOverride, ...(verbatim ? { scripture: seg.scripture!.reference } : {}) });
   }
   return lines;
 }

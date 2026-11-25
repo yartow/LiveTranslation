@@ -22,6 +22,8 @@ export interface PublishedEntry {
   index?: number;
   /** The last published version was the operator's own typing. */
   manual: boolean;
+  /** The verbatim-reading hint last sent with this line (see PublishableLine.scripture). */
+  scripture?: string;
   /** Sticky once true — a line that has ever changed stays "edited" (renders italic on the phone) even across a reconnect. */
   edited: boolean;
 }
@@ -52,7 +54,7 @@ export function computeBatch(
   for (const line of selectPublishableLines(state)) {
     const prev = published.get(line.id);
     if (!prev) {
-      published.set(line.id, { text: line.text, index: line.index, manual: line.manual, edited: false });
+      published.set(line.id, { text: line.text, index: line.index, manual: line.manual, edited: false, scripture: line.scripture });
       batch.push({ id: line.id, index: line.index, text: line.text, edited: false });
     } else if (prev.text !== line.text) {
       // Typing a translation from scratch sends a stream of changing texts; only a
@@ -64,10 +66,12 @@ export function computeBatch(
       const formattingOnly = sameWords(prev.text, line.text);
       const stillDrafting = prev.manual && line.manual;
       const edited = prev.edited || (!stillDrafting && !formattingOnly);
-      published.set(line.id, { text: line.text, index: line.index, manual: formattingOnly ? prev.manual : line.manual, edited });
+      published.set(line.id, { text: line.text, index: line.index, manual: formattingOnly ? prev.manual : line.manual, edited, scripture: line.scripture });
       batch.push({ id: line.id, index: line.index, text: line.text, edited });
-    } else if (force || prev.index !== line.index) {
-      published.set(line.id, { ...prev, index: line.index });
+    } else if (force || prev.index !== line.index || prev.scripture !== line.scripture) {
+      // (A changed scripture hint with the same words — an edited verse reverted, or the row dismissed as
+      // "not scripture" — is re-sent so the hub re-decides how the extra-language phones see it.)
+      published.set(line.id, { ...prev, index: line.index, scripture: line.scripture });
       batch.push({ id: line.id, index: line.index, text: line.text, edited: prev.edited });
     }
   }
@@ -85,6 +89,21 @@ export function draftingIds(batch: ReadonlyArray<{ id: string }>, state: Segment
   for (const line of selectPublishableLines(state)) if (line.manual) manual.add(line.id);
   return batch.filter(b => manual.has(b.id)).map(b => b.id);
 }
+
+/**
+ * {lineId: "John 3:16-18"} for the lines in `batch` that are still a verbatim Bible reading. Rides on the
+ * `publish`/`sync` message beside the lines (a line left out loses its hint at the hub); never part of a line.
+ */
+export function scriptureHints(batch: ReadonlyArray<{ id: string }>, state: SegmentStoreState): Record<string, string> {
+  const hints: Record<string, string> = {};
+  if (batch.length === 0) return hints;
+  const byId = new Map<string, string>();
+  for (const line of selectPublishableLines(state)) if (line.scripture) byId.set(line.id, line.scripture);
+  for (const { id } of batch) { const ref = byId.get(id); if (ref) hints[id] = ref; }
+  return hints;
+}
+
+const withHints = (hints: Record<string, string>) => (Object.keys(hints).length > 0 ? { scriptures: hints } : {});
 
 export interface ListenerBroadcastInfo {
   listenerCount: number;
@@ -144,7 +163,7 @@ export function useListenerBroadcast(
         if (!enabledRef.current) { needsSyncRef.current = true; return; }
         needsSyncRef.current = false;
         const batch = computeBatch(stateRef.current, publishedRef.current, true);
-        ws.send(JSON.stringify({ type: 'sync', lines: batch }));
+        ws.send(JSON.stringify({ type: 'sync', lines: batch, ...withHints(scriptureHints(batch, stateRef.current)) }));
       };
       ws.onmessage = (evt) => {
         try {
@@ -217,13 +236,14 @@ export function useListenerBroadcast(
     if (!ws || ws.readyState !== WebSocket.OPEN) return;
     if (needsSyncRef.current) {
       needsSyncRef.current = false;
-      ws.send(JSON.stringify({ type: 'sync', lines: computeBatch(state, publishedRef.current, true) }));
+      const all = computeBatch(state, publishedRef.current, true);
+      ws.send(JSON.stringify({ type: 'sync', lines: all, ...withHints(scriptureHints(all, state)) }));
       return;
     }
     const batch = computeBatch(state, publishedRef.current, false);
     if (batch.length > 0) {
       const drafting = draftingIds(batch, state);
-      ws.send(JSON.stringify({ type: 'publish', lines: batch, ...(drafting.length > 0 ? { drafting } : {}) }));
+      ws.send(JSON.stringify({ type: 'publish', lines: batch, ...(drafting.length > 0 ? { drafting } : {}), ...withHints(scriptureHints(batch, state)) }));
     }
   }, [state, enabled]);
 

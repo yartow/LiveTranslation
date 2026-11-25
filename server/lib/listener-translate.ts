@@ -11,6 +11,9 @@
 //   - A line the operator is still typing (`drafting`) waits DRAFT_DEBOUNCE_MS after its last change;
 //     finished machine lines go out at once. A stale answer (the English changed meanwhile) is memoised
 //     but never shown.
+//   - A line the operator marked as a verbatim Bible reading (HubState.scriptures: its English reference) is
+//     not translated at all when the phone's language has its own Bible built (`scriptureText`): the phones
+//     get that Bible's verses. Anything else — no hint, an edited verse, a Bible not built — goes to the model.
 //   - Own Semaphore: sermon translation (sermon-translate.ts) never queues behind this.
 //   - Never throws into the hub: a failed call is retried once, then the phone gets the English line
 //     (so a gap is visible, not silent), the failure is logged and reported once through `onStatus`.
@@ -178,6 +181,8 @@ export interface EngineDeps {
     terms(csv: string | undefined, lang: ExtraListenerLang, texts: readonly string[]): GlossaryTerm[];
     version(csv: string | undefined, lang: ExtraListenerLang): string;
   };
+  /** The verses of an English reference in `lang`'s own Bible, or undefined when not available (the line is then translated). */
+  scriptureText?: (lang: ExtraListenerLang, reference: string) => string | undefined;
   draftDebounceMs?: number;
   batchSize?: number;
   concurrency?: number;
@@ -294,6 +299,8 @@ export class ListenerTranslator {
       const hash = hashText(en.text);
       const s = byId.get(en.id);
       if (s && s.hash === hash) return { ...s.line, index: en.index, edited: en.edited };
+      const verse = this.scriptureLine(lang, en);
+      if (verse !== undefined) return this.remember(lang, en, hash, key, verse, false);
       const hit = this.memo.get(this.memoKey(lang, key, hash));
       if (hit !== undefined) {
         const line = { id: en.id, index: en.index, text: hit, edited: en.edited };
@@ -324,6 +331,12 @@ export class ListenerTranslator {
         const toTranslate: ListenerLine[] = [];
         const key = this.modelKey(lang);
         for (const line of missing) {
+          const verse = this.scriptureLine(lang, line);
+          if (verse !== undefined) {
+            this.logScripture(lang, line, verse);
+            hits.push(this.remember(lang, line, hashText(line.text), key, verse, false));
+            continue;
+          }
           const hit = this.memo.get(this.memoKey(lang, key, hashText(line.text)));
           if (hit !== undefined) hits.push(this.remember(lang, line, hashText(line.text), key, hit, false));
           else toTranslate.push(line);
@@ -344,6 +357,38 @@ export class ListenerTranslator {
   }
 
   // ── internals ──
+
+  /**
+   * The operator's scripture hint for these lines changed (a reading appeared, was edited, or was dismissed):
+   * what the phones were shown for them may be wrong now, so forget it — the publish that follows re-decides.
+   */
+  invalidateScriptures(ids: readonly string[]): void {
+    for (const id of ids) {
+      this.shown.forEach(byId => byId.delete(id));
+      EXTRA_LISTENER_LANGUAGES.forEach(lang => this.cancel(this.pendingKey(lang, id)));
+    }
+  }
+
+  /** The verse text for a line the operator marked as a verbatim reading, in this language's own Bible; undefined = translate it. */
+  private scriptureLine(lang: ExtraListenerLang, line: ListenerLine): string | undefined {
+    const reference = this.state.scriptures.get(line.id);
+    if (!reference || !this.deps.scriptureText) return undefined;
+    let verse: string | undefined;
+    try { verse = this.deps.scriptureText(lang, reference); } catch { return undefined; }
+    if (!verse || !verse.trim()) return undefined;
+    // The operator may have set the verse as a quote ("> ") for the phones — keep that.
+    return /^\s*>/.test(line.text) ? `> ${verse}` : verse;
+  }
+
+  private logScripture(lang: ExtraListenerLang, line: ListenerLine, verse: string): void {
+    if (!this.deps.log) return;
+    try {
+      this.deps.log({
+        at: new Date().toISOString(), lang, id: line.id, provider: 'bible', model: this.state.scriptures.get(line.id) ?? '',
+        latencyMs: 0, batchSize: 1, attempts: 0, english: line.text, before: [], translation: verse,
+      });
+    } catch { /* a debugging aid must never fail a translation */ }
+  }
 
   /** catchUp without a caller waiting for it — it must never turn into an unhandled rejection. */
   private startCatchUp(lang: ExtraListenerLang): void {
@@ -433,6 +478,13 @@ export class ListenerTranslator {
       }
       return;
     }
+    const verse = this.scriptureLine(lang, line);
+    if (verse !== undefined) {
+      this.cancel(this.pendingKey(lang, line.id));
+      this.logScripture(lang, line, verse);
+      this.deliver(lang, line, hash, key, verse, false);
+      return;
+    }
     const hit = this.memo.get(this.memoKey(lang, key, hash));
     if (hit !== undefined) { this.deliver(lang, line, hash, key, hit, false); return; }
 
@@ -475,6 +527,7 @@ export class ListenerTranslator {
       this.memo.set(this.memoKey(lang, key, hashes[i]), out[i]);
       const now = this.state.lines.get(line.id);
       if (!now || hashText(now.text) !== hashes[i] || !this.isLive(lang) || this.modelKey(lang) !== key) return;
+      if (this.scriptureLine(lang, now) !== undefined) return; // see finish()
       ready.push(this.remember(lang, now, hashes[i], key, out[i], false));
     });
     if (ready.length > 0) this.deps.emit(lang, ready);
@@ -485,6 +538,8 @@ export class ListenerTranslator {
     const now = this.state.lines.get(id);
     if (!now || hashText(now.text) !== hash) return;
     if (!this.isLive(lang) || this.modelKey(lang) !== key) return;
+    // A verse from the phone's own Bible took this line over while the model was working: it stays.
+    if (this.scriptureLine(lang, now) !== undefined) return;
     this.deliver(lang, now, hash, key, text, false);
   }
 
