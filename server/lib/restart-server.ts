@@ -9,6 +9,14 @@ import { spawn } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 
+/** The header the Settings button sends. A custom header makes a cross-site request need a CORS preflight, which this server never grants, so another web page open in the operator's browser cannot restart the server. */
+export const RESTART_HEADER = 'x-ctt-restart';
+export const RESTART_HEADER_VALUE = '1';
+
+export function hasRestartHeader(headers: Record<string, string | string[] | undefined>): boolean {
+  return headers[RESTART_HEADER] === RESTART_HEADER_VALUE;
+}
+
 export interface RestartPlan { ok: true; script: string; args: string[] }
 export interface RestartRefusal { ok: false; status: number; error: string }
 

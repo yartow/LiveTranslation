@@ -498,7 +498,7 @@ export function ServerPage({ isRecording }: SettingsPageProps) {
     setPhase('restarting');
     setError('');
     try {
-      const res = await fetch('/api/restart', { method: 'POST' });
+      const res = await fetch('/api/restart', { method: 'POST', headers: { 'X-CTT-Restart': '1' } });
       if (!res.ok) {
         const body = await res.json().catch(() => ({}));
         throw new Error(body.error ?? `Restart failed (${res.status})`);

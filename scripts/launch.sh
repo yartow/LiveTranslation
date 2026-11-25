@@ -14,8 +14,10 @@ cd "$APP_DIR" || exit 1
 mkdir -p data
 LOG="$APP_DIR/data/launcher.log"
 
-# Port: from .env (PORT=...), default 5001 — same as server/index.ts.
-PORT="$(grep -E '^PORT=' .env 2>/dev/null | tail -1 | cut -d= -f2 | tr -d '"' | tr -d "'" | tr -d '[:space:]')"
+# Port: the environment's PORT, else .env's (PORT=...), else 5001 — the same order server/index.ts ends up with
+# (node's --env-file never overrides a variable that is already set). A restart from the Settings page passes
+# the running server's PORT through the environment, so the new server comes up where the old one was.
+PORT="${PORT:-$(grep -E '^PORT=' .env 2>/dev/null | tail -1 | cut -d= -f2 | tr -d '"' | tr -d "'" | tr -d '[:space:]')}"
 PORT="${PORT:-5001}"
 URL="http://localhost:$PORT/"
 
@@ -27,7 +29,9 @@ if ! is_up; then
     "$(dirname "$NODE_BIN")/npm" run build >>"$LOG" 2>&1 \
       || { osascript -e 'display alert "CTT.AY" message "The build failed. See data/launcher.log."'; exit 1; }
   fi
-  NODE_ENV=production nohup "$NODE_BIN" --env-file=.env dist/index.js >>"$LOG" 2>&1 &
+  # --env-file makes node exit when the file is missing, so it is only passed when there is one.
+  ENV_FLAG=""; [ -f .env ] && ENV_FLAG="--env-file=.env"
+  NODE_ENV=production PORT="$PORT" nohup "$NODE_BIN" $ENV_FLAG dist/index.js >>"$LOG" 2>&1 &
   disown
   # Wait until it answers (max ~30 s), polling fast so a normal start feels instant.
   for _ in $(seq 1 150); do is_up && break; sleep 0.2; done

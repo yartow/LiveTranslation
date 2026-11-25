@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { planRestart } from '../../server/lib/restart-server.js';
+import { planRestart, hasRestartHeader } from '../../server/lib/restart-server.js';
 
 const base = { nodeEnv: 'production', port: 3000, cwd: '/app', exists: () => true };
 
@@ -28,5 +28,14 @@ describe('planRestart', () => {
     // Port and path travel as positional parameters, never inside the script text.
     expect(r.args.slice(3)).toEqual(['3000', '/app/scripts/launch.sh']);
     expect(r.script).not.toContain('/app');
+  });
+});
+
+describe('hasRestartHeader — the cross-site guard', () => {
+  it('accepts only the custom header the Settings button sends', () => {
+    expect(hasRestartHeader({ 'x-ctt-restart': '1' })).toBe(true);
+    expect(hasRestartHeader({})).toBe(false);
+    expect(hasRestartHeader({ 'x-ctt-restart': '0' })).toBe(false);
+    expect(hasRestartHeader({ 'content-type': 'text/plain' })).toBe(false);
   });
 });

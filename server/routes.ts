@@ -22,7 +22,7 @@ import { fetchSongLyrics, AllSongsError } from './lib/allsongs';
 import { applyLearnedCorrections } from './lib/asr-corrections';
 import { getInputVolume, setInputVolume, isValidInputVolume } from './lib/mac-input-volume';
 import { isOperatorRequest, isLoopbackAddress } from './lib/loopback';
-import { planRestart, startRestart } from './lib/restart-server';
+import { planRestart, startRestart, hasRestartHeader } from './lib/restart-server';
 import { getGlossaryStatus, reloadGlossary } from './lib/glossary-store';
 import { isSafeGlossaryName } from './lib/glossary-file';
 import { archiveEnabled, getCurrentArchiveDir } from './lib/chunk-transcription';
@@ -484,6 +484,10 @@ export async function registerRoutes(app: Express): Promise<Server> {
   app.post('/api/restart', rateLimiter, (req, res) => {
     if (!isOperatorRequest(req.socket.remoteAddress)) {
       return res.status(403).json({ error: 'Only available from the operator machine' });
+    }
+    // Loopback is not enough: any page open in the operator's own browser can reach localhost. See RESTART_HEADER.
+    if (!hasRestartHeader(req.headers)) {
+      return res.status(403).json({ error: 'Missing restart header' });
     }
     const plan = planRestart({ nodeEnv: process.env.NODE_ENV, port: req.socket.localPort ?? 0, cwd: process.cwd() });
     if (!plan.ok) return res.status(plan.status).json({ error: plan.error });
