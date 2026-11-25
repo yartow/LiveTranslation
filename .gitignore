@@ -7,5 +7,4 @@ vite.config.ts.*
 *.tar.gz
 data/*
 *.xlsx
-/tests
 attached_assets/Logo.png
