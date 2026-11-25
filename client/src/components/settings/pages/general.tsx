@@ -470,3 +470,72 @@ export function DebugPage({ settings, onUpdate }: SettingsPageProps) {
     </div>
   );
 }
+
+// ── Server ──
+
+type RestartPhase = 'idle' | 'confirm' | 'restarting' | 'failed';
+
+// Waits for the old server to go away and the new one to answer, then reloads this page onto the new
+// build. A rebuild can take half a minute, so it gives up only after 90 s.
+async function waitForRestart(): Promise<boolean> {
+  const alive = () => fetch('/api/asr-debug/status', { cache: 'no-store' }).then(r => r.ok, () => false);
+  const started = Date.now();
+  let wentDown = false;
+  while (Date.now() - started < 90_000) {
+    await new Promise(r => setTimeout(r, 500));
+    const up = await alive();
+    if (!up) wentDown = true;
+    else if (wentDown || Date.now() - started > 4_000) return true;
+  }
+  return false;
+}
+
+export function ServerPage({ isRecording }: SettingsPageProps) {
+  const [phase, setPhase] = useState<RestartPhase>('idle');
+  const [error, setError] = useState('');
+
+  const restart = async () => {
+    setPhase('restarting');
+    setError('');
+    try {
+      const res = await fetch('/api/restart', { method: 'POST' });
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({}));
+        throw new Error(body.error ?? `Restart failed (${res.status})`);
+      }
+      if (await waitForRestart()) { window.location.reload(); return; }
+      throw new Error('The server did not come back within 90 seconds. See data/launcher.log.');
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Restart failed');
+      setPhase('failed');
+    }
+  };
+
+  return (
+    <div className="space-y-6">
+      <PageHeader pageId="server" />
+      <SettingItem id="server-restart" layout="row">
+        {phase === 'confirm' ? (
+          <div className="flex gap-2">
+            <Button variant="destructive" size="sm" onClick={restart} data-testid="button-restart-confirm">Restart now</Button>
+            <Button variant="outline" size="sm" onClick={() => setPhase('idle')}>Cancel</Button>
+          </div>
+        ) : (
+          <Button
+            variant="outline"
+            size="sm"
+            disabled={!!isRecording || phase === 'restarting'}
+            onClick={() => setPhase('confirm')}
+            data-testid="button-restart-server"
+          >
+            {phase === 'restarting' ? 'Restarting…' : 'Restart server'}
+          </Button>
+        )}
+      </SettingItem>
+      {isRecording && <Warning>Stop the recording first — restarting would cut it off.</Warning>}
+      {phase === 'confirm' && <Note>The page reloads when the server is back (a few seconds, up to half a minute after an update). Rows on screen are autosaved; you will be offered Restore.</Note>}
+      {phase === 'restarting' && <Note>Waiting for the server to come back…</Note>}
+      {phase === 'failed' && <Warning>{error}</Warning>}
+    </div>
+  );
+}

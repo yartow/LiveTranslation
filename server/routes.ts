@@ -22,6 +22,7 @@ import { fetchSongLyrics, AllSongsError } from './lib/allsongs';
 import { applyLearnedCorrections } from './lib/asr-corrections';
 import { getInputVolume, setInputVolume, isValidInputVolume } from './lib/mac-input-volume';
 import { isOperatorRequest, isLoopbackAddress } from './lib/loopback';
+import { planRestart, startRestart } from './lib/restart-server';
 import { getGlossaryStatus, reloadGlossary } from './lib/glossary-store';
 import { isSafeGlossaryName } from './lib/glossary-file';
 import { archiveEnabled, getCurrentArchiveDir } from './lib/chunk-transcription';
@@ -476,6 +477,21 @@ export async function registerRoutes(app: Express): Promise<Server> {
       return res.status(400).json({ error: 'volume must be an integer from 0 to 100' });
     }
     res.json(await setInputVolume(volume));
+  });
+
+  // Restart (Settings → Advanced → Server). Operator machine only; see server/lib/restart-server.ts.
+  // Answers first, then hands over to a fresh server and exits so the port is free for it.
+  app.post('/api/restart', rateLimiter, (req, res) => {
+    if (!isOperatorRequest(req.socket.remoteAddress)) {
+      return res.status(403).json({ error: 'Only available from the operator machine' });
+    }
+    const plan = planRestart({ nodeEnv: process.env.NODE_ENV, port: req.socket.localPort ?? 0, cwd: process.cwd() });
+    if (!plan.ok) return res.status(plan.status).json({ error: plan.error });
+    res.json({ ok: true });
+    res.once('finish', () => {
+      startRestart(plan, process.cwd());
+      setTimeout(() => process.exit(0), 150);
+    });
   });
 
   app.post('/api/sermon/glossary/reload', rateLimiter, (req, res) => {

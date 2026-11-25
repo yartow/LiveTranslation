@@ -69,6 +69,7 @@ export const SETTINGS_PAGES: SettingsPage[] = [
   { id: 'live-audio', group: 'live', title: 'Audio & chunking', summary: 'Overlap, silence detection, streaming', scope: 'live', icon: 'SlidersHorizontal' },
   // ── Advanced ──
   { id: 'debug', group: 'advanced', title: 'Debug', summary: 'Live status messages', scope: 'both', icon: 'Bug' },
+  { id: 'server', group: 'advanced', title: 'Server', summary: 'Restart the app to pick up an update', scope: 'both', icon: 'RotateCw' },
 ];
 
 export const SETTINGS_ITEMS: SettingsItem[] = [
@@ -148,6 +149,7 @@ export const SETTINGS_ITEMS: SettingsItem[] = [
   { id: 'show-live-audio', page: 'live-audio', label: 'Live audio controls while recording', description: 'Adds a panel with VU meter, gain slider and normalization wizard during recording.', keywords: ['vu', 'meter', 'level', 'gain', 'wizard', 'panel'] },
 
   // ── Debug ──
+  { id: 'server-restart', page: 'server', label: 'Restart server', description: 'Stops the app\'s server and starts it again (rebuilding first if the code changed), then reloads this page. Use it after an update. Not available while recording or when started with npm run dev.', keywords: ['restart', 'reboot', 'update', 'rebuild', 'server', 'reload', 'stuck'] },
   { id: 'debug-mode', page: 'debug', label: 'Show live status messages', description: 'Displays a real-time log of what the app is doing — recording, sending to Whisper, API key errors, etc.', keywords: ['debug', 'log', 'status', 'diagnostics'] },
 ];
 

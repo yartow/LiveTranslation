@@ -407,6 +407,7 @@ export default function SermonMode() {
         settings={settings}
         onUpdate={handleSettingsUpdate}
         mode="sermon"
+        isRecording={isRecording}
       />
     </div>
   );

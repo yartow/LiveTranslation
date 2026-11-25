@@ -564,6 +564,7 @@ interface AppSettings {
 | GET | `/api/lyrics?url=<AllSongs link>` | Sermon mode "Add lyrics" — one song from AllSongs (+ its English version), loopback-only, see "Song lyrics" |
 | POST | `/api/sermon/transcript-md?session=<id>` | Sermon mode — write the English markdown transcript to `TRANSCRIPT_DIR` (text/plain body, loopback-only, session id `^[A-Za-z0-9_-]{1,64}$`) |
 | POST | `/api/sermon/glossary/add` | Sermon mode — append a term to the glossary CSV and/or the ASR corrections file (loopback-only) |
+| POST | `/api/restart` | Settings → Advanced → Server — the server hands over to a fresh one (detached shell waits for the port to free, then `scripts/launch.sh`, which rebuilds if the source is newer). Loopback-only; 409 unless `NODE_ENV=production` (not under `npm run dev`); the page refuses while recording and reloads when `/api/asr-debug/status` answers again. `server/lib/restart-server.ts` |
 | GET / PUT | `/api/mac/input-volume` | macOS system input volume 0-100 via osascript (loopback-only; `{supported:false}` off macOS or on a device without gain) |
 
 WebSocket: `ws://host/ws/transcribe` — binary PCM16 frames + JSON control messages (`start`, `stop`, `config`). Listener mode: `ws://host/ws/sermon-broadcast` (operator publish + `config`) and `ws://host/ws/sermon-listen` (listener receive, `setLanguage`) — see "Listener mode" and "Listener languages" above.

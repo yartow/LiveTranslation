@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import type { ComponentType } from 'react';
 import {
   AudioLines, BookA, BookOpen, Bug, ChevronLeft, ChevronRight, Cpu, KeyRound, Languages,
-  Mic, Search, SlidersHorizontal, Sparkles, SpellCheck, Timer, Type, Users,
+  Mic, RotateCw, Search, SlidersHorizontal, Sparkles, SpellCheck, Timer, Type, Users,
 } from 'lucide-react';
 import type { LucideIcon } from 'lucide-react';
 import {
@@ -25,7 +25,7 @@ import {
 import type { SettingsMode } from './settings-index';
 import type { SettingsPageProps } from './pages/types';
 import {
-  ApiKeysPage, DebugPage, GlossaryPage, LanguagesPage, MicrophonePage, OllamaPage, SpeechPage,
+  ApiKeysPage, DebugPage, GlossaryPage, LanguagesPage, MicrophonePage, OllamaPage, ServerPage, SpeechPage,
 } from './pages/general';
 import {
   SermonCorrectionPage, SermonDisplayPage, SermonListenersPage, SermonScripturePage, SermonTimingPage,
@@ -41,10 +41,12 @@ interface SettingsDialogProps {
   /** The mode the dialog was opened from — its group is listed first and opened by default. */
   mode: SettingsMode;
   webGpuSupported?: boolean | null;
+  /** The sermon page is recording: a server restart is refused then (it would cut the recording). */
+  isRecording?: boolean;
 }
 
 const ICONS: Record<string, LucideIcon> = {
-  AudioLines, BookA, BookOpen, Bug, Cpu, KeyRound, Languages, Mic, SlidersHorizontal,
+  AudioLines, BookA, BookOpen, Bug, Cpu, KeyRound, Languages, Mic, RotateCw, SlidersHorizontal,
   Sparkles, SpellCheck, Timer, Type, Users,
 };
 
@@ -65,12 +67,13 @@ const PAGES: Record<string, ComponentType<SettingsPageProps>> = {
   'live-improve': LiveImprovePage,
   'live-audio': LiveAudioPage,
   debug: DebugPage,
+  server: ServerPage,
 };
 
 const HIGHLIGHT_CLASSES = ['ring-2', 'ring-primary', 'ring-offset-2', 'ring-offset-background'];
 const HIGHLIGHT_MS = 1800;
 
-export default function SettingsDialog({ isOpen, onClose, settings, onUpdate, mode, webGpuSupported }: SettingsDialogProps) {
+export default function SettingsDialog({ isOpen, onClose, settings, onUpdate, mode, webGpuSupported, isRecording }: SettingsDialogProps) {
   const [query, setQuery] = useState('');
   // null = the root list (phone) / the mode's default page (desktop).
   const [activePageId, setActivePageId] = useState<string | null>(null);
@@ -123,7 +126,7 @@ export default function SettingsDialog({ isOpen, onClose, settings, onUpdate, mo
     setQuery('');
   }
 
-  const pageProps: SettingsPageProps = { settings, onUpdate, isOpen, mode, webGpuSupported };
+  const pageProps: SettingsPageProps = { settings, onUpdate, isOpen, mode, webGpuSupported, isRecording };
 
   return (
     <Dialog open={isOpen} onOpenChange={onClose}>

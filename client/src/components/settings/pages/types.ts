@@ -9,4 +9,6 @@ export interface SettingsPageProps {
   /** The mode the dialog was opened from. */
   mode: SettingsMode;
   webGpuSupported?: boolean | null;
+  /** Recording is running — the Server page refuses to restart then. */
+  isRecording?: boolean;
 }
