@@ -3,6 +3,7 @@
   "version": "1.0.0",
   "type": "module",
   "license": "MIT",
+  "engines": { "node": ">=20" },
   "scripts": {
     "dev": "cross-env NODE_ENV=development node --env-file=.env --import tsx server/index.ts",
     "dev:record": "cross-env ASR_DEBUG_DIR=data/asr-debug NODE_ENV=development node --env-file=.env --import tsx server/index.ts",

@@ -35,13 +35,19 @@ Daarvoor heb je een **OpenAI API-sleutel** nodig (zie hieronder).
 
 | Computer | Spraakherkenning | Vertaling | Nodig |
 |-------------|---------------------|-------------------|---------------------|
-| Mac met Apple-chip | Op de Mac zelf (gratis) of via OpenAI | OpenAI, Anthropic (Claude) of lokaal | Node.js, Python; een API-sleutel voor de vertaling |
-| Mac met Intel-processor | Via OpenAI | OpenAI of Anthropic (Claude) | Node.js; OpenAI-sleutel |
-| Windows-pc | Via OpenAI | OpenAI of Anthropic (Claude) | Node.js; OpenAI-sleutel |
+| Mac met Apple-chip | Op de Mac zelf (gratis) of via OpenAI | OpenAI, Anthropic (Claude) of lokaal (Ollama) | Node.js, ffmpeg, Python (alleen voor spraakherkenning op de Mac zelf); een API-sleutel voor de vertaling |
+| Mac met Intel-processor | Via OpenAI | OpenAI, Anthropic (Claude) of lokaal (Ollama) | Node.js, ffmpeg; OpenAI-sleutel |
+| Windows-pc | Via OpenAI | OpenAI, Anthropic (Claude) of lokaal (Ollama) | Node.js, ffmpeg; OpenAI-sleutel |
+| Linux-pc | Via OpenAI | OpenAI, Anthropic (Claude) of lokaal (Ollama) | Node.js, ffmpeg; OpenAI-sleutel |
 
 Weet je niet welke Mac je hebt? Klik linksboven op het Apple-logo en kies **Over deze Mac**.
 Staat er bij *Chip* "Apple M1" (of M2, M3, ...), dan heb je een Apple-chip. Staat er
 *Processor* met "Intel", dan niet.
+
+> **Waarom alleen Apple-chips?** De gratis spraakherkenning op de computer zelf gebruikt Apples
+> MLX-onderdeel, dat alleen op Macs met een Apple-chip bestaat. Op elke andere computer werkt de
+> app even goed, maar dan doet OpenAI de spraakherkenning. Dat kost ongeveer 35 dollarcent per
+> uur geluid. In deze handleiding staat voor elk type computer een duidelijk aangegeven route.
 
 > **Let op:** een Anthropic-sleutel (voor Claude) alleen is niet genoeg. Claude vertaalt, maar
 > kan geen spraak herkennen. Zonder Mac met Apple-chip heb je dus altijd een OpenAI-sleutel
@@ -92,6 +98,30 @@ Node.js is het programma waarop de app draait.
 2. Download de versie met **LTS** erbij (de aanbevolen versie).
 3. Open het gedownloade bestand en volg de installatie. Je kunt overal de standaardkeuze laten
    staan.
+
+## Stap 1b: ffmpeg installeren
+
+ffmpeg is een klein programma waarmee de app het geluid omzet voordat het herkend wordt. Zonder
+ffmpeg wordt er niets uitgeschreven. Dit doe je op **elk** type computer.
+
+**Mac (zowel Apple-chip als Intel):**
+
+1. Heb je Homebrew nog niet? Installeer het via <https://brew.sh> (één opdracht, die op die
+   pagina staat en die je in de terminal plakt).
+2. Typ in de terminal: `brew install ffmpeg`
+
+**Windows 10 of 11:**
+
+1. Klik op Start, typ `PowerShell` en open het.
+2. Typ: `winget install Gyan.FFmpeg` en druk op Enter. Accepteer de voorwaarden als erom
+   gevraagd wordt.
+3. **Sluit PowerShell en open het opnieuw**, zodat Windows het nieuwe programma vindt.
+
+**Linux:** `sudo apt install ffmpeg` (of het equivalent voor jouw distributie).
+
+Controleren kan met `ffmpeg -version` in een nieuwe terminal. Een paar regels tekst met een
+versienummer betekenen dat het gelukt is; *"niet herkend"* of *"command not found"* betekent
+dat het niet gelukt is.
 
 ## Stap 2: De app downloaden
 
@@ -165,7 +195,8 @@ van het bestand zoals het is. Sla op en sluit het bestand.
 
 ## Stap 6 (alleen Mac met Apple-chip): spraakherkenning op de Mac zelf
 
-Deze stap is optioneel. Sla hem over als je OpenAI voor de spraakherkenning gebruikt.
+Deze stap is optioneel. Sla hem over als je OpenAI voor de spraakherkenning gebruikt, en altijd
+op een Mac met Intel-processor, een Windows-pc of Linux: daar kan hij niet werken.
 
 Voor spraakherkenning op de Mac zelf heb je Python nodig, met daarin het onderdeel
 `mlx-whisper`. Typ in de terminal, regel voor regel:
@@ -194,6 +225,46 @@ niet pas in de kerk.
 
 De vertaling gaat ook bij deze manier via internet, met je OpenAI- of Anthropic-sleutel.
 
+## Stap 7 (optioneel, elke computer): gratis vertalen met Ollama
+
+Standaard vertaalt de app via OpenAI of Anthropic. Dat kost een paar dollarcent per uur. Wil je
+dat de vertaling gratis is en op je eigen computer blijft, installeer dan **Ollama**. Dat
+bestaat voor Windows, Mac en Linux.
+
+1. Download Ollama van <https://ollama.com> en installeer het.
+2. Typ in een terminal: `ollama pull qwen2.5:14b` (een grote download van enkele gigabytes).
+   Heb je een computer zonder krachtige videokaart of veel geheugen, neem dan een kleiner model
+   zoals `qwen2.5:7b`: sneller, maar minder nauwkeurig.
+3. Kies in de instellingen van de app **Ollama (local)** als vertaalprovider, met adres
+   `http://localhost:11434` en de naam van het model dat je hebt gedownload.
+
+De spraakherkenning heeft nog steeds een OpenAI-sleutel nodig, tenzij je een Apple-chip hebt
+(stap 6).
+
+## Stap 8 (optioneel, elke computer): Bijbelteksten en een woordenlijst
+
+De app kan de exacte Engelse Bijbeltekst tonen als de predikant een vers voorleest, en een lijst
+vaste vertalingen voor kerkelijke woorden volgen (een *woordenlijst*). Beide zitten er niet bij:
+Bijbelvertalingen hebben een auteursrecht en elke gemeente heeft een eigen lijst. De app werkt
+ook zonder. Wil je ze wel:
+
+- **Bijbelteksten:** daarvoor heb je het programma *git* nodig (<https://git-scm.com>). Ga in
+  een terminal naar je map **Documenten** (maak daarin een map `GitHub` en ga ernaartoe) en typ deze drie regels (de laatste is optioneel en
+  voegt ESV-, HSV-, Hindi-, Tamil- en Chinese teksten toe; controleer of je die mag gebruiken):
+
+  ```
+  git clone https://github.com/seven1m/open-bibles.git
+  git clone https://github.com/farskipper/kjv.git
+  git clone https://github.com/Beblia/Holy-Bible-XML-Format.git
+  ```
+
+  Ga daarna naar de map van de app (stap 3) en typ `npx tsx scripts/build-bible-data.ts`.
+  De mappen moeten in **Documenten/GitHub** staan, of je moet het script vertellen waar ze staan;
+  de README legt uit hoe. Kies de Bijbelversie onder **Sermon mode > Scripture quotes**.
+- **Woordenlijst:** een tabel met de kolommen `Nederlands`, `Engels`, `Categorie` en `Notitie`.
+  Kopieer het voorbeeld `docs/examples/glossary-sample.csv` naar de map `data`, vul het aan en
+  kies het onder **General > Glossary**.
+
 # De app starten en stoppen
 
 Dit doe je elke keer dat je de app wilt gebruiken.
@@ -210,6 +281,12 @@ Dit doe je elke keer dat je de app wilt gebruiken.
 
 Laat het terminalvenster open zolang je de app gebruikt: dat venster *is* de app. Het
 browservenster mag je gerust sluiten en opnieuw openen.
+
+**Alleen Mac: met één klik starten.** Typ in de terminal, in de map van de app,
+`scripts/install-launcher.sh`. Daarmee komt er een app met de naam **CTT.AY** in de map
+*Programma's* van je gebruikersaccount. Sleep hem naar het Dock; een klik start de app (de
+eerste keer maakt hij de app een minuut lang klaar) en opent de pagina. Op Windows en Linux
+bestaat zo'n knop niet: gebruik daar `npm run dev` zoals hierboven.
 
 **Stoppen:** klik in het terminalvenster en druk op **Ctrl+C** (ook op de Mac: de Control-toets,
 niet Cmd). Daarna kun je het venster sluiten.
@@ -292,6 +369,16 @@ Met de knop **Sending to listeners** zet je het doorsturen even stil (de knop to
 *Listeners paused*). Zet je het weer aan, dan krijgen de telefoons alles wat je intussen
 schreef in één keer.
 
+## Hindi, Tamil en Chinees op de telefoons
+
+Naast Engels kunnen telefoons de preek ook in het Hindi, Tamil of Chinees (vereenvoudigd of
+traditioneel) tonen. Zet een taal aan onder **Sermon mode > Listeners** in de instellingen; op
+de telefoons verschijnt dan een taalmenu. Deze talen worden vertaald vanuit je afgewerkte
+Engelse tekst, met de OpenAI- of Anthropic-sleutel uit het `.env`-bestand (niet de sleutel die
+je in de browser typt). Een Bijbelvers dat letterlijk wordt voorgelezen, verschijnt uit de
+Bijbel van die taal als je stap 8 hebt gedaan. De teksten in de telefoonschermen voor deze
+talen zijn door een AI geschreven en nog niet door moedertaalsprekers gecontroleerd.
+
 **Werkt het niet in de kerk?** Gastwifi van kerken laat apparaten vaak niet met elkaar
 praten. Daar kan de app niets aan doen. Test het daarom vooraf op de wifi van de kerk. Werkt
 het niet, maak dan met je telefoon of computer een eigen hotspot en laat de luisteraars
@@ -334,6 +421,19 @@ Zitten ze op hetzelfde wifi-netwerk? Heb je de vraag over netwerkverbindingen to
 (zie *De app starten en stoppen*)? Staat de knop op *Sending to listeners*? Lees ook het stuk
 over gastwifi hierboven.
 
+**Er wordt niets uitgeschreven en de terminal noemt ffmpeg.**
+ffmpeg ontbreekt of wordt niet gevonden. Doe stap 1b, sluit de terminal, open hem opnieuw en
+start de app opnieuw.
+
 **Je wilt een nieuwere versie van de app.**
 Download de ZIP opnieuw (installatie stap 2), zet je `.env`-bestand over naar de nieuwe map
 en doe stap 4 (`npm install`) opnieuw.
+
+# Licentie en delen
+
+CTT.AY is gratis opensourcesoftware onder de **MIT-licentie**: iedereen mag het gratis
+gebruiken, kopiëren, aanpassen en delen, ook voor de eigen gemeente. De licentietekst staat in
+het bestand `LICENSE`. Wijzigingen en verbeteringen zijn welkom als *pull request* op
+<https://github.com/yartow/LiveTranslation>. De Bijbelteksten en woordenlijsten die je zelf
+toevoegt, horen niet bij de app en houden hun eigen voorwaarden. De software wordt geleverd
+zonder enige garantie.
