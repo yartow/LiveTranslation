@@ -11,3 +11,4 @@ attached_assets/Logo.png
 # ASR training/eval material, local only
 /tests/fixtures/audio/
 /tests/fixtures/reference/*.draft.txt
+/tests/fixtures/reference/
