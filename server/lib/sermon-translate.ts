@@ -84,6 +84,8 @@ export interface TranslateOptions {
   esvApiKey?: string;
   /** What to do for a verbatim reading when the ESV API doesn't return text (no key, request failed) — 'kjv' (default) substitutes the bundled public-domain KJV instead; 'none' skips substitution entirely (falls through to a normal model translation) rather than ever surfacing KJV wording. */
   scriptureFallback?: 'kjv' | 'none';
+  /** Claude only: cap on the reply's tokens, for callers whose output is much longer than the request (listener-translate-provider.ts). Default scales with the request, see claudeMaxTokens. */
+  maxOutputTokens?: number;
   signal?: AbortSignal;
 }
 
@@ -373,8 +375,13 @@ function classifyError(error: unknown): string {
   return 'Translation failed';
 }
 
+/** One model call through the provider chosen in `opts`; resolves the `translation` string of the model's JSON reply ('' when unusable). Also used by listener-translate-provider.ts. */
+export async function callSermonModel(systemPrompt: string, userMessage: string, opts: TranslateOptions, signal: AbortSignal): Promise<string> {
+  return callModelDefault(systemPrompt, userMessage, opts, signal);
+}
+
 async function callModelDefault(systemPrompt: string, userMessage: string, opts: TranslateOptions, signal: AbortSignal): Promise<string> {
-  if (opts.translationProvider === 'claude') return callClaudeCached(systemPrompt, userMessage, opts.anthropicApiKey || '', signal);
+  if (opts.translationProvider === 'claude') return callClaudeCached(systemPrompt, userMessage, opts.anthropicApiKey || '', signal, opts.maxOutputTokens);
   if (opts.translationProvider === 'ollama') return callOllama(systemPrompt, userMessage, opts, signal);
   return callOpenAI(systemPrompt, userMessage, opts, signal);
 }
@@ -424,10 +431,10 @@ async function callOllama(systemPrompt: string, userMessage: string, opts: Trans
 // Claude prompt caching needs `system` as a block array with cache_control,
 // which callClaude() in anthropic.ts (plain string `system`) does not send —
 // so this builds its own body and shares only the transport.
-async function callClaudeCached(systemPrompt: string, userMessage: string, apiKey: string, signal: AbortSignal): Promise<string> {
+async function callClaudeCached(systemPrompt: string, userMessage: string, apiKey: string, signal: AbortSignal, maxTokens?: number): Promise<string> {
   const raw = await postAnthropicMessage(
     {
-      max_tokens: claudeMaxTokens(userMessage.length),
+      max_tokens: maxTokens ?? claudeMaxTokens(userMessage.length),
       system: [{ type: 'text', text: systemPrompt, cache_control: { type: 'ephemeral' } }],
       messages: [{ role: 'user', content: userMessage }],
     },

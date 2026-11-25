@@ -59,15 +59,17 @@ export const SETTINGS_PAGES: SettingsPage[] = [
   // ── Sermon mode ──
   { id: 'sermon-correction', group: 'sermon', title: 'Transcript correction', summary: 'Clean-up of each transcribed chunk', scope: 'sermon', icon: 'SpellCheck' },
   { id: 'sermon-translation', group: 'sermon', title: 'Translation', summary: 'Provider, model and context', scope: 'sermon', icon: 'Languages' },
+  { id: 'sermon-display', group: 'sermon', title: 'Display', summary: 'Size of the Dutch and English text', scope: 'sermon', icon: 'Type' },
   { id: 'sermon-timing', group: 'sermon', title: 'Timing', summary: 'Block length and stability', scope: 'sermon', icon: 'Timer' },
   { id: 'sermon-scripture', group: 'sermon', title: 'Scripture quotes', summary: 'Exact Bible text for read verses', scope: 'sermon', icon: 'BookOpen' },
-  { id: 'sermon-listeners', group: 'sermon', title: 'Listeners', summary: 'Address for phones on the same Wi-Fi', scope: 'sermon', icon: 'Users' },
+  { id: 'sermon-listeners', group: 'sermon', title: 'Listeners', summary: 'Address and languages for phones on the same Wi-Fi', scope: 'sermon', icon: 'Users' },
   // ── Live mode ──
   { id: 'live-translation', group: 'live', title: 'Translation', summary: 'Provider for live subtitles', scope: 'live', icon: 'Languages' },
   { id: 'live-improve', group: 'live', title: 'Improve button', summary: 'Re-process recent text with an LLM', scope: 'live', icon: 'Sparkles' },
   { id: 'live-audio', group: 'live', title: 'Audio & chunking', summary: 'Overlap, silence detection, streaming', scope: 'live', icon: 'SlidersHorizontal' },
   // ── Advanced ──
   { id: 'debug', group: 'advanced', title: 'Debug', summary: 'Live status messages', scope: 'both', icon: 'Bug' },
+  { id: 'server', group: 'advanced', title: 'Server', summary: 'Restart the app to pick up an update', scope: 'both', icon: 'RotateCw' },
 ];
 
 export const SETTINGS_ITEMS: SettingsItem[] = [
@@ -114,6 +116,9 @@ export const SETTINGS_ITEMS: SettingsItem[] = [
   { id: 'sermon-back-translation-threshold', page: 'sermon-translation', label: 'Back-translation sensitivity', description: 'A line is flagged when its back-translation matches the Dutch less than this (0.05–0.6). Higher flags more lines. The score of every checked line is logged in translations.jsonl (dev:record) to help choose a value.', keywords: ['threshold', 'sensitivity', 'fidelity', 'similarity', 'flag'] },
   { id: 'sermon-context', page: 'sermon-translation', label: 'Context sentences', description: 'How many neighbouring segments are sent along as context: before (0–5) and after (0–3).', keywords: ['context', 'before', 'after', 'neighbours', 'surrounding'] },
 
+  // ── Sermon: display ──
+  { id: 'sermon-text-size', page: 'sermon-display', label: 'Text size', description: 'Size of the Dutch and English text in the rows only (12–120 px); the toolbar and everything else keep their size. Also A− / A+ in the toolbar and Ctrl+= / Ctrl+-.', keywords: ['font', 'size', 'bigger', 'larger', 'zoom', 'text', 'letter', 'tekst', 'grootte', 'lettergrootte'] },
+
   // ── Sermon: timing ──
   { id: 'sermon-max-latency', page: 'sermon-timing', label: 'Block length', description: 'How long a block of speech runs before it is finalized as one segment and translated. Transcribed text already shows (and can be edited) as soon as it arrives; longer blocks read more smoothly, shorter ones are translated sooner. Applies to a running session.', keywords: ['latency', 'delay', 'bracket', 'segment', 'seconds', 'vertraging'] },
   { id: 'sermon-stability', page: 'sermon-timing', label: 'Stability delay', description: 'How long a segment must stay unchanged before it is auto-translated.', keywords: ['debounce', 'stable', 'wait', 'delay', 'stabiliteit'] },
@@ -125,6 +130,10 @@ export const SETTINGS_ITEMS: SettingsItem[] = [
 
   // ── Sermon: listeners ──
   { id: 'listener-address', page: 'sermon-listeners', label: 'Listener address', description: 'Give this address to listeners on the same Wi-Fi so they can follow the English translation on their phone. Look it up again after joining a different network.', keywords: ['ip', 'lan', 'wifi', 'phone', 'listen', 'url', 'address', 'luisteraars', 'network'] },
+  { id: 'listener-lang-hi', page: 'sermon-listeners', label: 'Hindi for listeners (हिन्दी)', description: 'Lets listeners pick Hindi on their phone. Translated from the finished English, only while someone is reading it; a few cents per service.', keywords: ['hindi', 'हिन्दी', 'hi', 'language', 'indian', 'translate', 'listeners', 'phone', 'taal'] },
+  { id: 'listener-lang-ta', page: 'sermon-listeners', label: 'Tamil for listeners (தமிழ்)', description: 'Lets listeners pick Tamil on their phone. Translated from the finished English, only while someone is reading it; a few cents per service. Tamil is the language models are weakest in: have a Tamil reader check a sample before relying on it.', keywords: ['tamil', 'தமிழ்', 'ta', 'language', 'indian', 'translate', 'listeners', 'phone', 'taal'] },
+  { id: 'listener-lang-zh', page: 'sermon-listeners', label: 'Simplified Chinese for listeners (简体中文)', description: 'Lets listeners pick Simplified Chinese on their phone. Translated from the finished English, only while someone is reading it; a few cents per service.', keywords: ['chinese', 'simplified', '简体中文', 'mandarin', 'zh', 'language', 'translate', 'listeners', 'phone', 'chinees'] },
+  { id: 'listener-lang-zh-TW', page: 'sermon-listeners', label: 'Traditional Chinese for listeners (繁體中文)', description: 'Lets listeners pick Traditional Chinese on their phone. Translated from the finished English, only while someone is reading it; a few cents per service.', keywords: ['chinese', 'traditional', '繁體中文', 'mandarin', 'taiwan', 'hong kong', 'zh-tw', 'language', 'translate', 'listeners', 'phone', 'chinees'] },
 
   // ── Live: translation ──
   { id: 'live-translation-provider', page: 'live-translation', label: 'Translation provider', description: 'Corrects and translates each live chunk. "None" shows the raw transcription only. This does not affect Sermon mode.', keywords: ['translate', 'correction', 'openai', 'claude', 'ollama', 'none', 'provider', 'subtitle'] },
@@ -140,6 +149,7 @@ export const SETTINGS_ITEMS: SettingsItem[] = [
   { id: 'show-live-audio', page: 'live-audio', label: 'Live audio controls while recording', description: 'Adds a panel with VU meter, gain slider and normalization wizard during recording.', keywords: ['vu', 'meter', 'level', 'gain', 'wizard', 'panel'] },
 
   // ── Debug ──
+  { id: 'server-restart', page: 'server', label: 'Restart server', description: 'Stops the app\'s server and starts it again (rebuilding first if the code changed), then reloads this page. Use it after an update. Not available while recording or when started with npm run dev.', keywords: ['restart', 'reboot', 'update', 'rebuild', 'server', 'reload', 'stuck'] },
   { id: 'debug-mode', page: 'debug', label: 'Show live status messages', description: 'Displays a real-time log of what the app is doing — recording, sending to Whisper, API key errors, etc.', keywords: ['debug', 'log', 'status', 'diagnostics'] },
 ];
 

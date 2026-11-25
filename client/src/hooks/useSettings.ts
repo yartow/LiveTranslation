@@ -1,6 +1,8 @@
 import { useState, useCallback } from 'react';
 import { EMPTY_SERVICE_CONTEXT, type ServiceContext } from '@/lib/sermon/service-context';
 import { sanitizeSettings } from '@/lib/settings-validate';
+import { TEXT_SIZE_DEFAULT, type CollapsedColumn } from '@/lib/sermon/layout';
+import { DEFAULT_LISTENER_LANGUAGES, type ListenerLanguageSettings } from '@/lib/listener-languages';
 
 export type TranscriptionProvider = 'whisper' | 'browser' | 'transformers' | 'mlx';
 export type TranslationProvider = 'openai' | 'claude' | 'ollama' | 'none';
@@ -68,6 +70,10 @@ export interface AppSettings {
   activeDeviceProfileId: string | null;
   // sermon mode — see client/src/pages/SermonMode.tsx
   sermonMaxLatencySecs: number;
+  // Size (px) of the Dutch + English cell text only — see lib/sermon/layout.ts
+  sermonTextSize: number;
+  // Which sermon column is hidden (Ctrl+1 / Ctrl+2) — at most one
+  sermonCollapsedColumn: CollapsedColumn;
   sermonStabilityMs: number;
   sermonContextBefore: number;
   sermonContextAfter: number;
@@ -96,6 +102,10 @@ export interface AppSettings {
   // sermon mode — "Today's service" (title, passages, names/terms, notes). sessionStorage, not localStorage:
   // it is about THIS service, and must not silently bias next week's.
   sermonServiceContext: ServiceContext;
+  // sermon mode — listener mode (see server/lib/listener-translate.ts, CLAUDE.md "Listener mode"): which extra
+  // languages phones can pick (English is always on), and how each is translated. Translation runs on the
+  // server with the keys in .env.
+  listenerLanguages: ListenerLanguageSettings;
 }
 
 const PREFS_KEY = 'cttay_prefs';
@@ -134,6 +144,8 @@ export const defaultSettings: AppSettings = {
   // an existing localStorage profile keeps its stored value across this
   // change (the useSettings migration below only clamps, never bumps it).
   sermonMaxLatencySecs: 10,
+  sermonTextSize: TEXT_SIZE_DEFAULT,
+  sermonCollapsedColumn: 'none',
   sermonStabilityMs: 1200,
   sermonContextBefore: 2,
   sermonContextAfter: 1,
@@ -154,6 +166,7 @@ export const defaultSettings: AppSettings = {
   esvApiKey: '',
   sermonScriptureFallback: 'kjv',
   sermonServiceContext: EMPTY_SERVICE_CONTEXT,
+  listenerLanguages: DEFAULT_LISTENER_LANGUAGES,
 };
 
 function loadSettings(): AppSettings {
@@ -210,6 +223,8 @@ export function useSettings() {
           deviceProfiles: next.deviceProfiles,
           activeDeviceProfileId: next.activeDeviceProfileId,
           sermonMaxLatencySecs: next.sermonMaxLatencySecs,
+          sermonTextSize: next.sermonTextSize,
+          sermonCollapsedColumn: next.sermonCollapsedColumn,
           sermonStabilityMs: next.sermonStabilityMs,
           sermonContextBefore: next.sermonContextBefore,
           sermonContextAfter: next.sermonContextAfter,
@@ -228,6 +243,7 @@ export function useSettings() {
           sermonGlossaryWarnings: next.sermonGlossaryWarnings,
           sermonScriptureEnabled: next.sermonScriptureEnabled,
           sermonScriptureFallback: next.sermonScriptureFallback,
+          listenerLanguages: next.listenerLanguages,
         }));
       } catch {}
 

@@ -21,16 +21,22 @@ function Row({ label, value }: { label: string; value: string }) {
 }
 
 // Polls the stats once a second (the oldest waiting chunk ages without any event to react to).
-// Only this small component re-renders.
-export default function PipelineHealth({ stats }: { stats: PipelineStats }) {
+// Only this small component re-renders. The poll runs only while recording, while the popover is
+// open, or while chunks are still waiting (the drain after Stop) — an idle page has no timer.
+export default function PipelineHealth({ stats, active }: { stats: PipelineStats; active: boolean }) {
   const [snap, setSnap] = useState<PipelineSnapshot>(() => stats.snapshot(Date.now()));
+  const [open, setOpen] = useState(false);
+  const draining = snap.backlog > 0;
+  const polling = active || open || draining;
   useEffect(() => {
+    setSnap(stats.snapshot(Date.now())); // also the final snapshot when polling stops, and a fresh one on open
+    if (!polling) return;
     const timer = setInterval(() => setSnap(stats.snapshot(Date.now())), 1000);
     return () => clearInterval(timer);
-  }, [stats]);
+  }, [stats, polling]);
 
   return (
-    <Popover>
+    <Popover open={open} onOpenChange={setOpen}>
       <PopoverTrigger asChild>
         <button
           type="button"

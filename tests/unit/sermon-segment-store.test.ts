@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import {
   initState, segmentReducer, selectDirtyIds, selectTranslatable, selectOrdered, selectContext, canWriteLive, READING_GRACE_SEGMENTS,
-  selectPublishableLines, selectNextId, restoredState, mergeRestored, selectCorrectionExamples,
+  selectPublishableLines, selectNextId, restoredState, mergeRestored, selectCorrectionExamples, hasTranslatableWork,
   type SegmentStoreState,
 } from '../../client/src/lib/sermon/segment-store.js';
 import { hashText } from '../../client/src/lib/sermon/segment-model.js';
@@ -566,7 +566,8 @@ describe('selectPublishableLines', () => {
 
     const lines = selectPublishableLines(state);
     expect(lines).toEqual([
-      { id: scriptureId, index: 0, text: 'For God so loved the world...', manual: false },
+      // a verbatim reading also carries its English reference (the hint for the extra-language phones)
+      { id: scriptureId, index: 0, text: 'For God so loved the world...', manual: false, scripture: 'John 3:16' },
       { id: manualId, index: 1, text: 'By hand.', manual: true },
     ]);
   });
@@ -859,5 +860,28 @@ describe('mergeRestored (restore after recording already started)', () => {
     const merged = mergeRestored(restored, current);
     expect(merged.ids).toEqual([id]);
     expect(merged.byId[id].sourceText).toBe('Huidig.');
+  });
+});
+
+describe('hasTranslatableWork — the auto-translate tick only runs while there is something to do', () => {
+  it('is false for an empty grid and for a fully translated one', () => {
+    expect(hasTranslatableWork(initState('t'))).toBe(false);
+    expect(hasTranslatableWork(seedTranslated(5))).toBe(false);
+  });
+
+  it('turns true when a row is typed or arrives, and false again once it is translated', () => {
+    let state = seedTranslated(2);
+    state = segmentReducer(state, { type: 'APPEND_SEGMENT', sourceText: 'Nieuwe zin.', startTime: 9, endTime: 10, now: 5000 });
+    expect(hasTranslatableWork(state)).toBe(true);
+    const id = state.ids[state.ids.length - 1];
+    state = segmentReducer(state, { type: 'MARK_TRANSLATING', ids: [id] });
+    state = segmentReducer(state, { type: 'APPLY_TRANSLATION', id, translation: 'New sentence.', requestHash: hashText('Nieuwe zin.') });
+    expect(hasTranslatableWork(state)).toBe(false);
+  });
+
+  it('ignores a blank row (nothing to send) and a hand-written row', () => {
+    let state = initState('t');
+    state = segmentReducer(state, { type: 'APPEND_SEGMENT', sourceText: '', startTime: 0, endTime: 0, now: 1 });
+    expect(hasTranslatableWork(state)).toBe(false);
   });
 });

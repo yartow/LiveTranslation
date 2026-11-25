@@ -81,7 +81,7 @@ describe('parseGlossaryCsv', () => {
 describe('parseGlossaryCsv edge cases', () => {
   it('returns empty result for empty input', () => {
     const result = parseGlossaryCsv('');
-    expect(result).toEqual({ fixed: [], context: [], totalRows: 0, repairedRows: 0, droppedRows: 0, warnings: [] });
+    expect(result).toEqual({ fixed: [], fixedAll: [], context: [], totalRows: 0, repairedRows: 0, droppedRows: 0, warnings: [], languageColumns: [], languageCounts: {} });
   });
 
   it('warns but does not throw on an unexpected header', () => {

@@ -11,6 +11,10 @@
 import { useEffect, useRef, useState } from 'react';
 import { selectPublishableLines, type SegmentStoreState } from '@/lib/sermon/segment-store';
 import { sameWords } from '@/lib/sermon/markdown';
+import type { buildListenerConfig } from '@/lib/listener-languages';
+
+/** The `config` message the hub wants (which extra languages phones may pick, and how each is translated). */
+export type ListenerConfigMessage = ReturnType<typeof buildListenerConfig>;
 
 export interface PublishedEntry {
   text: string;
@@ -18,6 +22,8 @@ export interface PublishedEntry {
   index?: number;
   /** The last published version was the operator's own typing. */
   manual: boolean;
+  /** The verbatim-reading hint last sent with this line (see PublishableLine.scripture). */
+  scripture?: string;
   /** Sticky once true — a line that has ever changed stays "edited" (renders italic on the phone) even across a reconnect. */
   edited: boolean;
 }
@@ -48,7 +54,7 @@ export function computeBatch(
   for (const line of selectPublishableLines(state)) {
     const prev = published.get(line.id);
     if (!prev) {
-      published.set(line.id, { text: line.text, index: line.index, manual: line.manual, edited: false });
+      published.set(line.id, { text: line.text, index: line.index, manual: line.manual, edited: false, scripture: line.scripture });
       batch.push({ id: line.id, index: line.index, text: line.text, edited: false });
     } else if (prev.text !== line.text) {
       // Typing a translation from scratch sends a stream of changing texts; only a
@@ -60,14 +66,51 @@ export function computeBatch(
       const formattingOnly = sameWords(prev.text, line.text);
       const stillDrafting = prev.manual && line.manual;
       const edited = prev.edited || (!stillDrafting && !formattingOnly);
-      published.set(line.id, { text: line.text, index: line.index, manual: formattingOnly ? prev.manual : line.manual, edited });
+      published.set(line.id, { text: line.text, index: line.index, manual: formattingOnly ? prev.manual : line.manual, edited, scripture: line.scripture });
       batch.push({ id: line.id, index: line.index, text: line.text, edited });
-    } else if (force || prev.index !== line.index) {
-      published.set(line.id, { ...prev, index: line.index });
+    } else if (force || prev.index !== line.index || prev.scripture !== line.scripture) {
+      // (A changed scripture hint with the same words — an edited verse reverted, or the row dismissed as
+      // "not scripture" — is re-sent so the hub re-decides how the extra-language phones see it.)
+      published.set(line.id, { ...prev, index: line.index, scripture: line.scripture });
       batch.push({ id: line.id, index: line.index, text: line.text, edited: prev.edited });
     }
   }
   return batch;
+}
+
+/**
+ * Ids in `batch` that the operator typed by hand (manualOverride). The hub debounces translating those into
+ * the other listener languages until the typing stops; a finished machine line is translated at once. A
+ * hint that rides on the `publish` message only — it is never part of a line and never reaches a phone.
+ */
+export function draftingIds(batch: ReadonlyArray<{ id: string }>, state: SegmentStoreState): string[] {
+  if (batch.length === 0) return [];
+  const manual = new Set<string>();
+  for (const line of selectPublishableLines(state)) if (line.manual) manual.add(line.id);
+  return batch.filter(b => manual.has(b.id)).map(b => b.id);
+}
+
+/**
+ * {lineId: "John 3:16-18"} for the lines in `batch` that are still a verbatim Bible reading. Rides on the
+ * `publish`/`sync` message beside the lines (a line left out loses its hint at the hub); never part of a line.
+ */
+export function scriptureHints(batch: ReadonlyArray<{ id: string }>, state: SegmentStoreState): Record<string, string> {
+  const hints: Record<string, string> = {};
+  if (batch.length === 0) return hints;
+  const byId = new Map<string, string>();
+  for (const line of selectPublishableLines(state)) if (line.scripture) byId.set(line.id, line.scripture);
+  for (const { id } of batch) { const ref = byId.get(id); if (ref) hints[id] = ref; }
+  return hints;
+}
+
+const withHints = (hints: Record<string, string>) => (Object.keys(hints).length > 0 ? { scriptures: hints } : {});
+
+export interface ListenerBroadcastInfo {
+  listenerCount: number;
+  /** Phones per language ({en, hi, ta, zh, 'zh-TW'}), as the hub counts them. */
+  listenersByLang: Record<string, number>;
+  /** Languages whose translation is failing right now -> short reason (e.g. "API key missing or invalid"). */
+  translationErrors: Record<string, string>;
 }
 
 /**
@@ -76,8 +119,18 @@ export function computeBatch(
  * on sends everything translated or typed in the meantime in one go. It is
  * independent of recording: stopping the microphone never stops the broadcast.
  */
-export function useListenerBroadcast(stateRef: React.MutableRefObject<SegmentStoreState>, state: SegmentStoreState, enabled: boolean = true): { listenerCount: number } {
+export function useListenerBroadcast(
+  stateRef: React.MutableRefObject<SegmentStoreState>,
+  state: SegmentStoreState,
+  enabled: boolean = true,
+  config?: ListenerConfigMessage,
+): ListenerBroadcastInfo {
   const [listenerCount, setListenerCount] = useState(0);
+  const [listenersByLang, setListenersByLang] = useState<Record<string, number>>({});
+  const [translationErrors, setTranslationErrors] = useState<Record<string, string>>({});
+  const configJson = config ? JSON.stringify(config) : '';
+  const configJsonRef = useRef(configJson);
+  configJsonRef.current = configJson;
   const enabledRef = useRef(enabled);
   enabledRef.current = enabled;
   // Set when the socket (re)connected while paused: the full resync (see onopen) is owed until sending resumes.
@@ -101,6 +154,8 @@ export function useListenerBroadcast(stateRef: React.MutableRefObject<SegmentSto
 
       ws.onopen = () => {
         reconnectAttemptsRef.current = 0;
+        // Languages first, so the hub knows what to translate before the backlog arrives.
+        if (configJsonRef.current) ws.send(configJsonRef.current);
         // Full resync — see computeBatch's `force` doc comment. A 'sync'
         // REPLACES the hub's backlog (even with an empty batch): after a page
         // reload this operator has a fresh session, and merging it into the
@@ -108,12 +163,22 @@ export function useListenerBroadcast(stateRef: React.MutableRefObject<SegmentSto
         if (!enabledRef.current) { needsSyncRef.current = true; return; }
         needsSyncRef.current = false;
         const batch = computeBatch(stateRef.current, publishedRef.current, true);
-        ws.send(JSON.stringify({ type: 'sync', lines: batch }));
+        ws.send(JSON.stringify({ type: 'sync', lines: batch, ...withHints(scriptureHints(batch, stateRef.current)) }));
       };
       ws.onmessage = (evt) => {
         try {
           const msg = JSON.parse(typeof evt.data === 'string' ? evt.data : '');
-          if (msg?.type === 'listenerCount' && typeof msg.count === 'number') setListenerCount(msg.count);
+          if (msg?.type === 'listenerCount' && typeof msg.count === 'number') {
+            setListenerCount(msg.count);
+            if (msg.byLang && typeof msg.byLang === 'object') setListenersByLang(msg.byLang);
+          } else if (msg?.type === 'translationStatus' && typeof msg.lang === 'string') {
+            setTranslationErrors(prev => {
+              const next = { ...prev };
+              if (msg.ok) delete next[msg.lang];
+              else next[msg.lang] = typeof msg.error === 'string' ? msg.error : 'Translation failed';
+              return next;
+            });
+          }
         } catch {
           // Ignore malformed messages — the hub never sends anything else on
           // this channel, but a stray/future message type must not crash it.
@@ -122,6 +187,7 @@ export function useListenerBroadcast(stateRef: React.MutableRefObject<SegmentSto
       ws.onerror = () => {};
       ws.onclose = () => {
         setListenerCount(0);
+        setListenersByLang({});
         if (closedRef.current) return;
         const delay = backoffDelay(reconnectAttemptsRef.current);
         reconnectAttemptsRef.current++;
@@ -139,6 +205,17 @@ export function useListenerBroadcast(stateRef: React.MutableRefObject<SegmentSto
     // stateRef is a stable ref object; this effect owns the socket's whole lifetime.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  // The operator changed which languages are offered (or how they are translated): tell the hub right away.
+  // Debounced: typing a model name in Settings must not re-send (and re-translate) for every keystroke.
+  useEffect(() => {
+    if (!configJson) return;
+    const timer = setTimeout(() => {
+      const ws = wsRef.current;
+      if (ws && ws.readyState === WebSocket.OPEN) ws.send(configJson);
+    }, 800);
+    return () => clearTimeout(timer);
+  }, [configJson]);
 
   // Live diff-publish on every store change.
   useEffect(() => {
@@ -159,12 +236,16 @@ export function useListenerBroadcast(stateRef: React.MutableRefObject<SegmentSto
     if (!ws || ws.readyState !== WebSocket.OPEN) return;
     if (needsSyncRef.current) {
       needsSyncRef.current = false;
-      ws.send(JSON.stringify({ type: 'sync', lines: computeBatch(state, publishedRef.current, true) }));
+      const all = computeBatch(state, publishedRef.current, true);
+      ws.send(JSON.stringify({ type: 'sync', lines: all, ...withHints(scriptureHints(all, state)) }));
       return;
     }
     const batch = computeBatch(state, publishedRef.current, false);
-    if (batch.length > 0) ws.send(JSON.stringify({ type: 'publish', lines: batch }));
+    if (batch.length > 0) {
+      const drafting = draftingIds(batch, state);
+      ws.send(JSON.stringify({ type: 'publish', lines: batch, ...(drafting.length > 0 ? { drafting } : {}), ...withHints(scriptureHints(batch, state)) }));
+    }
   }, [state, enabled]);
 
-  return { listenerCount };
+  return { listenerCount, listenersByLang, translationErrors };
 }

@@ -19,6 +19,7 @@ import { RecordingStoppedError } from '@/lib/chunk-based-transcription';
 import { useTranslationQueue } from '@/hooks/useTranslationQueue';
 import { useSermonIngest } from '@/hooks/useSermonIngest';
 import { useListenerBroadcast } from '@/hooks/useListenerBroadcast';
+import { buildListenerConfig, LISTENER_LANGUAGE_INFO, type ListenerLang } from '@/lib/listener-languages';
 import { useMicDevices } from '@/hooks/useMicDevices';
 import { useEditArchive, useTranscriptSnapshots } from '@/hooks/useSessionArchive';
 import { useSegmentStore } from '@/hooks/useSegmentStore';
@@ -26,6 +27,9 @@ import { useSermonRuntimeConfig } from '@/hooks/useSermonRuntimeConfig';
 import { useMicFailover, type IngestControls } from '@/hooks/useMicFailover';
 import { useAutosaveRestore } from '@/hooks/useAutosaveRestore';
 import { useRefreshHotkeys } from '@/hooks/useRefreshHotkeys';
+import { useLayoutHotkeys } from '@/hooks/useLayoutHotkeys';
+import { useLatest } from '@/hooks/useLatest';
+import { stepTextSize, toggleColumn } from '@/lib/sermon/layout';
 import { useEditSuggestions } from '@/hooks/useEditSuggestions';
 import { useTranscriptSave } from '@/hooks/useTranscriptSave';
 import { useLyricsInsert } from '@/hooks/useLyricsInsert';
@@ -33,6 +37,7 @@ import { LevelStore } from '@/lib/sermon/audio-level';
 import { PipelineStats } from '@/lib/sermon/pipeline-stats';
 import { ConfidenceStore } from '@/lib/sermon/confidence-store';
 import { isMacPlatform } from '@/lib/platform';
+import { ChevronDown } from 'lucide-react';
 import { replacePhrase } from '@/lib/sermon/glossary-fix';
 
 // Sermon mode is its own page/route ("/", see App.tsx) rather than a mode of
@@ -71,6 +76,7 @@ export default function SermonMode() {
   // Words Whisper was unsure about (MLX engine) -> "check" chips under the Dutch cells.
   const [confidenceStore] = useState(() => new ConfidenceStore());
   const { refreshAll, refreshOne } = useTranslationQueue({
+    state, autoTranslate: settings.sermonAutoTranslate,
     stateRef, dispatch: applyAction, configRef: translationConfigRef, autoTranslateRef, flushersRef, stats: pipelineStats,
   });
 
@@ -80,7 +86,30 @@ export default function SermonMode() {
   // The "send to listeners" switch. Session-only on purpose (not a setting): it
   // starts on at every page load so it can't stay off by accident into the next service.
   const [listenersEnabled, setListenersEnabled] = useState(true);
-  const { listenerCount } = useListenerBroadcast(stateRef, state, listenersEnabled);
+  // Which extra languages phones may pick (Settings › Listeners) and how each is translated; the hub does the
+  // translating, from the English published above.
+  const listenerConfig = useMemo(
+    () => buildListenerConfig(
+      settings.listenerLanguages,
+      { baseUrl: settings.ollamaBaseUrl, model: settings.ollamaModel },
+      settings.sermonGlossaryEnabled ? settings.sermonGlossaryCsv : '',
+    ),
+    [settings.listenerLanguages, settings.ollamaBaseUrl, settings.ollamaModel, settings.sermonGlossaryEnabled, settings.sermonGlossaryCsv],
+  );
+  const { listenerCount, listenersByLang, translationErrors } = useListenerBroadcast(stateRef, state, listenersEnabled, listenerConfig);
+  // Say so when a listener language stops translating (bad key, rate limit) — the phones fall back to English.
+  const reportedErrorsRef = useRef<Record<string, string>>({});
+  useEffect(() => {
+    for (const lang of Object.keys(translationErrors)) {
+      if (reportedErrorsRef.current[lang] === translationErrors[lang]) continue;
+      toast({
+        title: `${LISTENER_LANGUAGE_INFO[lang as ListenerLang]?.name ?? lang} translation for listeners failed`,
+        description: `${translationErrors[lang]}. Those phones show the English line until it works again.`,
+        variant: 'destructive',
+      });
+    }
+    reportedErrorsRef.current = { ...translationErrors };
+  }, [translationErrors, toast]);
 
   // Audio bar: which mic is in use and how loud it is. The level store is an
   // external store so ~10 audio frames a second only re-render the meter.
@@ -221,58 +250,117 @@ export default function SermonMode() {
 
   useRefreshHotkeys(refreshAll, refreshOne, activeSegmentIdRef);
 
+  // Layout switches. The header collapse is session-only on purpose (a service must never start
+  // with Record hidden); text size and the hidden column are settings and persist.
+  const [headerCollapsed, setHeaderCollapsed] = useState(false);
+  const settingsRef = useLatest(settings);
+  const changeTextSize = useCallback((direction: 1 | -1) => {
+    updateSettings({ sermonTextSize: stepTextSize(settingsRef.current.sermonTextSize, direction) });
+  }, [updateSettings, settingsRef]);
+  const toggleSermonColumn = useCallback((which: 'source' | 'target') => {
+    updateSettings({ sermonCollapsedColumn: toggleColumn(settingsRef.current.sermonCollapsedColumn, which) });
+  }, [updateSettings, settingsRef]);
+  useLayoutHotkeys({
+    onTextBigger: useCallback(() => changeTextSize(1), [changeTextSize]),
+    onTextSmaller: useCallback(() => changeTextSize(-1), [changeTextSize]),
+    onToggleSource: useCallback(() => toggleSermonColumn('source'), [toggleSermonColumn]),
+    onToggleTarget: useCallback(() => toggleSermonColumn('target'), [toggleSermonColumn]),
+    onToggleHeader: useCallback(() => setHeaderCollapsed(c => !c), []),
+  });
+
   useEffect(() => {
     document.documentElement.classList.toggle('dark', isDark);
   }, [isDark]);
 
   return (
     <div className="flex flex-col h-screen bg-background">
-      <Header isDark={isDark} onThemeToggle={() => setIsDark(d => !d)} onSettingsOpen={() => setIsSettingsOpen(true)} />
-      <SermonToolbar
-        isRecording={isRecording}
-        isProcessing={isProcessing}
-        isPaused={isPaused}
-        onTogglePause={isPaused ? resume : pause}
-        onToggleRecording={() => {
-          if (isRecording) {
-            stop().catch((err) => toast({ title: 'Recording error', description: err instanceof Error ? err.message : 'Could not stop recording', variant: 'destructive' }));
-          } else {
-            start();
-          }
-        }}
-        dirtyCount={dirtyCount}
-        onRefreshAll={refreshAll}
-        onAddRow={() => handleAddRow('target')}
-        onSaveMarkdown={saveTranscriptMarkdown}
-        onAddLyrics={addLyricsRow}
-        autoTranslate={settings.sermonAutoTranslate}
-        onToggleAutoTranslate={(v) => updateSettings({ sermonAutoTranslate: v })}
-        maxLatencySecs={settings.sermonMaxLatencySecs}
-        onChangeMaxLatencySecs={(v) => updateSettings({ sermonMaxLatencySecs: v })}
-        listenerCount={listenerCount}
-        listenersEnabled={listenersEnabled}
-        onToggleListeners={() => setListenersEnabled(v => !v)}
-        onOpenSettings={() => setIsSettingsOpen(true)}
-        serviceContext={settings.sermonServiceContext}
-        onChangeServiceContext={(next) => updateSettings({ sermonServiceContext: next })}
-        suggestions={suggestions}
-        onAddSuggestion={setSuggestionBeingAdded}
-        onDismissSuggestion={(s) => dismissSuggestion(s.key)}
-        isMac={isMacPlatform}
-      />
-      <AudioBar
-        levelStore={levelStore}
-        pipelineStats={pipelineStats}
-        isRecording={isRecording}
-        isPaused={isPaused}
-        micDeviceId={settings.micDeviceId}
-        onChangeMicDeviceId={handleChangeMic}
-        devices={mic.devices}
-        defaultLabel={mic.defaultLabel}
-        hasLabels={mic.hasLabels}
-        activeLabel={mic.activeLabel}
-        gain={gainInUse}
-      />
+      {/* Header block: top bar + toolbar + audio bar collapse together (Ctrl+3). The restore banner, the red
+          mic alert and the toasts are deliberately OUTSIDE it, so they can never be hidden with it. */}
+      <div className="shrink-0">
+        <div
+          className={'grid transition-[grid-template-rows] duration-200 motion-reduce:transition-none ' + (headerCollapsed ? 'grid-rows-[0fr]' : 'grid-rows-[1fr]')}
+        >
+          <div
+            className="min-h-0 overflow-hidden"
+            aria-hidden={headerCollapsed}
+            {...(headerCollapsed ? ({ inert: '' } as Record<string, string>) : {})}
+            data-testid="header-block"
+          >
+          <Header isDark={isDark} onThemeToggle={() => setIsDark(d => !d)} onSettingsOpen={() => setIsSettingsOpen(true)} onCollapse={() => setHeaderCollapsed(true)} collapseHint="Ctrl+3" />
+          <SermonToolbar
+            isRecording={isRecording}
+            isProcessing={isProcessing}
+            isPaused={isPaused}
+            onTogglePause={isPaused ? resume : pause}
+            onToggleRecording={() => {
+              if (isRecording) {
+                stop().catch((err) => toast({ title: 'Recording error', description: err instanceof Error ? err.message : 'Could not stop recording', variant: 'destructive' }));
+              } else {
+                start();
+              }
+            }}
+            dirtyCount={dirtyCount}
+            onRefreshAll={refreshAll}
+            onAddRow={() => handleAddRow('target')}
+            onSaveMarkdown={saveTranscriptMarkdown}
+            onAddLyrics={addLyricsRow}
+            autoTranslate={settings.sermonAutoTranslate}
+            onToggleAutoTranslate={(v) => updateSettings({ sermonAutoTranslate: v })}
+            maxLatencySecs={settings.sermonMaxLatencySecs}
+            onChangeMaxLatencySecs={(v) => updateSettings({ sermonMaxLatencySecs: v })}
+            listenerCount={listenerCount}
+            listenersByLang={listenersByLang}
+            listenersEnabled={listenersEnabled}
+            onToggleListeners={() => setListenersEnabled(v => !v)}
+            onOpenSettings={() => setIsSettingsOpen(true)}
+            serviceContext={settings.sermonServiceContext}
+            onChangeServiceContext={(next) => updateSettings({ sermonServiceContext: next })}
+            suggestions={suggestions}
+            onAddSuggestion={setSuggestionBeingAdded}
+            onDismissSuggestion={(s) => dismissSuggestion(s.key)}
+            isMac={isMacPlatform}
+            textSize={settings.sermonTextSize}
+            onChangeTextSize={changeTextSize}
+          />
+          <AudioBar
+            levelStore={levelStore}
+            pipelineStats={pipelineStats}
+            isRecording={isRecording}
+            isPaused={isPaused}
+            micDeviceId={settings.micDeviceId}
+            onChangeMicDeviceId={handleChangeMic}
+            devices={mic.devices}
+            defaultLabel={mic.defaultLabel}
+            hasLabels={mic.hasLabels}
+            activeLabel={mic.activeLabel}
+            gain={gainInUse}
+          />
+          </div>
+        </div>
+        {headerCollapsed && (
+          <div className="flex items-center justify-center gap-2 h-5 border-b border-border bg-background" data-testid="header-strip">
+            <button
+              type="button"
+              onClick={() => setHeaderCollapsed(false)}
+              className="flex items-center gap-1.5 px-3 text-[11px] leading-none text-muted-foreground hover:text-foreground"
+              aria-label="Expand the header"
+              title="Expand the header (Ctrl+3)"
+              data-testid="button-expand-header"
+            >
+              {isRecording && (
+                <span
+                  className={'inline-block w-2 h-2 rounded-full ' + (isPaused ? 'bg-muted-foreground' : 'bg-red-600 animate-pulse motion-reduce:animate-none')}
+                  role="img"
+                  aria-label={isPaused ? 'Recording paused' : 'Recording'}
+                  data-testid="recording-dot"
+                />
+              )}
+              {isRecording ? (isPaused ? 'Paused' : 'Recording') : 'Header'}
+              <ChevronDown className="w-3 h-3" />
+            </button>
+          </div>
+        )}
+      </div>
       {restoreOffer && (
         <RestoreBanner rows={restoreOffer.rows} savedAt={restoreOffer.savedAt} hasCurrentRows={state.ids.length > 0} onRestore={handleRestore} onDiscard={handleDiscardRestore} />
       )}
@@ -295,6 +383,9 @@ export default function SermonMode() {
         pendingFocusRef={pendingFocusRef}
         confidenceStore={confidenceStore}
         onLyricsLink={onLyricsLink}
+        textSize={settings.sermonTextSize}
+        collapsed={settings.sermonCollapsedColumn}
+        onToggleColumn={toggleSermonColumn}
       />
       {selection && !glossarySelection && (
         <AddToGlossaryBubble
@@ -316,6 +407,7 @@ export default function SermonMode() {
         settings={settings}
         onUpdate={handleSettingsUpdate}
         mode="sermon"
+        isRecording={isRecording}
       />
     </div>
   );

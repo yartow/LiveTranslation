@@ -2,6 +2,7 @@ import { useRef, useEffect, useLayoutEffect, useCallback } from 'react';
 import { looksLikeSongLink } from '@/lib/sermon/lyrics';
 import type { Segment } from '@/lib/sermon/segment-model';
 import type { SegmentAction } from '@/lib/sermon/segment-store';
+import { growToFit, useAutoGrowOnResize } from '@/hooks/useAutoGrowOnResize';
 import { isNextRowChord } from '@/lib/sermon/hotkeys';
 import type { CellKind } from '@/lib/sermon/focus-cell';
 import type { ConfidenceStore } from '@/lib/sermon/confidence-store';
@@ -49,9 +50,10 @@ export default function SourceCell({ segment, dispatch, activeSegmentIdRef, flus
   const autoGrow = useCallback(() => {
     const el = ref.current;
     if (!el) return;
-    el.style.height = 'auto';
-    el.style.height = `${el.scrollHeight}px`;
+    growToFit(el);
   }, []);
+
+  useAutoGrowOnResize(ref, autoGrow);
 
   useLayoutEffect(() => { autoGrow(); }, [autoGrow]);
 
@@ -204,7 +206,7 @@ export default function SourceCell({ segment, dispatch, activeSegmentIdRef, flus
         placeholder={segment.lyrics?.part === 'pending' ? 'Paste an AllSongs link here for a Dutch song' : undefined}
         rows={1}
         className={
-          'w-full resize-none overflow-hidden bg-transparent px-3 py-2 pr-16 text-sm leading-relaxed rounded-md ' +
+          'w-full resize-none overflow-hidden bg-transparent px-3 py-2 pr-16 text-[length:var(--sermon-text-size,14px)] leading-relaxed rounded-md ' +
           'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring ' +
           (isDirtyVisual ? 'border-l-2 border-amber-400'
             : isProvisional ? 'border-l-2 border-dashed border-muted-foreground/40 italic'

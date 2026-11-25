@@ -34,13 +34,19 @@ OpenAI. For that you need an **OpenAI API key** (see below).
 
 | Computer | Speech recognition | Translation | You need |
 |-------------|---------------------|-------------------|---------------------|
-| Mac with Apple chip | On the Mac itself (free) or through OpenAI | OpenAI, Anthropic (Claude) or local | Node.js, Python; an API key for translation |
-| Mac with Intel processor | Through OpenAI | OpenAI or Anthropic (Claude) | Node.js; OpenAI key |
-| Windows PC | Through OpenAI | OpenAI or Anthropic (Claude) | Node.js; OpenAI key |
+| Mac with Apple chip | On the Mac itself (free) or through OpenAI | OpenAI, Anthropic (Claude) or local (Ollama) | Node.js, ffmpeg, Python (only for on-device speech recognition); an API key for translation |
+| Mac with Intel processor | Through OpenAI | OpenAI, Anthropic (Claude) or local (Ollama) | Node.js, ffmpeg; OpenAI key |
+| Windows PC | Through OpenAI | OpenAI, Anthropic (Claude) or local (Ollama) | Node.js, ffmpeg; OpenAI key |
+| Linux PC | Through OpenAI | OpenAI, Anthropic (Claude) or local (Ollama) | Node.js, ffmpeg; OpenAI key |
 
 Not sure which Mac you have? Click the Apple logo at the top left and choose **About This
 Mac**. If it says *Chip* "Apple M1" (or M2, M3, ...), you have an Apple chip. If it says
 *Processor* with "Intel", you don't.
+
+> **Why only Apple chips?** The free on-device speech recognition uses Apple's MLX framework,
+> which exists only on Apple-chip Macs. On every other computer the app works just as well,
+> but speech recognition is done by OpenAI, which costs roughly 35 US cents per hour of audio.
+> The rest of this manual has a clearly marked path for each type of computer.
 
 > **Note:** an Anthropic key (for Claude) on its own is not enough. Claude translates, but it
 > cannot recognise speech. Without a Mac with an Apple chip you always need an OpenAI key. An
@@ -88,6 +94,28 @@ Node.js is the program the app runs on.
 1. Go to <https://nodejs.org>.
 2. Download the version marked **LTS** (the recommended version).
 3. Open the downloaded file and follow the installer. You can keep all the default choices.
+
+## Step 1b: Install ffmpeg
+
+ffmpeg is a small program the app uses to convert the audio before it is recognised. Without
+it, nothing is transcribed. Do this on **every** type of computer.
+
+**Mac (both Apple chip and Intel):**
+
+1. If you don't have Homebrew yet, install it from <https://brew.sh> (one command, shown on
+   that page, pasted into the terminal).
+2. In the terminal, type: `brew install ffmpeg`
+
+**Windows 10 or 11:**
+
+1. Click Start, type `PowerShell` and open it.
+2. Type: `winget install Gyan.FFmpeg` and press Enter. Accept the terms if asked.
+3. **Close PowerShell and open it again**, so Windows finds the new program.
+
+**Linux:** `sudo apt install ffmpeg` (or your distribution's equivalent).
+
+To check, type `ffmpeg -version` in a new terminal. A few lines of text with a version number
+mean it worked; *"not recognized"* or *"command not found"* means it did not.
 
 ## Step 2: Download the app
 
@@ -161,7 +189,8 @@ it is. Save and close the file.
 
 ## Step 6 (Mac with Apple chip only): speech recognition on the Mac itself
 
-This step is optional. Skip it if you use OpenAI for speech recognition.
+This step is optional. **Skip it** if you use OpenAI for speech recognition, and always skip
+it on an Intel Mac, a Windows PC or Linux: it cannot work there.
 
 Speech recognition on the Mac itself needs Python with the `mlx-whisper` component. Type in
 the terminal, one line at a time:
@@ -189,6 +218,46 @@ at church.
 
 Translation still goes over the internet with this setup, using your OpenAI or Anthropic key.
 
+
+## Step 7 (optional, any computer): free translation with Ollama
+
+By default the app translates through OpenAI or Anthropic, which costs a few cents per hour.
+If you want translation to be free and to stay on your own computer, install **Ollama**. It
+exists for Windows, Mac and Linux.
+
+1. Download Ollama from <https://ollama.com> and install it.
+2. In a terminal, type: `ollama pull qwen2.5:14b` (a large download of several gigabytes). On
+   a computer without a powerful graphics card or a lot of memory, use a smaller model such as
+   `qwen2.5:7b` instead; it is faster but less accurate.
+3. In the app's settings choose **Ollama (local)** as translation provider, with address
+   `http://localhost:11434` and the model name you downloaded.
+
+Speech recognition still needs an OpenAI key unless you have an Apple chip (step 6).
+
+## Step 8 (optional, any computer): Bible texts and a glossary
+
+The app can show the exact English Bible text when the preacher reads a verse aloud, and it
+can follow a list of fixed translations for church words (a *glossary*). Neither is included,
+because Bible translations are copyrighted and every church has its own list. The app works
+without them. If you want them:
+
+- **Bible texts:** needs the program *git* (<https://git-scm.com>). In a terminal, go to your
+  **Documents** folder, create a folder called `GitHub` there and go into it, then type these three lines (the last is optional and adds ESV, HSV,
+  Hindi, Tamil and Chinese texts; check that you may use them):
+
+  ```
+  git clone https://github.com/seven1m/open-bibles.git
+  git clone https://github.com/farskipper/kjv.git
+  git clone https://github.com/Beblia/Holy-Bible-XML-Format.git
+  ```
+
+  Then go to the app's folder (step 3) and type `npx tsx scripts/build-bible-data.ts`.
+  The folders must sit in **Documents/GitHub**, or you must tell the script where they are; the
+  README explains how. Choose the Bible version under **Sermon mode > Scripture quotes**.
+- **Glossary:** a table with the columns `Nederlands`, `Engels`, `Categorie` and `Notitie`.
+  Copy the example `docs/examples/glossary-sample.csv` into the `data` folder, extend it, and
+  choose it under **General > Glossary**.
+
 # Starting and stopping the app
 
 You do this every time you want to use the app.
@@ -205,6 +274,13 @@ You do this every time you want to use the app.
 
 Keep the terminal window open for as long as you use the app: that window *is* the app. You
 can close and reopen the browser window whenever you like.
+
+
+**Mac only: start with one click.** In the terminal, in the app's folder, type
+`scripts/install-launcher.sh`. This puts an app called **CTT.AY** in the *Applications*
+folder of your user account. Drag it to the Dock; clicking it starts the app (the first time
+it prepares the app for a minute) and opens the page. On Windows and Linux there is no such
+button: use `npm run dev` as described above.
 
 **To stop:** click in the terminal window and press **Ctrl+C** (on a Mac too: the Control key,
 not Cmd). Then you can close the window.
@@ -287,6 +363,16 @@ The **Sending to listeners** button pauses sending for a while (the button then 
 *Listeners paused*). When you turn it back on, the phones receive everything you wrote in the
 meantime at once.
 
+## Hindi, Tamil and Chinese on the phones
+
+Besides English, phones can show the sermon in Hindi, Tamil or Chinese (simplified or
+traditional). Switch a language on under **Sermon mode > Listeners** in the settings; then a
+language menu appears on the phones. These languages are translated from your finished
+English, using the OpenAI or Anthropic key in the `.env` file (not the key typed into the
+browser). A Bible verse read aloud is shown from that language's own Bible if you did step 8.
+The words in the phone screens for these languages were written by an AI and have not yet
+been checked by native speakers.
+
 **Doesn't it work at church?** Church guest Wi-Fi often prevents devices from talking to each
 other. The app can't do anything about that, so test it on the church's Wi-Fi beforehand. If
 it doesn't work, create your own hotspot with your phone or computer and have the listeners
@@ -329,6 +415,18 @@ Are they on the same Wi-Fi network? Did you allow the network connection questio
 *Starting and stopping the app*)? Is the button set to *Sending to listeners*? Also read the
 part about guest Wi-Fi above.
 
+**Nothing is transcribed, and the terminal mentions ffmpeg.**
+ffmpeg is missing or is not found. Do step 1b, then close the terminal, open it again and
+restart the app.
+
 **You want a newer version of the app.**
 Download the ZIP again (installation step 2), move your `.env` file to the new folder and run
 step 4 (`npm install`) again.
+
+# Licence and sharing
+
+CTT.AY is free, open-source software under the **MIT licence**: anyone may use it for free,
+copy it, change it and share it, also for their own church. The licence text is in the file
+`LICENSE`. Changes and improvements are welcome as *pull requests* on
+<https://github.com/yartow/LiveTranslation>. The Bible texts and glossaries you add yourself
+are not part of the app and keep their own terms. The software comes without any warranty.

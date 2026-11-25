@@ -10,6 +10,7 @@ import {
 } from '@/components/ui/select';
 import type { AppSettings } from '@/hooks/useSettings';
 import { SettingItem } from './primitives';
+import { listenerColumnsSummary } from '@/lib/listener-languages';
 
 // Mirrors server/lib/glossary-store.ts's GlossaryDiagnostics + the
 // stale/available fields getGlossaryStatus() adds — kept as a local type
@@ -18,7 +19,10 @@ import { SettingItem } from './primitives';
 interface GlossaryStatus {
   loaded: boolean;
   version: string;
-  csv: { name: string; exists: boolean; totalRows: number; fixedRows: number; contextRows: number; repairedRows: number; droppedRows: number };
+  csv: {
+    name: string; exists: boolean; totalRows: number; fixedRows: number; contextRows: number; repairedRows: number; droppedRows: number;
+    languageColumns?: string[]; languageCounts?: Record<string, number>;
+  };
   prompt: { name: string; exists: boolean; chars: number };
   warnings: string[];
   errors: string[];
@@ -143,6 +147,9 @@ export default function GlossaryPanel({ settings, onUpdate, isOpen }: GlossaryPa
                   {status.csv.fixedRows} fixed terms · {status.csv.contextRows} context-dependent
                   {status.csv.repairedRows > 0 ? ` · ${status.csv.repairedRows} rows repaired` : ''}
                   {' · ~'}{status.estimatedTokens} tokens
+                </p>
+                <p className="text-xs text-muted-foreground" data-testid="text-glossary-languages">
+                  {listenerColumnsSummary(status.csv.languageColumns, status.csv.languageCounts)}
                 </p>
                 {status.stale && (
                   <p className="text-xs text-amber-600 dark:text-amber-400">

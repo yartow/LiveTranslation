@@ -24,9 +24,106 @@ cp .env.example .env      # no keys needed for free mode (Browser Speech + None)
 npm run dev
 ```
 
-Then open **`http://localhost:PORT`** in Chrome or Edge (the free Browser Speech transcription backend requires one of those) — the terminal running `npm run dev` logs `serving on port XXXX` on startup, so use that number. `PORT` defaults to `5001` (see `.env.example`), but **check your own `.env` file first**: if it already sets a different `PORT` (e.g. `3000`), that value wins and `5001` will not be listening at all. Press Record, allow microphone access, and start talking.
+Using Windows, an Intel Mac or Linux, or want the free on-device speech recognition on an Apple-chip Mac? See [Install on your platform](#install-on-your-platform) first (you also need ffmpeg). Then open **`http://localhost:PORT`** in Chrome or Edge (the free Browser Speech transcription backend, available in Live mode at `/live`, requires one of those) — the terminal running `npm run dev` logs `serving on port XXXX` on startup, so use that number. `PORT` defaults to `5001` (see `.env.example`), but **check your own `.env` file first**: if it already sets a different `PORT` (e.g. `3000`), that value wins and `5001` will not be listening at all. Press Record, allow microphone access, and start talking.
 
 Want Whisper transcription or AI translation instead of the free mode? Add `OPENAI_API_KEY` and/or `ANTHROPIC_API_KEY` to `.env`, or paste them into the in-app Settings (⚙︎) — see [API Providers & Free Mode](#api-providers--free-mode) below. Want to run entirely offline on Apple Silicon with the local `mlx` provider? See [Local MLX Transcription](#local-mlx-transcription-apple-silicon-only) — **do not use Docker for that path**, see the note in [Running Locally — Docker](#running-locally--docker).
+
+---
+
+## Install on your platform
+
+CTT.AY is a Node.js web app. The **only** part tied to one platform is the free on-device speech recognition (the `mlx` engine), which needs a Mac with an Apple chip. Everything else runs on Windows, Intel Macs and Linux; there, speech recognition goes through OpenAI Whisper (an API key, roughly 35 US cents per hour of audio).
+
+| | Mac, Apple chip (M1+) | Mac, Intel | Windows 10/11 | Linux |
+|---|---|---|---|---|
+| Sermon mode + translation | ✅ | ✅ | ✅ | ✅ |
+| Speech recognition: OpenAI Whisper (needs `OPENAI_API_KEY`) | ✅ | ✅ | ✅ | ✅ |
+| Speech recognition: local `mlx` (free, offline) | ✅ | ❌ | ❌ | ❌ |
+| Translation: OpenAI / Claude | ✅ | ✅ | ✅ | ✅ |
+| Translation: local Ollama model | ✅ | ✅ | ✅ | ✅ |
+| One-click launcher (`CTT.AY.app`) | ✅ | ✅ | ❌ (use `npm run dev`) | ❌ |
+
+> Sermon mode only supports the `whisper` (OpenAI) and `mlx` engines. The free Browser Speech and on-device Transformers.js engines exist in Live mode (`/live`) only.
+
+**All platforms need:** [Node.js](https://nodejs.org) 20 or newer (LTS) and [ffmpeg](https://ffmpeg.org) on your `PATH` (the server converts every audio chunk with it).
+
+### macOS (Apple chip or Intel)
+
+```bash
+brew install node ffmpeg          # Homebrew: https://brew.sh
+git clone https://github.com/yartow/LiveTranslation.git
+cd LiveTranslation
+npm install
+cp .env.example .env              # then put your OPENAI_API_KEY in .env
+npm run dev                       # or: npm run build && npm start
+```
+
+Apple chip only, for free on-device speech recognition: see [Local MLX Transcription](#local-mlx-transcription-apple-silicon-only). On an **Intel Mac skip it** and set Settings → General → Speech recognition to **OpenAI Whisper**.
+
+Optional one-click launcher (macOS): `scripts/install-launcher.sh` creates `~/Applications/CTT.AY.app` (drag it to the Dock; it builds if needed, starts the server and opens the page). `scripts/install-launcher.sh --login` also starts the server at login; `--no-login` removes that again. **Settings → Advanced → Server → Restart** restarts a production server from the page.
+
+### Windows 10/11
+
+Open **PowerShell** (not the old `cmd` for the winget lines):
+
+```powershell
+winget install OpenJS.NodeJS.LTS
+winget install Gyan.FFmpeg
+winget install Git.Git            # or download the ZIP from GitHub instead
+```
+
+Close and reopen PowerShell (so the new programs are found), then:
+
+```powershell
+git clone https://github.com/yartow/LiveTranslation.git
+cd LiveTranslation
+npm install
+copy .env.example .env
+notepad .env                      # put your OPENAI_API_KEY after OPENAI_API_KEY=
+npm run dev
+```
+
+Open <http://localhost:5001> in Chrome or Edge. Allow Node through the Windows firewall for **private networks** when asked — otherwise phones cannot reach `/listen`. The local `mlx` engine, the `CTT.AY.app` launcher and the Settings → Restart button are macOS-only; run `npm run dev` (or `npm run build` then `npm start`) in a terminal instead and leave it open.
+
+### Linux
+
+```bash
+sudo apt install ffmpeg           # or your distribution's equivalent
+# Node 20+: https://nodejs.org or your package manager / nvm
+git clone https://github.com/yartow/LiveTranslation.git && cd LiveTranslation
+npm install && cp .env.example .env && npm run dev
+```
+
+### Free translation on any platform (Ollama)
+
+Not on a Mac with an Apple chip, but don't want to pay for translation? Install [Ollama](https://ollama.com) (it has Windows, macOS and Linux versions), `ollama pull qwen2.5:14b`, and choose **Ollama (local)** as translation provider (see [Ollama setup](#ollama-setup)). Speech recognition still needs an OpenAI key on these platforms; a 14B model also needs a capable GPU or plenty of RAM, so a 7B model is the realistic choice on a modest PC.
+
+---
+
+## Sermon mode setup (one-time data)
+
+The repo does not contain Bible texts or a glossary (`data/` is not committed: the texts are copyrighted or personal). Sermon mode **works without them** (it just translates), but two features need data you add yourself:
+
+### 1. Bible-quote substitution (optional)
+
+When the preacher reads a verse word for word, the app can show the exact English text instead of a machine translation. Build the verse data once:
+
+```bash
+# Clone the sources next to the app (default locations: ~/Documents/GitHub/<repo>)
+cd ~/Documents/GitHub
+git clone https://github.com/seven1m/open-bibles.git      # Dutch Statenvertaling (public domain)
+git clone https://github.com/farskipper/kjv.git           # English KJV fallback (public domain)
+git clone https://github.com/Beblia/Holy-Bible-XML-Format.git   # optional: ESV, LSB, Dutch HSV/NBG, Hindi, Tamil, Chinese
+
+cd LiveTranslation
+npx tsx scripts/build-bible-data.ts
+```
+
+Cloned elsewhere (or on Windows)? Point the script at the files with `SV_XML_PATH`, `KJV_JSON_PATH`, `ESV_XML_PATH`, `LSB_XML_PATH`, `HSV_XML_PATH`, `NBG_XML_PATH`, `HI_XML_PATH`, `TA_XML_PATH`, `ZH_XML_PATH`, `ZH_TW_XML_PATH` (see `.env.example`). The output lands in `data/bible/` (gitignored). Only the first two sources are required; with just those the English verse is the KJV. The ESV, LSB, HSV/NBG and Hindi/Tamil/Chinese texts are copyrighted, so check your licence before using them; keep the generated files out of git. Choose the version under Settings → Sermon mode → Scripture quotes. Without the build, verse substitution silently does nothing.
+
+### 2. File-based glossary (optional)
+
+A CSV of fixed Dutch → English terms (and an optional markdown file of context rules) that every translation must respect. Put the files in `data/` (or the directory in `GLOSSARY_DIR`) and choose them under Settings → General → Glossary. Required columns, in this order: `Nederlands,Engels,Categorie,Notitie`. A ready-made starting point is [docs/examples/glossary-sample.csv](docs/examples/glossary-sample.csv): copy it into `data/`. `Bijbelboek` as category marks Bible book names. Optional extra columns `Hindi`, `Tamil`, `Chinese (Simplified)` and `Chinese (Traditional)` are used for the listener languages below (read by header name, so the order is free). Without any glossary the *Vocabulary hints* box in Settings still works.
 
 ---
 
@@ -91,7 +188,7 @@ The app's default view — a UI purpose-built for translating a live sermon bloc
 - **Segment-based review** — incoming transcript is grouped into ~5–20 second blocks (configurable as "Block length" in the toolbar or under Settings → Sermon mode → Timing), each cut on a sentence boundary so a block is never split mid-sentence; each segment is independently editable and re-translatable without disturbing the others.
 - **Dual-pane layout** — editable source on one side, translation on the other, row-aligned.
 - **Pause / resume** — the Pause button next to Stop stops listening without ending the session (the last words are still transcribed). Press it again to continue; no new microphone prompt. Audio spoken while paused is dropped, not queued.
-- **Keyboard-driven workflow** — Return in a Dutch or English box saves it and jumps to the same box in the next row (in the last row it creates a new one when you are not recording; while recording it only saves, because the live text keeps arriving below — use "Add row"); Shift+Return adds a new line; hotkeys re-translate one segment or all pending segments (Cmd/Ctrl+Enter, Cmd/Ctrl+Shift+Enter).
+- **Keyboard-driven workflow** — Return in a Dutch or English box saves it and jumps to the same box in the next row (in the last row it adds a blank row; live text then opens below it); Shift+Return adds a new line; hotkeys re-translate one segment or all pending segments (Cmd/Ctrl+Enter, Cmd/Ctrl+Shift+Enter).
 - **Add row** — the toolbar's "Add row" button creates an empty row to type into by hand, for when the microphone gives no input. A row with no Dutch text is never sent to the translator; English typed into it goes to the listeners like any hand-typed line.
 - **Switch microphone while recording** — pick another input in the audio bar (or in Settings → Microphone) and the recording moves to it at once, with no gap in the transcript. The audio bar also shows the input level, the macOS input volume, and "No sound from this microphone" after 20 s of silence.
 - **Today's service** — the toolbar's "Service" button takes the sermon title, the planned Bible passages, names and terms, and notes. Names and terms sharpen the speech recognition from the next sentence on, all of it goes to the translator, and a planned passage is recognised even when the preacher never announces it. Kept for this browser tab only, so it never leaks into next week's service.
@@ -116,6 +213,8 @@ Lets people in the room who don't speak Dutch follow the English translation liv
 - Click the **Listeners** button in the sermon-mode toolbar (or open Settings → Sermon mode → Listeners) to see the address to hand out (e.g. `http://192.168.178.42:3000`) — it's read live off the machine's current network, so it's correct whether you're at home or at church.
 - A listener types that address into their phone's browser. Typing just the bare address (no path) takes them straight to the listener view — you don't need to tell them to add `/listen`.
 - The listener screen shows **only the finished English translation**, auto-scrolling as new lines arrive; scrolling up pauses that and shows a "Jump to live" button. A line that gets corrected after it first appears is re-pushed and shown in *italic*.
+- **More languages on the phones.** Besides English, phones can read **Hindi, Tamil, Chinese (Simplified) and Chinese (Traditional)**. Switch each language on under Settings → Sermon mode → Listeners (all off by default) and pick a provider/model for it; a language picker then appears on the phones. These are translated *from the finished English* on the server, so they use the server's `OPENAI_API_KEY` / `ANTHROPIC_API_KEY` from `.env` (not the keys typed in the browser), and only while someone is reading that language. A Bible verse read word for word is shown from that language's own Bible when you built it (see above). The phone interface text for these languages was written by Claude and has not been checked by native readers.
+- **Formatting.** The English may use markdown (`> ` quote, `**bold**`, lists, headings); phones render it, and it is carried onto the verse text in the other languages.
 - **This is not access control.** Anyone on the same wifi who reaches the server can open the listener view. Don't rely on it to keep the transcript private.
 - Church guest wifi sometimes isolates devices from each other ("AP/client isolation"), which blocks this entirely and can't be worked around in software — test it on the actual venue's wifi ahead of time. If it's isolated, run a personal hotspot from the MBP instead and have listeners join that.
 
@@ -153,7 +252,7 @@ Any model available in Ollama that supports the chat/JSON completion API works �
 
 ## Running Locally — npm
 
-Requirements: Node 20+, ffmpeg (`brew install ffmpeg` on Mac). Runs on macOS and Windows (the npm scripts set environment variables through `cross-env`, so they work in the Windows command prompt too); only the local `mlx` engine is limited to Apple Silicon. Python is needed only for that engine.
+Requirements: Node 20+, ffmpeg (see [Install on your platform](#install-on-your-platform)). Runs on macOS, Windows and Linux (the npm scripts set environment variables through `cross-env`, so they work in the Windows command prompt too); only the local `mlx` engine is limited to Apple Silicon. Python is needed only for that engine.
 
 ```bash
 # 1. Copy the env template and fill in your keys
@@ -342,3 +441,13 @@ Claude pricing is similar. Local Whisper + None translation is completely free.
 - Export original transcription, translation, or both side-by-side
 - Optional AI formatting pass before export
 - Downloads locally to your device
+
+---
+
+## Contributing
+
+Pull requests are welcome. Run `npm run check` and `npm test` before sending one; `CLAUDE.md` describes the architecture in detail. Please don't commit API keys, `.env`, copyrighted Bible texts or anything under `data/`.
+
+## License
+
+[MIT](LICENSE) © 2026 Andrew Yong: free to use, copy, modify, distribute and sell, with no warranty. Bible texts, glossaries and other data you add under `data/` are **not** part of this licence and keep their own terms; the app never commits or ships them.

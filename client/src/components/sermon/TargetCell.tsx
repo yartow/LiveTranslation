@@ -2,6 +2,7 @@ import { useRef, useEffect, useLayoutEffect, useCallback } from 'react';
 import { BookOpen, Lock } from 'lucide-react';
 import type { Segment } from '@/lib/sermon/segment-model';
 import type { SegmentAction } from '@/lib/sermon/segment-store';
+import { growToFit, useAutoGrowOnResize } from '@/hooks/useAutoGrowOnResize';
 import { isNextRowChord } from '@/lib/sermon/hotkeys';
 import { shouldSyncCellDom } from '@/lib/sermon/cell-sync';
 import type { CellKind } from '@/lib/sermon/focus-cell';
@@ -47,9 +48,10 @@ export default function TargetCell({ segment, dispatch, activeSegmentIdRef, onEn
   const autoGrow = useCallback(() => {
     const el = ref.current;
     if (!el) return;
-    el.style.height = 'auto';
-    el.style.height = `${el.scrollHeight}px`;
+    growToFit(el);
   }, []);
+
+  useAutoGrowOnResize(ref, autoGrow);
 
   // Push store text into the DOM, unless the translator is mid-typing (their next
   // commit replaces it anyway) or the store text is just our own commit coming back
@@ -160,7 +162,7 @@ export default function TargetCell({ segment, dispatch, activeSegmentIdRef, onEn
         placeholder={isPendingLyrics ? 'Paste an AllSongs link here for an English song' : segment.status === 'TRANSLATING' ? '…' : 'Type translation…'}
         rows={1}
         className={
-          'w-full resize-none overflow-hidden bg-transparent px-3 py-2 pr-7 text-sm leading-relaxed rounded-md border-l-2 min-h-[2.25rem] ' +
+          'w-full resize-none overflow-hidden bg-transparent px-3 py-2 pr-7 text-[length:var(--sermon-text-size,14px)] leading-relaxed rounded-md border-l-2 min-h-[2.25rem] ' +
           'placeholder:italic placeholder:text-muted-foreground/60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring ' +
           (segment.lyrics ? 'border-violet-400' : segment.manualOverride ? 'border-blue-400' : isScripture ? 'border-indigo-400' : 'border-transparent') +
           (isStale ? ' opacity-60 focus:opacity-100' : '')

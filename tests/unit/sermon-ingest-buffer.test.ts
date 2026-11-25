@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { initIngestState, appendChunk, tick, releaseProvisional, finalizeBuffer, type IngestState } from '../../client/src/lib/sermon/ingest-buffer.js';
+import { initIngestState, appendChunk, tick, releaseProvisional, finalizeBuffer, ingestIdle, type IngestState } from '../../client/src/lib/sermon/ingest-buffer.js';
 
 describe('appendChunk — AC6: sentence-boundary flush gated on the block duration', () => {
   it('does not flush a complete sentence before the block duration is reached, then flushes it once due', () => {
@@ -395,5 +395,15 @@ describe('finalizeBuffer', () => {
     const { state } = appendChunk(initIngestState(), 'Eerste', cfg, 0);
     const next = appendChunk(finalizeBuffer(state).state, 'Tweede', cfg, 1000);
     expect(next.effects).toEqual([{ type: 'emit', text: 'Tweede', provisional: true, token: 'p1' }]);
+  });
+});
+
+describe('ingestIdle — the cap tick is only needed while text is buffered', () => {
+  it('is idle when fresh and after finalizeBuffer, busy while text waits for its deadline', () => {
+    const cfg = { maxLatencyMs: 6000 };
+    expect(ingestIdle(initIngestState())).toBe(true);
+    const { state } = appendChunk(initIngestState(), 'Dit is een zin. En nog', cfg, 0);
+    expect(ingestIdle(state)).toBe(false);
+    expect(ingestIdle(finalizeBuffer(state).state)).toBe(true);
   });
 });

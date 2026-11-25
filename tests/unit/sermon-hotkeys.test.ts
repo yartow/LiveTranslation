@@ -72,3 +72,46 @@ describe('isNextRowChord (plain Enter)', () => {
     expect(isNextRowChord(chord({ code: '', key: 'a' }))).toBe(false);
   });
 });
+
+import {
+  isToggleSourceChord, isToggleTargetChord, isToggleHeaderChord, isTextBiggerChord, isTextSmallerChord,
+} from '../../client/src/lib/sermon/hotkeys.js';
+
+describe('layout chords', () => {
+  const k = (o: Partial<KeyChord>): KeyChord => ({ metaKey: false, ctrlKey: true, shiftKey: false, code: '', ...o });
+
+  it('Ctrl+1/2/3 and Ctrl+Alt+1/2/3 match their own toggle only', () => {
+    expect(isToggleSourceChord(k({ code: 'Digit1' }))).toBe(true);
+    expect(isToggleSourceChord(k({ code: 'Digit1', altKey: true, key: '¡' }))).toBe(true);
+    expect(isToggleTargetChord(k({ code: 'Digit2' }))).toBe(true);
+    expect(isToggleHeaderChord(k({ code: 'Digit3' }))).toBe(true);
+    expect(isToggleHeaderChord(k({ code: 'Digit1' }))).toBe(false);
+    expect(isToggleSourceChord(k({ code: '', key: '1' }))).toBe(true);
+  });
+
+  it('digits need Ctrl, and never Cmd or Shift', () => {
+    expect(isToggleSourceChord(k({ code: 'Digit1', ctrlKey: false }))).toBe(false);
+    expect(isToggleSourceChord(k({ code: 'Digit1', metaKey: true }))).toBe(false);
+    expect(isToggleSourceChord(k({ code: 'Digit1', shiftKey: true }))).toBe(false);
+  });
+
+  it('ignores keys during IME composition', () => {
+    expect(isToggleSourceChord(k({ code: 'Digit1', isComposing: true }))).toBe(false);
+    expect(isTextBiggerChord(k({ code: 'Equal', isComposing: true }))).toBe(false);
+  });
+
+  it('Ctrl+= / Ctrl++ is bigger, Ctrl+- is smaller, Shift irrelevant', () => {
+    expect(isTextBiggerChord(k({ code: 'Equal' }))).toBe(true);
+    expect(isTextBiggerChord(k({ code: 'Equal', shiftKey: true, key: '+' }))).toBe(true);
+    expect(isTextBiggerChord(k({ code: 'NumpadAdd' }))).toBe(true);
+    expect(isTextSmallerChord(k({ code: 'Minus' }))).toBe(true);
+    expect(isTextSmallerChord(k({ code: 'NumpadSubtract' }))).toBe(true);
+    expect(isTextBiggerChord(k({ code: 'Minus' }))).toBe(false);
+  });
+
+  it('text size chords need Ctrl and reject Cmd/Alt', () => {
+    expect(isTextBiggerChord(k({ code: 'Equal', ctrlKey: false }))).toBe(false);
+    expect(isTextBiggerChord(k({ code: 'Equal', metaKey: true }))).toBe(false);
+    expect(isTextSmallerChord(k({ code: 'Minus', altKey: true }))).toBe(false);
+  });
+});

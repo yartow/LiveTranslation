@@ -11,6 +11,7 @@ export const LANGUAGE_NAMES: Record<string, string> = {
   ar: 'Arabic',
   fa: 'Farsi',
   hi: 'Hindi',
+  ta: 'Tamil',
   ru: 'Russian',
   ja: 'Japanese',
   ko: 'Korean',

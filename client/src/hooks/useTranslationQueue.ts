@@ -1,6 +1,7 @@
-import { useCallback, useEffect, useRef } from 'react';
+import { useCallback, useEffect, useMemo, useRef } from 'react';
 import {
   type SegmentStoreState, type SegmentAction, selectDirtyIds, selectTranslatable, selectContext, hasNoSource, selectCorrectionExamples,
+  hasTranslatableWork,
 } from '@/lib/sermon/segment-store';
 import { hashText } from '@/lib/sermon/segment-model';
 import type { PipelineStats } from '@/lib/sermon/pipeline-stats';
@@ -38,6 +39,10 @@ const CONFIRM_ABOVE_DIRTY_COUNT = 50;
  * commit behind — see the header comment there for why that used to matter.
  */
 export interface TranslationQueueArgs {
+  /** The rendered store state: decides whether the auto-translate tick needs to run at all (see `hasWork`). */
+  state: SegmentStoreState;
+  /** `settings.sermonAutoTranslate` as a value (the ref below is for the tick body, this one re-arms the effect). */
+  autoTranslate: boolean;
   stateRef: React.MutableRefObject<SegmentStoreState>;
   dispatch: React.Dispatch<SegmentAction>;
   configRef: React.MutableRefObject<TranslationRuntimeConfig>;
@@ -46,7 +51,7 @@ export interface TranslationQueueArgs {
   stats?: PipelineStats;
 }
 
-export function useTranslationQueue({ stateRef, dispatch, configRef, autoTranslateRef, flushersRef, stats }: TranslationQueueArgs) {
+export function useTranslationQueue({ state, autoTranslate, stateRef, dispatch, configRef, autoTranslateRef, flushersRef, stats }: TranslationQueueArgs) {
   // Segment ids currently part of an in-flight batch — guards refreshAll/
   // refreshOne/auto-translate against issuing a second provider call for a
   // segment that's already TRANSLATING in another batch (e.g. a manual
@@ -246,14 +251,20 @@ export function useTranslationQueue({ stateRef, dispatch, configRef, autoTransla
   // debounce (default 1200ms), so a segment is picked up promptly once it
   // clears the debounce. Segments already TRANSLATING are excluded by
   // selectTranslatable, so a slow in-flight batch is never double-queued.
+  //
+  // The tick only exists while there is something to translate (`hasWork`, from the store state) —
+  // an idle page with a clean grid has no timer at all. Any change that makes a row dirty (a new
+  // live row, typing) changes the state, which re-arms it.
+  const hasWork = useMemo(() => hasTranslatableWork(state), [state]);
   useEffect(() => {
+    if (!autoTranslate || !hasWork) return;
     const interval = setInterval(() => {
       if (!autoTranslateRef.current) return;
       const ids = selectTranslatable(stateRef.current, { stabilityMs: configRef.current.stabilityMs }, Date.now());
       if (ids.length > 0) runBatch(ids);
     }, 400);
     return () => clearInterval(interval);
-  }, [runBatch, autoTranslateRef, configRef, stateRef]);
+  }, [hasWork, autoTranslate, runBatch, autoTranslateRef, configRef, stateRef]);
 
   return { refreshAll, refreshOne };
 }

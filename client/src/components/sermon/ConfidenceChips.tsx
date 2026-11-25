@@ -11,7 +11,7 @@ interface ConfidenceChipsProps {
 }
 
 // "check: Kik, evengeven" under a Dutch cell: words Whisper was unsure about. Renders nothing for most
-// rows (no layout shift). Clicking a chip selects the word in the cell; × says it is fine.
+// rows (no layout shift). The buttons are out of the tab order (mouse only), so Tab goes Dutch → English. Clicking a chip selects the word in the cell; × says it is fine.
 export default function ConfidenceChips({ segmentId, text, store }: ConfidenceChipsProps) {
   const version = useSyncExternalStore(store.subscribe, store.getVersion);
   // `version` is the cache key: the store changed, so look again.
@@ -24,6 +24,7 @@ export default function ConfidenceChips({ segmentId, text, store }: ConfidenceCh
         <span key={word} className="inline-flex items-center rounded-full border border-amber-500/40 bg-amber-500/10 text-xs text-amber-800 dark:text-amber-300">
           <button
             type="button"
+            tabIndex={-1}
             onClick={() => selectWordInCell(segmentId, word, findWordIndex)}
             className="pl-2 pr-1 py-0.5 hover:underline"
             title="Whisper was unsure about this word — click to select it"
@@ -33,6 +34,7 @@ export default function ConfidenceChips({ segmentId, text, store }: ConfidenceCh
           </button>
           <button
             type="button"
+            tabIndex={-1}
             onClick={() => store.dismiss(word)}
             className="pr-1.5 pl-0.5 py-0.5 text-amber-700/70 hover:text-foreground dark:text-amber-300/70"
             aria-label={`“${word}” is fine`}

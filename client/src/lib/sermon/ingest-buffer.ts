@@ -339,6 +339,11 @@ export function appendChunk(state: IngestState, rawText: string, cfg: IngestConf
   return evaluate({ ...state, pieces, anchorAt }, cfg, now);
 }
 
+/** True when `tick` would do nothing: the buffer holds no text, so there is no deadline to watch. */
+export function ingestIdle(state: IngestState): boolean {
+  return !bufferText(state).trim();
+}
+
 /** Re-evaluate the flush triggers with no new text — call this on a ~250ms interval so the cap fires even mid-sentence. */
 export function tick(state: IngestState, cfg: IngestConfig, now: number): IngestStep {
   return evaluate(state, cfg, now);

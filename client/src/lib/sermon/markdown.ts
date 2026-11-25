@@ -19,6 +19,18 @@ export function stripMarkdown(text: string): string {
     .trim();
 }
 
+const HEADING_LINE = /^\s*#{1,6}\s/;
+
+/**
+ * Makes `text` a level-1 heading ("# Title"). Idempotent: text that already starts with a heading
+ * marker (any level — the operator may have typed one) is returned as it is, so a `#` is never doubled.
+ */
+export function ensureHeading(text: string): string {
+  const t = text.trim();
+  if (!t || HEADING_LINE.test(t)) return text;
+  return `# ${t}`;
+}
+
 /** True when `a` and `b` differ only in markdown formatting and whitespace. */
 export function sameWords(a: string, b: string): boolean {
   return stripMarkdown(a) === stripMarkdown(b);

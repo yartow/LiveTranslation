@@ -1,5 +1,7 @@
 import { memo } from 'react';
 import { AlertCircle, AlertTriangle, BookOpen, Clock, Loader2, Music, RefreshCw, Scale } from 'lucide-react';
+import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
+import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
 import type { Segment } from '@/lib/sermon/segment-model';
 import type { SegmentAction } from '@/lib/sermon/segment-store';
 import { isMacPlatform } from '@/lib/platform';
@@ -8,6 +10,21 @@ import TargetCell from './TargetCell';
 import type { SourceSelection } from './AddToGlossaryBubble';
 import type { CellKind } from '@/lib/sermon/focus-cell';
 import type { ConfidenceStore } from '@/lib/sermon/confidence-store';
+
+function GlossaryWarningText({ warnings }: { warnings: NonNullable<Segment['glossaryWarnings']> }) {
+  return (
+    <div className="space-y-1">
+      <div className="font-medium">Glossary: expected term missing</div>
+      <ul className="space-y-0.5">
+        {warnings.map((w, i) => (
+          <li key={i}>
+            “{w.term}” should be “{w.expected}”
+          </li>
+        ))}
+      </ul>
+    </div>
+  );
+}
 
 const REFRESH_ONE_HINT = isMacPlatform ? '⌘⏎' : 'Ctrl+⏎';
 
@@ -39,7 +56,7 @@ function SegmentRowImpl({ segment, dispatch, activeSegmentIdRef, onRefreshOne, f
       className="flex items-stretch flex-col md:flex-row border-b border-border/60 last:border-b-0"
       data-testid={`row-${segment.id}`}
     >
-      <div className="flex-1 min-w-0 md:border-r border-border/60">
+      <div className="flex-1 min-w-0 md:border-r border-border/60 group-data-[collapsed=source]/grid:hidden">
         <SourceCell segment={segment} dispatch={dispatch} activeSegmentIdRef={activeSegmentIdRef} flushersRef={flushersRef} onSelectText={onSelectText} onEnterNext={onEnterNext} confidenceStore={confidenceStore} onLyricsLink={onLyricsLink} />
       </div>
 
@@ -56,6 +73,7 @@ function SegmentRowImpl({ segment, dispatch, activeSegmentIdRef, onRefreshOne, f
         {segment.status === 'TRANSLATING' && (
           <button
             type="button"
+            tabIndex={-1}
             onClick={() => onRefreshOne(segment.id)}
             className="text-muted-foreground hover:text-foreground transition-colors"
             aria-label="Retry if this stays stuck"
@@ -68,6 +86,7 @@ function SegmentRowImpl({ segment, dispatch, activeSegmentIdRef, onRefreshOne, f
         {segment.status === 'PROVISIONAL' && (
           <button
             type="button"
+            tabIndex={-1}
             onClick={() => onRefreshOne(segment.id)}
             className="text-muted-foreground hover:text-foreground transition-colors"
             aria-label="Translate this provisional text now"
@@ -80,6 +99,7 @@ function SegmentRowImpl({ segment, dispatch, activeSegmentIdRef, onRefreshOne, f
         {segment.status === 'ERROR' && (
           <button
             type="button"
+            tabIndex={-1}
             onClick={() => onRefreshOne(segment.id)}
             className="text-destructive hover:opacity-70"
             aria-label={`Retry — ${segment.error ?? 'error'}`}
@@ -92,6 +112,7 @@ function SegmentRowImpl({ segment, dispatch, activeSegmentIdRef, onRefreshOne, f
         {(segment.status === 'EDITED' || segment.status === 'PENDING') && (
           <button
             type="button"
+            tabIndex={-1}
             onClick={() => onRefreshOne(segment.id)}
             className="text-muted-foreground/50 hover:text-foreground transition-colors"
             aria-label="Re-translate this segment"
@@ -104,6 +125,7 @@ function SegmentRowImpl({ segment, dispatch, activeSegmentIdRef, onRefreshOne, f
         {segment.status === 'SCRIPTURE' && (
           <button
             type="button"
+            tabIndex={-1}
             onClick={() => dispatch({ type: 'CLEAR_SCRIPTURE', id: segment.id, now: Date.now() })}
             className="text-blue-500/70 hover:text-foreground transition-colors"
             aria-label={`Scripture quote (${segment.scripture?.reference ?? ''}, ${segment.scripture?.version ?? ''}) — click to treat as a normal translation`}
@@ -114,16 +136,29 @@ function SegmentRowImpl({ segment, dispatch, activeSegmentIdRef, onRefreshOne, f
           </button>
         )}
         {segment.status === 'TRANSLATED' && segment.glossaryWarnings && segment.glossaryWarnings.length > 0 && (
-          <span
-            role="img"
-            aria-label={`Glossary check: ${segment.glossaryWarnings.map(w => `${w.term} → ${w.expected}`).join(', ')}`}
-            title={segment.glossaryWarnings.map(w => `Expected "${w.expected}" for "${w.term}"`).join('\n')}
-          >
-            <AlertTriangle
-              className="w-3.5 h-3.5 text-amber-500/70"
-              data-testid={`glossary-warn-${segment.id}`}
-            />
-          </span>
+          <Popover>
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <PopoverTrigger asChild>
+                  <button
+                    type="button"
+                    tabIndex={-1}
+                    className="text-amber-500 hover:text-amber-600 transition-colors"
+                    aria-label={`Glossary check: ${segment.glossaryWarnings.map(w => `${w.term} → ${w.expected}`).join(', ')}`}
+                    data-testid={`glossary-warn-${segment.id}`}
+                  >
+                    <AlertTriangle className="w-4 h-4" />
+                  </button>
+                </PopoverTrigger>
+              </TooltipTrigger>
+              <TooltipContent side="right" className="max-w-xs">
+                <GlossaryWarningText warnings={segment.glossaryWarnings} />
+              </TooltipContent>
+            </Tooltip>
+            <PopoverContent side="right" className="w-auto max-w-xs p-3 text-sm">
+              <GlossaryWarningText warnings={segment.glossaryWarnings} />
+            </PopoverContent>
+          </Popover>
         )}
         {segment.status === 'TRANSLATED' && segment.lowFidelity && (
           <span
@@ -136,7 +171,7 @@ function SegmentRowImpl({ segment, dispatch, activeSegmentIdRef, onRefreshOne, f
         )}
       </div>
 
-      <div className="flex-1 min-w-0">
+      <div className="flex-1 min-w-0 group-data-[collapsed=target]/grid:hidden">
         <TargetCell segment={segment} dispatch={dispatch} activeSegmentIdRef={activeSegmentIdRef} onEnterNext={onEnterNext} onLyricsLink={onLyricsLink} />
       </div>
     </div>

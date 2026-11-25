@@ -23,6 +23,7 @@ import {
 } from './glossary-parse';
 import { buildCheckIndex, type GlossaryCheckIndex } from './glossary-check';
 import { sanitizeGlossaryField } from './prompt-safety';
+import type { ExtraListenerLang } from './listener-lang';
 import { getBibleBooks, bookNumberByEnglishName } from './bible-books';
 
 export interface GlossarySelection {
@@ -47,6 +48,9 @@ export interface GlossaryDiagnostics {
     contextRows: number;
     repairedRows: number;
     droppedRows: number;
+    /** Hindi/Tamil/Chinese columns in the header, with how many terms each holds (for listener phones). */
+    languageColumns: ExtraListenerLang[];
+    languageCounts: Partial<Record<ExtraListenerLang, number>>;
   };
   prompt: {
     name: string;
@@ -86,7 +90,7 @@ function emptyDiagnostics(sel: GlossarySelection, errors: string[]): GlossaryDia
   return {
     loaded: false,
     version: 'none',
-    csv: { name: sel.csv, exists: false, mtimeMs: null, totalRows: 0, fixedRows: 0, contextRows: 0, repairedRows: 0, droppedRows: 0 },
+    csv: { name: sel.csv, exists: false, mtimeMs: null, totalRows: 0, fixedRows: 0, contextRows: 0, repairedRows: 0, droppedRows: 0, languageColumns: [], languageCounts: {} },
     prompt: { name: sel.prompt, exists: false, mtimeMs: null, chars: 0 },
     warnings: [],
     errors,
@@ -192,6 +196,8 @@ function buildBundle(sel: GlossarySelection): { bundle: GlossaryBundle | null; d
       contextRows: glossary.context.length,
       repairedRows: glossary.repairedRows,
       droppedRows: glossary.droppedRows,
+      languageColumns: glossary.languageColumns,
+      languageCounts: glossary.languageCounts,
     },
     prompt: { name: sel.prompt, exists: true, mtimeMs: mdContent.mtimeMs, chars: mdContent.text.length },
     warnings,

@@ -21,6 +21,7 @@
 
 import { parseCsv } from './csv-parse';
 import { sanitizeGlossaryField, looksLikeInjection } from './prompt-safety';
+import { EXTRA_LISTENER_LANGUAGES, type ExtraListenerLang } from './listener-lang';
 
 export const KNOWN_CATEGORIES: ReadonlySet<string> = new Set([
   'Theologisch',
@@ -45,17 +46,84 @@ const EXPECTED_HEADER = ['Nederlands', 'Engels', 'Categorie', 'Notitie'];
 const MAX_NL_LEN = 80;
 const MAX_EN_LEN = 120;
 const MAX_NOTE_LEN = 200;
+const MAX_TRANSLATION_LEN = 120;
+
+// Optional extra columns after Notitie: the fixed term for each listener language (listener-translate.ts).
+// They are read BY HEADER NAME, so their order does not matter; the first four columns keep their
+// positions (that is what the comma repair below relies on). A file with only the four original
+// columns is unchanged.
+export const LANGUAGE_COLUMNS: Record<ExtraListenerLang, string> = {
+  hi: 'Hindi',
+  ta: 'Tamil',
+  zh: 'Chinese (Simplified)',
+  'zh-TW': 'Chinese (Traditional)',
+};
+
+/** The fixed term per listener language, as found in a row's language columns (empty cells are absent). */
+export type LanguageTerms = Partial<Record<ExtraListenerLang, string>>;
 
 export interface GlossaryRow {
   nl: string;
   en: string;
   category: string;
   note: string;
+  /** Hindi/Tamil/Chinese terms from the CSV's language columns — see LANGUAGE_COLUMNS. */
+  lang?: LanguageTerms;
 }
 
 export interface ParsedGlossary {
   fixed: GlossaryRow[];
+  /**
+   * Every fixed row that survived sanitising — `fixed` keeps one row per Dutch term (the Dutch -> English
+   * lookup needs exactly one answer), this keeps them all: the book "Jesaja" and the prophet "Jesaja" are
+   * two rows, and the English -> Hindi/Tamil/Chinese lookup needs both. Terms that are Contextafhankelijk are not in it.
+   */
+  fixedAll: GlossaryRow[];
   context: GlossaryRow[];
+  totalRows: number;
+  repairedRows: number;
+  droppedRows: number;
+  warnings: string[];
+  /** Language columns present in the header (Hindi, Tamil, ...), whether or not any row fills them. */
+  languageColumns: ExtraListenerLang[];
+  /** How many of the kept rows have a term in each language column. */
+  languageCounts: Partial<Record<ExtraListenerLang, number>>;
+}
+
+/**
+ * Repairs a row with more fields than the header, using the closed category vocabulary as an anchor:
+ * everything between the Dutch term and the category is the English, and — the header says how many
+ * columns follow the category — surplus fields are glued back onto the Notitie. (A comma inside a
+ * language cell cannot be told apart from one inside the Notitie; files this app writes are properly
+ * quoted, so that only matters for hand-edited rows.) Returns the row at exactly `width` fields, or null
+ * if no field matches a known category (unrecoverable).
+ */
+function repairRow(fields: string[], width: number): string[] | null {
+  const anchorIndex = fields.findIndex((f, i) => i > 0 && KNOWN_CATEGORIES.has(f.trim()));
+  if (anchorIndex === -1) return null;
+  const tail = fields.slice(anchorIndex + 1);
+  const wanted = width - 3; // Notitie + the language columns
+  const surplus = tail.length - wanted;
+  if (surplus < 0) return null;
+  // Rejoin with a bare comma (not ", ") — the split fragments already carry
+  // whatever whitespace originally followed the comma, so this reconstructs
+  // the exact original text rather than doubling it up.
+  return [
+    fields[0],
+    fields.slice(1, anchorIndex).join(','),
+    fields[anchorIndex].trim(),
+    tail.slice(0, surplus + 1).join(','),
+    ...tail.slice(surplus + 1),
+  ];
+}
+
+/** One CSV row as written, repaired where needed but not yet sanitised or checked. */
+export interface GlossaryRecord { nl: string; en: string; category: string; note: string; lang: LanguageTerms }
+
+export interface ReadGlossary {
+  records: GlossaryRecord[];
+  languageColumns: ExtraListenerLang[];
+  /** Data rows seen (before any were dropped). */
   totalRows: number;
   repairedRows: number;
   droppedRows: number;
@@ -63,24 +131,76 @@ export interface ParsedGlossary {
 }
 
 /**
- * Repairs a >4-field row using the closed category vocabulary as an anchor.
- * Returns null if no field matches a known category (unrecoverable).
+ * Reads the CSV into one record per data row — header-driven, with the comma repair applied — without
+ * sanitising, duplicate resolution or category checks. parseGlossaryCsv builds on it; scripts that
+ * rewrite the file (e.g. adding language columns) use it to keep every row.
  */
-function repairRow(fields: string[]): { nl: string; en: string; category: string; note: string } | null {
-  const anchorIndex = fields.findIndex((f, i) => i > 0 && KNOWN_CATEGORIES.has(f.trim()));
-  if (anchorIndex === -1) return null;
-  // Rejoin with a bare comma (not ", ") — the split fragments already carry
-  // whatever whitespace originally followed the comma, so this reconstructs
-  // the exact original text rather than doubling it up.
+export function readGlossaryRecords(text: string): ReadGlossary {
+  const rows = parseCsv(text).filter(r => r.some(f => f.trim().length > 0));
+  const warnings: string[] = [];
+  if (rows.length === 0) {
+    return { records: [], languageColumns: [], totalRows: 0, repairedRows: 0, droppedRows: 0, warnings };
+  }
+
+  const header = rows[0].map(f => f.trim());
+  const standard = EXPECTED_HEADER.every((name, i) => header[i] === name);
+  if (!standard) {
+    warnings.push(`Unexpected CSV header: expected "${EXPECTED_HEADER.join(',')}" first, found "${header.join(',')}".`);
+  }
+  // Without the standard first four columns the file is read as the original 4-column layout.
+  const width = standard ? header.length : EXPECTED_HEADER.length;
+
+  const columnOf = new Map<ExtraListenerLang, number>();
+  if (standard) {
+    for (let i = EXPECTED_HEADER.length; i < header.length; i++) {
+      const lang = EXTRA_LISTENER_LANGUAGES.find(l => LANGUAGE_COLUMNS[l] === header[i]);
+      if (!lang) warnings.push(`Unknown CSV column '${header[i]}' is ignored.`);
+      else if (columnOf.has(lang)) warnings.push(`Duplicate CSV column '${header[i]}' — only the first is used.`);
+      else columnOf.set(lang, i);
+    }
+  }
+
+  const dataRows = rows.slice(1);
+  let repairedRows = 0;
+  let droppedRows = 0;
+  const records: GlossaryRecord[] = [];
+
+  for (const original of dataRows) {
+    let fields = original;
+    if (fields.length > width) {
+      const repaired = repairRow(fields, width);
+      if (!repaired) {
+        droppedRows++;
+        warnings.push(`Row skipped (category not recognised): '${fields[0]}'`);
+        continue;
+      }
+      fields = repaired;
+      repairedRows++;
+    } else if (fields.length >= 3) {
+      // A short row (the legacy 3-column form, or language cells left off the end) reads as empty cells.
+      fields = fields.concat(new Array<string>(width - fields.length).fill(''));
+    } else {
+      droppedRows++;
+      warnings.push(`Row skipped (too few fields): '${fields[0] ?? ''}'`);
+      continue;
+    }
+
+    const lang: LanguageTerms = {};
+    columnOf.forEach((col, l) => { if (fields[col]?.trim()) lang[l] = fields[col]; });
+    records.push({ nl: fields[0], en: fields[1], category: fields[2].trim(), note: fields[3], lang });
+  }
+
   return {
-    nl: fields[0],
-    en: fields.slice(1, anchorIndex).join(','),
-    category: fields[anchorIndex].trim(),
-    note: fields.slice(anchorIndex + 1).join(','),
+    records,
+    languageColumns: EXTRA_LISTENER_LANGUAGES.filter(l => columnOf.has(l)),
+    totalRows: dataRows.length,
+    repairedRows,
+    droppedRows,
+    warnings,
   };
 }
 
-interface RawRow { nl: string; en: string; category: string; note: string }
+interface RawRow { nl: string; en: string; category: string; note: string; lang?: LanguageTerms }
 
 function resolveDuplicates(rows: RawRow[], warnings: string[]): { fixed: GlossaryRow[]; context: GlossaryRow[] } {
   const groups = new Map<string, RawRow[]>();
@@ -124,44 +244,12 @@ function resolveDuplicates(rows: RawRow[], warnings: string[]): { fixed: Glossar
 }
 
 export function parseGlossaryCsv(text: string): ParsedGlossary {
-  const rows = parseCsv(text).filter(r => r.some(f => f.trim().length > 0));
-  const warnings: string[] = [];
-  if (rows.length === 0) {
-    return { fixed: [], context: [], totalRows: 0, repairedRows: 0, droppedRows: 0, warnings };
-  }
-
-  const header = rows[0].map(f => f.trim());
-  if (header.join(',') !== EXPECTED_HEADER.join(',')) {
-    warnings.push(`Unexpected CSV header: expected "${EXPECTED_HEADER.join(',')}", found "${header.join(',')}".`);
-  }
-
-  const dataRows = rows.slice(1);
-  let repairedRows = 0;
-  let droppedRows = 0;
+  const read = readGlossaryRecords(text);
+  const warnings = read.warnings;
+  let droppedRows = read.droppedRows;
   const raw: RawRow[] = [];
 
-  for (const fields of dataRows) {
-    let rec: { nl: string; en: string; category: string; note: string };
-
-    if (fields.length === 4) {
-      rec = { nl: fields[0], en: fields[1], category: fields[2].trim(), note: fields[3] };
-    } else if (fields.length > 4) {
-      const repaired = repairRow(fields);
-      if (!repaired) {
-        droppedRows++;
-        warnings.push(`Row skipped (category not recognised): '${fields[0]}'`);
-        continue;
-      }
-      rec = repaired;
-      repairedRows++;
-    } else if (fields.length === 3) {
-      rec = { nl: fields[0], en: fields[1], category: fields[2].trim(), note: '' };
-    } else {
-      droppedRows++;
-      warnings.push(`Row skipped (too few fields): '${fields[0] ?? ''}'`);
-      continue;
-    }
-
+  for (const rec of read.records) {
     if (!KNOWN_CATEGORIES.has(rec.category)) {
       droppedRows++;
       warnings.push(`Row skipped (unknown category '${rec.category}'): '${rec.nl}'`);
@@ -186,12 +274,31 @@ export function parseGlossaryCsv(text: string): ParsedGlossary {
       continue;
     }
 
-    raw.push({ nl, en, category: rec.category, note });
+    // The language cells are embedded in listener-translation prompts as data, so they get the same
+    // sanitising as every other glossary field.
+    const lang: LanguageTerms = {};
+    for (const l of EXTRA_LISTENER_LANGUAGES) {
+      const cell = rec.lang[l];
+      const clean = cell ? sanitizeGlossaryField(cell, MAX_TRANSLATION_LEN) : '';
+      if (clean) lang[l] = clean;
+    }
+
+    raw.push(Object.keys(lang).length > 0 ? { nl, en, category: rec.category, note, lang } : { nl, en, category: rec.category, note });
   }
 
   const { fixed, context } = resolveDuplicates(raw, warnings);
 
-  return { fixed, context, totalRows: dataRows.length, repairedRows, droppedRows, warnings };
+  const contextKeys = new Set(context.map(r => r.nl.toLowerCase()));
+  const fixedAll = raw.filter(r => r.category !== 'Contextafhankelijk' && !contextKeys.has(r.nl.toLowerCase()));
+  const languageCounts: Partial<Record<ExtraListenerLang, number>> = {};
+  for (const l of read.languageColumns) {
+    languageCounts[l] = fixedAll.filter(r => r.lang?.[l]).length;
+  }
+
+  return {
+    fixed, fixedAll, context, totalRows: read.totalRows, repairedRows: read.repairedRows, droppedRows, warnings,
+    languageColumns: read.languageColumns, languageCounts,
+  };
 }
 
 export interface DisambiguationDoc {
