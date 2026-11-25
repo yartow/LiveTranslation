@@ -519,6 +519,21 @@ export function selectTranslatable(state: SegmentStoreState, cfg: TranslatableCo
   });
 }
 
+/**
+ * Cheap "could selectTranslatable ever return something?" check, ignoring the time-based rules
+ * (stability debounce, provisional idle). The auto-translate tick only needs to run while this is
+ * true: an idle page with nothing dirty has nothing to poll for. A row that turns dirty (typing,
+ * a new live row) changes the store, which re-evaluates this and re-arms the tick.
+ */
+export function hasTranslatableWork(state: SegmentStoreState): boolean {
+  return state.ids.some(id => {
+    const seg = state.byId[id];
+    if (hasNoSource(seg)) return false;
+    if (seg.manualOverride || seg.status === 'TRANSLATING' || seg.status === 'ERROR') return false;
+    return isDirty(seg);
+  });
+}
+
 export interface SegmentContext {
   before: string[];
   after: string[];

@@ -20,7 +20,7 @@ function toState(r: ServerResult): MacInputVolumeState {
     : { status: 'unsupported', reason: r.reason ?? 'Not available' };
 }
 
-export function useMacInputVolume() {
+export function useMacInputVolume(active: boolean) {
   const [state, setState] = useState<MacInputVolumeState>({ status: 'loading' });
   const lastLocalChangeRef = useRef(0);
   const writeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -38,11 +38,20 @@ export function useMacInputVolume() {
     }
   }, []);
 
+  // Every read spawns `osascript` on the server, so the 5 s poll runs only while `active` (recording).
+  // An idle page reads once on mount / when `active` flips, and again whenever the tab is looked at.
   useEffect(() => {
     read();
-    const timer = setInterval(read, POLL_MS);
-    return () => clearInterval(timer);
-  }, [read]);
+    const onVisible = () => { if (!document.hidden) read(); };
+    document.addEventListener('visibilitychange', onVisible);
+    window.addEventListener('focus', onVisible);
+    const timer = active ? setInterval(read, POLL_MS) : null;
+    return () => {
+      if (timer) clearInterval(timer);
+      document.removeEventListener('visibilitychange', onVisible);
+      window.removeEventListener('focus', onVisible);
+    };
+  }, [read, active]);
 
   useEffect(() => () => { if (writeTimerRef.current) clearTimeout(writeTimerRef.current); }, []);
 

@@ -2,7 +2,7 @@ import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react
 import type { PipelineStats } from '@/lib/sermon/pipeline-stats';
 import type { ConfidenceStore } from '@/lib/sermon/confidence-store';
 import { ChunkBasedTranscription, RecordingStoppedError, type ChunkTranscriptionEvents, type TranscriptionEngine } from '@/lib/chunk-based-transcription';
-import { initIngestState, appendChunk, finalizeBuffer, releaseProvisional, tick as ingestTick, type IngestConfig, type IngestEffect } from '@/lib/sermon/ingest-buffer';
+import { initIngestState, appendChunk, finalizeBuffer, releaseProvisional, tick as ingestTick, ingestIdle, type IngestConfig, type IngestEffect } from '@/lib/sermon/ingest-buffer';
 import { canWriteLive, type SegmentAction, type SegmentStoreState } from '@/lib/sermon/segment-store';
 import { SERMON_VAD_SILENCE_MS, SERMON_MIN_CHUNK_MS, SERMON_MAX_CHUNK_MS } from '@/lib/sermon/chunk-limits';
 import type { SermonTranslationProvider } from '@/hooks/useSettings';
@@ -168,6 +168,29 @@ export function useSermonIngest(args: SermonIngestArgs) {
     }
   }, [approxTiming, nextLiveId]);
 
+  // The cap-flush trigger must fire even when no new audio is arriving
+  // (a speaker mid-sentence, or silence) — see plan §3. It only exists while it can matter: armed by
+  // start() and by every chunk of text (so also during the drain after Stop), and it disarms itself
+  // once nothing is recording and the buffer is empty. An idle page therefore has no 250 ms timer.
+  const tickTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const armTick = useCallback(() => {
+    if (tickTimerRef.current) return;
+    tickTimerRef.current = setInterval(() => {
+      const now = Date.now();
+      releaseIfTakenOver(now);
+      const step = ingestTick(ingestStateRef.current, argsRef.current.ingestConfigRef.current, now);
+      ingestStateRef.current = step.state;
+      if (step.effects.length > 0) applyEffects(step.effects, now);
+      if (!backendRef.current && ingestIdle(ingestStateRef.current) && tickTimerRef.current) {
+        clearInterval(tickTimerRef.current);
+        tickTimerRef.current = null;
+      }
+    }, CAP_TICK_MS);
+  }, [applyEffects, releaseIfTakenOver]);
+  useEffect(() => () => {
+    if (tickTimerRef.current) { clearInterval(tickTimerRef.current); tickTimerRef.current = null; }
+  }, []);
+
   const handleCorrected = useCallback((text: string, chunkIndex: number) => {
     if (!text.trim()) return;
     lastChunkIndexRef.current = chunkIndex;
@@ -181,21 +204,9 @@ export function useSermonIngest(args: SermonIngestArgs) {
     const step = appendChunk(ingestStateRef.current, text, argsRef.current.ingestConfigRef.current, now);
     ingestStateRef.current = step.state;
     applyEffects(step.effects, now);
-  }, [applyEffects, releaseIfTakenOver]);
+    armTick(); // text is buffered now: its block deadline needs watching (also while draining after Stop)
+  }, [applyEffects, releaseIfTakenOver, armTick]);
 
-  // The cap-flush trigger must fire even when no new audio is arriving
-  // (a speaker mid-sentence, or silence) — see plan §3. Runs for the whole
-  // lifetime of the hook; harmless (a no-op) when the buffer is empty.
-  useEffect(() => {
-    const interval = setInterval(() => {
-      const now = Date.now();
-      releaseIfTakenOver(now);
-      const step = ingestTick(ingestStateRef.current, argsRef.current.ingestConfigRef.current, now);
-      ingestStateRef.current = step.state;
-      if (step.effects.length > 0) applyEffects(step.effects, now);
-    }, CAP_TICK_MS);
-    return () => clearInterval(interval);
-  }, [applyEffects, releaseIfTakenOver]);
 
   // End the current block now: whatever is buffered becomes a finished segment
   // (the open row is completed, so it gets translated at once instead of
@@ -278,6 +289,7 @@ export function useSermonIngest(args: SermonIngestArgs) {
     created.setRawAudioCapture(a.rawAudioCapture ?? true);
     created.setInputDeviceId(a.micDeviceId ?? '');
     backendRef.current = created;
+    armTick();
 
     try {
       await created.start({
@@ -310,7 +322,7 @@ export function useSermonIngest(args: SermonIngestArgs) {
     } finally {
       setIsProcessing(false);
     }
-  }, [handleCorrected, finalizeIngest]);
+  }, [handleCorrected, finalizeIngest, armTick]);
 
   const stop = useCallback(async () => {
     const backend = backendRef.current;

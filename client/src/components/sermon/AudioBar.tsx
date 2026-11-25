@@ -96,7 +96,7 @@ export default function AudioBar({
   levelStore, pipelineStats, isRecording, isPaused, micDeviceId, onChangeMicDeviceId, devices, defaultLabel, hasLabels, activeLabel, gain,
 }: AudioBarProps) {
   const [open, setOpen] = useState(false);
-  const { state: volume, setVolume } = useMacInputVolume();
+  const { state: volume, setVolume } = useMacInputVolume(isRecording);
 
   // Polled once a second rather than derived from the level snapshot, which only changes
   // when the meter visibly moves — and a dead microphone is exactly a meter that never moves.
@@ -208,7 +208,7 @@ export default function AudioBar({
         </span>
       )}
 
-      <PipelineHealth stats={pipelineStats} />
+      <PipelineHealth stats={pipelineStats} active={isRecording} />
 
       <div className="flex items-center gap-2" data-testid="mac-input-volume">
         <label htmlFor="mac-input-volume-slider" className="text-xs text-muted-foreground whitespace-nowrap">Input volume</label>

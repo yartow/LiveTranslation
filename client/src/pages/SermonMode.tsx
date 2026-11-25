@@ -76,6 +76,7 @@ export default function SermonMode() {
   // Words Whisper was unsure about (MLX engine) -> "check" chips under the Dutch cells.
   const [confidenceStore] = useState(() => new ConfidenceStore());
   const { refreshAll, refreshOne } = useTranslationQueue({
+    state, autoTranslate: settings.sermonAutoTranslate,
     stateRef, dispatch: applyAction, configRef: translationConfigRef, autoTranslateRef, flushersRef, stats: pipelineStats,
   });
 
