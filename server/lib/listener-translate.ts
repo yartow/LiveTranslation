@@ -376,8 +376,7 @@ export class ListenerTranslator {
     let verse: string | undefined;
     try { verse = this.deps.scriptureText(lang, reference); } catch { return undefined; }
     if (!verse || !verse.trim()) return undefined;
-    // The operator may have set the verse as a quote ("> ") for the phones — keep that.
-    return /^\s*>/.test(line.text) ? `> ${verse}` : verse;
+    return carryFormatting(line.text, verse.trim());
   }
 
   private logScripture(lang: ExtraListenerLang, line: ListenerLine, verse: string): void {
@@ -611,4 +610,28 @@ export class ListenerTranslator {
       });
     } catch { /* a debugging aid must never fail a translation */ }
   }
+}
+
+
+/**
+ * The operator may have formatted the English verse for the phones (a "> " quote on every line, **bold**,
+ * *italic*). Put the same formatting on the verse from the phone language's own Bible.
+ */
+export function carryFormatting(english: string, verse: string): string {
+  const lines = english.split('\n').filter(l => l.trim() !== '');
+  const quoted = lines.length > 0 && lines.every(l => /^\s*>/.test(l));
+  const body = lines.map(l => l.replace(/^\s*>+\s?/, '')).join('\n').trim();
+  let out = verse;
+  const wraps = (m: string) => body.length > 2 * m.length && body.startsWith(m) && body.endsWith(m);
+  if (wraps('***')) out = `***${out}***`;
+  else if (wraps('**')) out = `**${out}**`;
+  else if (wraps('*')) out = `*${out}*`;
+  else if (wraps('_')) out = `_${out}_`;
+  // Emphasis cannot span a blank line / quote marker in markdown, so wrap each line of a multi-line verse.
+  if (out.indexOf('\n') >= 0 && out !== verse) {
+    const m = out.startsWith('***') ? '***' : out.startsWith('**') ? '**' : out.slice(0, 1);
+    out = verse.split('\n').map(l => l.trim() ? `${m}${l.trim()}${m}` : l).join('\n');
+  }
+  if (quoted) out = out.split('\n').map(l => `> ${l}`.trimEnd()).join('\n');
+  return out;
 }

@@ -72,8 +72,15 @@ export class ListenerRoom {
       if (!ctx.operator) { console.warn('[listener-room] Ignoring config from a non-operator connection'); return; }
       this.applyConfig(normalizeConfig(message));
     } else if (msg.type === 'sync' && Array.isArray(msg.lines)) {
+      // applySync wipes the references, so remember them: a line whose reference is gone or different after
+      // the sync (the verse was dismissed as "not scripture" meanwhile) must be re-shown on the phones.
+      const before = new Map(this.state.scriptures);
       const accepted = applySync(this.state, msg.lines);
-      this.translator.invalidateScriptures(applyScriptures(this.state, accepted, msg.scriptures));
+      applyScriptures(this.state, accepted, msg.scriptures);
+      const changed: string[] = [];
+      before.forEach((ref, id) => { if (this.state.scriptures.get(id) !== ref) changed.push(id); });
+      this.state.scriptures.forEach((ref, id) => { if (!before.has(id)) changed.push(id); });
+      this.translator.invalidateScriptures(changed);
       this.translator.onSynced();
       // Phones replace (not merge) their view on a snapshot.
       this.sendSnapshots();
